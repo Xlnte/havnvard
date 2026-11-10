@@ -370,7 +370,9 @@ def _canary_mutated_ok(verdict: str, results: list, planted: str) -> tuple[bool,
     file different, fails."""
     by = {r.rel: r.verdict for r in results}
     want = {f"./{n}": (V_MISMATCH if n == planted else V_MATCH) for n in CANARY_NAMES}
-    if verdict != T_MISMATCH or by != want:
+    # len() check: a dict keeps only the LAST verdict per rel, so a NOT_VERIFIED row for the
+    # same name (or any extra row) would otherwise be hidden behind a later MATCH (Opus 1.6.0 #1).
+    if verdict != T_MISMATCH or len(results) != CANARY_COPIES or by != want:
         got = ", ".join(f"{k[2:]}={v}" for k, v in sorted(by.items())) or "no per-file results"
         return False, f"tree={verdict}; per file: {got}"
     return True, ""
@@ -379,7 +381,8 @@ def _canary_mutated_ok(verdict: str, results: list, planted: str) -> tuple[bool,
 def _canary_same_ok(verdict: str, results: list) -> tuple[bool, str]:
     """6 identical copies must read VERIFIED with all 6 files MATCH."""
     by = {r.rel: r.verdict for r in results}
-    if verdict != T_VERIFIED or by != {f"./{n}": V_MATCH for n in CANARY_NAMES}:
+    if (verdict != T_VERIFIED or len(results) != CANARY_COPIES
+            or by != {f"./{n}": V_MATCH for n in CANARY_NAMES}):
         got = ", ".join(f"{k[2:]}={v}" for k, v in sorted(by.items())) or "no per-file results"
         return False, f"tree={verdict}; per file: {got}"
     return True, ""

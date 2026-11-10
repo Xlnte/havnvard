@@ -242,6 +242,20 @@ def test_canary_fails_if_wrong_file_reads_different(tmp_path, monkeypatch):
     assert not ok
 
 
+def test_canary_fails_if_an_extra_row_hides_behind_a_match(tmp_path, monkeypatch):
+    """Opus 1.6.0 #1: an extra NOT_VERIFIED row for a canary name, listed before its MATCH row,
+    must not be collapsed away by the per-name dict. Exactly 6 rows are required."""
+    real = vt.verify_pair
+
+    def extra_row(local, nas, target):
+        verdict, results, reason, stats = real(local, nas, target)
+        bogus = vt.FileResult("./book_1.txt", None, None, None, vt.V_NOT_VERIFIED, "dest:X")
+        return verdict, [bogus] + list(results), reason, stats
+    monkeypatch.setattr(vt, "verify_pair", extra_row)
+    ok, why = vt.run_canary(LocalShellTarget(tmp_path), planted_index=3)
+    assert not ok and "5 copies + 1" in why
+
+
 def test_canary_fails_if_a_copy_is_missing_on_nas(tmp_path):
     """The NAS listing drops one of the 6 copies: neither check can pass."""
     t = LocalShellTarget(tmp_path)
