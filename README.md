@@ -52,6 +52,7 @@ section "NAS within-host dedup".
 |---|---|
 | `scan.py` | Whole-disk metadata crawler (path/size/perms/owner/timestamps). Run locally per host; `--host`/`--root` flags let it tag rows for a different host name if crawling a mount. |
 | `scan_guard.py` | **1.4.3 (INFRA-522):** per-(host, root) Postgres advisory scan lock (a second scan of the same root is refused, exit 3) and per-scan `files_staging` cleanup, used by scan.py and load_nas_inventory.py. Needs migration `20261109_diskaudit_files_staging_scan_id_v1.sql`. |
+| `verify_tree.py` | **1.5.0 (INFRA-538):** full-byte proof before any copy is deleted. SHA-256 of every byte on BOTH sides in the same run (NAS side hashed on the NAS), exact file-list match, and a built-in m→M canary (8.5 MB book text, one `m`→`M` in the last partial 4 MiB chunk) that must read MISMATCH before any result is trusted. Exit 0 VERIFIED / 3 not / 4 canary failed. Records `diskaudit.tree_verifications` + `integrity_checks` (`basis='fresh'`); `mark-deleted --run-id` links each deletion. Called by spark-backup-db.sh / spark-backup-daily.sh before deleting a local backup dir. Needs migration `20261110_diskaudit_tree_verify_v1.sql`. |
 | `heartbeat.py` | Shared heartbeat/progress-tracking helpers used by scan.py, dedup.py, load_nas_inventory.py during long-running jobs. |
 | `bucketing.py` | LPT (longest-processing-time) bin-packing for parallel dedup worker assignment; also handles `ARG_MAX`-safe chunking of same-size candidate groups. |
 | `dedup.py` | rdfind integration + parallel worker orchestration for duplicate detection. |
@@ -116,3 +117,8 @@ Grafana: `https://spark-20cf.tail5f354b.ts.net:9452/d/diskaudit/diskaudit`
 Never auto-deletes or auto-moves files. Every status/label is advisory —
 actual delete/move decisions are made by the operator, informed by this
 system's reports.
+
+**Delete-basis rule (PAF 20261109, INFRA-538):** no copy may be deleted unless 100% of its
+bytes were proven equal to the kept copy in the same run: `verify_tree.py` (rows with
+`basis='fresh'`) or the delete script's own in-run rehash. Size, mtime, a partial hash or a
+digest read back from `diskaudit.files` (`basis='stored'`, crosshost `match`) never count.

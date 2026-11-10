@@ -1,6 +1,6 @@
 name: HavnVard
 display_name: HavnVard — Storage Assurance (Whole-Disk File Inventory)
-version: 1.4.3
+version: 1.5.0
 type: scheduled-scanner
 status: active
 grandfather_status: standardized
