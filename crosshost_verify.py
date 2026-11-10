@@ -234,7 +234,8 @@ def _write_integrity_unreadable(conn, host: str, path: str, size_bytes, notes: s
     conn.commit()
 
 
-def hash_local_host(conn, host: str, run_id: int, min_size: int, limit: int | None, batch_commit: int = 200):
+def hash_local_host(conn, host: str, run_id: int, min_size: int, limit: int | None, batch_commit: int = 200,
+                    reuse_stored: bool = True):
     """Hash candidate files on THIS host (spark-20cf) directly via os.stat +
     hashlib. Resumable: a row that already has content_sha256 is skipped
     UNLESS a fresh os.stat() shows its size/mtime has drifted from what's
@@ -307,7 +308,12 @@ def hash_local_host(conn, host: str, run_id: int, min_size: int, limit: int | No
             # -- confirms via os.stat, no re-read), else the first row.
             representative = group_rows[0]
             digest = None
-            for candidate_row in group_rows:
+            # INFRA-538: reuse is an inventory shortcut only (size+mtime unchanged is NOT
+            # proof of unchanged bytes). --no-reuse rehashes every representative. No
+            # deletion is ever based on these digests: integrity_checks rows built from
+            # them carry basis='stored'; deletions require verify_tree (basis='fresh') or
+            # the delete script's own in-run rehash.
+            for candidate_row in (group_rows if reuse_stored else ()):
                 path, size_bytes, mtime, existing_sha, _hashed_at, _inode, _nlink = candidate_row
                 if existing_sha:
                     try:
@@ -736,7 +742,8 @@ def cmd_hash(conn, args):
 
     try:
         if args.host == "spark-20cf":
-            stats = hash_local_host(conn, args.host, run_id, args.min_size, args.limit)
+            stats = hash_local_host(conn, args.host, run_id, args.min_size, args.limit,
+                                    reuse_stored=not args.no_reuse)
         else:
             stats = hash_remote_host(conn, args.host, run_id, args.min_size, args.limit)
 
@@ -790,10 +797,11 @@ _MATCH_GROUP_SQL = """
 #    bit-identity at time of test.
 _MATCH_INTEGRITY_MATCH_SQL = """
     INSERT INTO diskaudit.integrity_checks
-        (spark_path, spark_host, nas_path, size_bytes, sha_source, sha_dest, verdict, notes)
+        (spark_path, spark_host, nas_path, size_bytes, sha_source, sha_dest, verdict, notes, basis)
     SELECT src.path, src.host, nas.path, src.size_bytes, src.content_sha256, nas.content_sha256,
            'match',
-           'content-hash match: proves bit-identity AT TIME OF TEST only, not against later corruption'
+           'content-hash match: proves bit-identity AT TIME OF TEST only, not against later corruption',
+           'stored'  -- INFRA-538: digests read back from diskaudit.files; never a deletion basis
     FROM diskaudit.files src
     JOIN LATERAL (
         SELECT n.path, n.content_sha256
@@ -809,10 +817,11 @@ _MATCH_INTEGRITY_MATCH_SQL = """
 #    to be safely on the NAS.
 _MATCH_INTEGRITY_MISSING_SQL = """
     INSERT INTO diskaudit.integrity_checks
-        (spark_path, spark_host, size_bytes, sha_source, verdict, notes)
+        (spark_path, spark_host, size_bytes, sha_source, verdict, notes, basis)
     SELECT src.path, src.host, src.size_bytes, src.content_sha256,
            'missing_dest',
-           'no NAS file found with matching content-hash (checked against currently-hashed NAS candidate set only)'
+           'no NAS file found with matching content-hash (checked against currently-hashed NAS candidate set only)',
+           'stored'
     FROM diskaudit.files src
     WHERE src.host = ANY(%(source_hosts)s) AND src.still_exists AND src.content_sha256 IS NOT NULL
       AND NOT EXISTS (
@@ -828,10 +837,11 @@ _MATCH_INTEGRITY_MISSING_SQL = """
 #    manual review, never asserted as proven corruption.
 _MATCH_INTEGRITY_MISMATCH_SQL = """
     INSERT INTO diskaudit.integrity_checks
-        (spark_path, spark_host, nas_path, size_bytes, sha_source, sha_dest, verdict, notes)
+        (spark_path, spark_host, nas_path, size_bytes, sha_source, sha_dest, verdict, notes, basis)
     SELECT src.path, src.host, nas.path, src.size_bytes, src.content_sha256, nas.content_sha256,
            'mismatch',
-           'same basename+size on NAS but different content-hash -- may be genuine corruption/staleness OR an unrelated file that happens to share name+size; investigate manually, not asserted as proven'
+           'same basename+size on NAS but different content-hash -- may be genuine corruption/staleness OR an unrelated file that happens to share name+size; investigate manually, not asserted as proven',
+           'stored'
     FROM diskaudit.files src
     JOIN diskaudit.files nas
         ON nas.host = 'nas-ts453a' AND nas.still_exists
@@ -918,6 +928,8 @@ def main():
     p_hash.add_argument("--host", required=True, choices=KNOWN_HOSTS)
     p_hash.add_argument("--limit", type=int, default=None)
     p_hash.add_argument("--min-size", type=int, default=MIN_SIZE_DEFAULT)
+    p_hash.add_argument("--no-reuse", action="store_true",
+                        help="Rehash every file even when size+mtime are unchanged (INFRA-538).")
 
     sub.add_parser("match", help="join hashes across hosts, populate duplicate_group_id + integrity_checks")
 

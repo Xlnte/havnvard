@@ -66,8 +66,10 @@ def pair(tmp_path):
 def test_m_to_M_is_different_with_equal_size_name_mtime(pair):
     local, nas, t = pair
     original, mutated = vt.canary_texts()
-    assert len(original) >= 190_000 and len(original) == len(mutated)
-    assert sum(a != b for a, b in zip(original, mutated)) == 1
+    assert len(original) == vt.CANARY_SIZE == len(mutated) > 2 * 4 * 1024 * 1024
+    diffs = [i for i, (a, b) in enumerate(zip(original, mutated)) if a != b]
+    assert len(diffs) == 1 and diffs[0] > 2 * 4 * 1024 * 1024        # in the last, partial chunk
+    assert original[diffs[0]:diffs[0] + 1] == b"m" and mutated[diffs[0]:diffs[0] + 1] == b"M"
     _tree(nas, {"book.txt": original})
     _tree(local, {"book.txt": mutated})
     st_l, st_n = os.stat(f"{local}/book.txt"), os.stat(f"{nas}/book.txt")
@@ -152,25 +154,39 @@ def test_ssh_failure_is_not_verified(pair):
 SHA = "a" * 64
 
 
+def _out(nonreg="", files="./a\n", hashes=f"{SHA}  ./a\n", rcs=("0", "0", "0"), end="END|\n"):
+    return (f"BEGIN_NONREG|\n{nonreg}RC_NONREG|{rcs[0]}\n"
+            f"BEGIN_FILE|\n{files}RC_FILE|{rcs[1]}\n"
+            f"BEGIN_HASH|\n{hashes}RC_HASH|{rcs[2]}\n{end}")
+
+
 @pytest.mark.parametrize("out,why", [
-    (f"FILE|./a\n{SHA}  ./a\nRC|0\n", "NO_END_MARKER"),
-    (f"FILE|./a\n{SHA}  ./a\nEND|\n", "NO_RC_LINE"),
-    (f"FILE|./a\n{SHA}  ./a\nRC|1\nEND|\n", "FIND_EXEC_RC:1"),
-    ("FILE|./a\nRC|0\nEND|\n", vt.V_UNREADABLE_DEST),
-    (f"FILE|./a\n\\{SHA}  ./a\\\\b\nRC|0\nEND|\n", "ESCAPED_HASH_LINE"),
-    (f"FILE|./a\n{SHA}  ./a\n{SHA}  ./a\nRC|0\nEND|\n", "DUPLICATE_HASH_LINE"),
-    (f"NONREG|./lnk\nFILE|./a\n{SHA}  ./a\nRC|0\nEND|\n", "NON_REGULAR_DEST"),
-    (f"FILE|./a\n{SHA}  ./a\n{SHA}  ./b\nRC|0\nEND|\n", "HASH_WITHOUT_FILE"),
-    (f"FILE|./a\n{SHA}  ./a\ngarbage\nRC|0\nEND|\n", "UNTAGGED_LINE"),
+    (_out(end=""), "NO_END_MARKER"),
+    (_out(rcs=("0", "0", "1")), "RC_HASH:1"),
+    (_out(rcs=("0", "1", "0")), "RC_FILE:1"),
+    (_out(hashes=""), vt.V_UNREADABLE_DEST),
+    (_out(hashes=f"\\{SHA}  ./a\\\\b\n"), "ESCAPED_HASH_LINE"),
+    (_out(hashes=f"{SHA}  ./a\n{SHA}  ./a\n"), "DUPLICATE_HASH_LINE"),
+    (_out(nonreg="./lnk\n"), "NON_REGULAR_DEST"),
+    (_out(hashes=f"{SHA}  ./a\n{SHA}  ./b\n"), "HASH_WITHOUT_FILE"),
+    (_out(hashes=f"{SHA}  ./a\ngarbage\n"), "BAD_HASH_LINE"),
+    (_out(files="./a\ncontinued-name\n"), "BAD_NAME_LINE"),
+    (_out() + "trailing\n", "AFTER_END"),
+    ("CDFAIL|\n", "NAS_PATH_MISSING"),
+    (f"BEGIN_FILE|\n./a\nRC_FILE|0\nBEGIN_HASH|\n{SHA}  ./a\nRC_HASH|0\nEND|\n", "UNEXPECTED_LINE"),
 ])
 def test_parse_remote_incomplete(out, why):
     t = vt.parse_remote(out, 0)
-    assert not t.complete and why in {w for _, w in t.problems}
+    assert not t.complete and why in {w for _, w in t.problems}, t.problems
 
 
 def test_parse_remote_complete():
-    t = vt.parse_remote(f"FILE|./a b\n{SHA}  ./a b\nRC|0\nEND|\n", 0)
+    t = vt.parse_remote(_out(files="./a b\n", hashes=f"{SHA}  ./a b\n"), 0)
     assert t.complete and t.hashes == {"./a b": SHA}
+
+
+def test_parse_remote_ssh_rc():
+    assert "SSH_RC:97" in {w for _, w in vt.parse_remote("CDFAIL|\n", 97).problems}
 
 
 def test_nas_timeout_scales():
@@ -205,6 +221,39 @@ def test_canary_fails_when_nas_always_differs(tmp_path):
     t.hash_override = lambda out: out.replace("  ./", "  ./zz")    # names never line up
     ok, why = vt.run_canary(t)
     assert not ok
+
+
+def test_canary_uses_the_real_comparison_path(tmp_path, monkeypatch):
+    """If verify_pair (the code the real check uses) were broken to always say VERIFIED, the
+    canary must fail: it cannot have a private, healthier comparison of its own."""
+    monkeypatch.setattr(vt, "verify_pair", lambda *a, **k: (vt.T_VERIFIED, [], "forced", {}))
+    assert vt.cmd_canary(SimpleNamespace(), target=LocalShellTarget(tmp_path)) == vt.EXIT_CANARY
+
+
+def test_head_only_hash_would_be_caught(tmp_path, monkeypatch):
+    """A local hasher that read only the first 8 MiB would miss the flip: the canary fails."""
+    import hashlib  # noqa: PLC0415
+
+    def head_only(path):
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read(8 * 1024 * 1024)).hexdigest()
+    monkeypatch.setattr(vt.cv, "local_content_hash", head_only)
+    t = LocalShellTarget(tmp_path)
+    t.hash_override = None
+    ok, why = vt.run_canary(t)
+    assert not ok
+
+
+def test_local_root_guards(tmp_path):
+    d = tmp_path / "d"
+    d.mkdir()
+    os.symlink(d, tmp_path / "ln")
+    assert vt.local_root_problem(str(d)) is None
+    assert "symlink" in vt.local_root_problem(str(tmp_path / "ln"))
+    assert "missing" in vt.local_root_problem(str(tmp_path / "nope"))
+    mounts = tmp_path / "mounts"
+    mounts.write_text(f"/dev/x / ext4 rw 0 0\nnas:/v {tmp_path} nfs4 rw 0 0\n")
+    assert "network filesystem" in vt.local_root_problem(str(d), str(mounts))
 
 
 def test_canary_cleanup_refuses_foreign_path(tmp_path):

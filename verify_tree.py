@@ -137,18 +137,20 @@ def hash_local(root: str, rels) -> dict:
 # --------------------------------------------------------------------------
 
 def remote_script(nas_path: str) -> str:
-    """One ssh call, run on the NAS. Lists non-regular entries and regular files, hashes every
-    regular file, and reports find's exit status (non-zero when a sha256sum it ran failed; the
-    NAS shell has no pipefail, so the hash lines are NOT piped through sed). Listing lines are
-    tagged; a hash line is recognised by its own shape (64 hex, two spaces, name). Independently
-    of the status, every listed file must have exactly one hash line."""
+    """One ssh call, run on the NAS (BusyBox ash: no pipefail, no external printf). Three
+    sections, each closed by its own exit status, then END:
+        BEGIN_NONREG|  names of entries that are neither dir nor regular file   RC_NONREG|<rc>
+        BEGIN_FILE|    names of regular files                                   RC_FILE|<rc>
+        BEGIN_HASH|    `sha256sum` lines for every regular file                 RC_HASH|<rc>
+    Every name `find .` prints starts with "./", so no name can be mistaken for a marker. A
+    failed `cd` exits 97 before anything is listed (never hash the login dir instead)."""
     q = shlex.quote(nas_path)
     return (
-        f"cd {q} || {{ echo 'CDFAIL|'; exit 0; }}; "
-        "find . ! -type d ! -type f | sed 's/^/NONREG|/'; "
-        "find . -type f | sed 's/^/FILE|/'; "
-        "find . -type f -exec sha256sum {} +; "
-        "echo \"RC|$?\"; echo 'END|'"
+        f"cd {q} || {{ echo 'CDFAIL|'; exit 97; }}; "
+        "echo 'BEGIN_NONREG|'; find . ! -type d ! -type f -print; echo \"RC_NONREG|$?\"; "
+        "echo 'BEGIN_FILE|'; find . -type f -print; echo \"RC_FILE|$?\"; "
+        "echo 'BEGIN_HASH|'; find . -type f -exec sha256sum {} +; echo \"RC_HASH|$?\"; "
+        "echo 'END|'"
     )
 
 
@@ -160,55 +162,76 @@ class RemoteTree:
     complete: bool = False
 
 
+_SECTIONS = ("NONREG", "FILE", "HASH")
+
+
 def parse_remote(stdout: str, rc: int) -> RemoteTree:
-    """Parse remote_script() output. `complete` is True only if ssh rc==0, the script reached
-    END, sha256sum's pipeline status is 0, there is exactly one valid hash per listed file, and
-    no NONREG entry exists. Anything else leaves complete=False with a reason."""
+    """Whitelist parser for remote_script(). `complete` only if: ssh rc 0; the three sections
+    appear in order, each closed with RC 0; END is last; every FILE has exactly one hash line
+    and every hash line names a FILE; no NONREG entry; no line outside the grammar."""
     t = RemoteTree()
     if rc != 0:
         t.problems.append(("", f"SSH_RC:{rc}"))
+        if "CDFAIL|" in stdout.split("\n"):
+            t.problems.append(("", "NAS_PATH_MISSING"))
         return t
+    lines = stdout.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    expect = 0            # index into _SECTIONS of the next BEGIN we accept
+    section = None
+    closed = []
     saw_end = False
-    hash_rc = None
-    for line in stdout.split("\n"):
-        if not line:
+    for line in lines:
+        if saw_end:
+            t.problems.append((line[:200], "AFTER_END"))
             continue
-        if line.startswith("\\"):
-            t.problems.append((line[:200], "ESCAPED_HASH_LINE"))
+        if line == "CDFAIL|":
+            t.problems.append(("", "NAS_PATH_MISSING"))
             continue
-        hm = _HASH_LINE_RE.match(line)
-        if hm:
+        if section is None:
+            if expect < 3 and line == f"BEGIN_{_SECTIONS[expect]}|":
+                section = _SECTIONS[expect]
+            elif line == "END|" and expect == 3:
+                saw_end = True
+            else:
+                t.problems.append((line[:200], "UNEXPECTED_LINE"))
+            continue
+        if line.startswith(f"RC_{section}|"):
+            val = line.partition("|")[2]
+            if val != "0":
+                t.problems.append(("", f"RC_{section}:{val}"))
+            closed.append(section)
+            section = None
+            expect += 1
+            continue
+        if section == "NONREG":
+            t.problems.append((line, "NON_REGULAR_DEST"))
+        elif section == "FILE":
+            if not line.startswith("./"):
+                t.problems.append((line[:200], "BAD_NAME_LINE"))
+                continue
+            bad = name_problem(line)
+            if bad:
+                t.problems.append((line, bad))
+            t.files.add(line)
+        else:  # HASH
+            if line.startswith("\\"):
+                t.problems.append((line[:200], "ESCAPED_HASH_LINE"))
+                continue
+            hm = _HASH_LINE_RE.match(line)
+            if not hm:
+                t.problems.append((line[:200], "BAD_HASH_LINE"))
+                continue
             digest, name = hm.group(1), hm.group(2)
             if name in t.hashes:
                 t.problems.append((name, "DUPLICATE_HASH_LINE"))
             else:
                 t.hashes[name] = digest
-            continue
-        tag, _, rest = line.partition("|")
-        if tag == "CDFAIL":
-            t.problems.append(("", "NAS_PATH_MISSING"))
-        elif tag == "NONREG":
-            t.problems.append((rest, "NON_REGULAR_DEST"))
-        elif tag == "FILE":
-            bad = name_problem(rest)
-            if bad:
-                t.problems.append((rest, bad))
-            t.files.add(rest)
-        elif tag == "RC":
-            try:
-                hash_rc = int(rest)
-            except ValueError:
-                t.problems.append(("", f"BAD_RC_LINE:{rest}"))
-        elif tag == "END":
-            saw_end = True
-        else:
-            t.problems.append((line[:200], "UNTAGGED_LINE"))
+    if closed != list(_SECTIONS):
+        t.problems.append(("", f"SECTIONS_INCOMPLETE:{','.join(closed) or 'none'}"))
     if not saw_end:
         t.problems.append(("", "NO_END_MARKER"))
-    if hash_rc is None:
-        t.problems.append(("", "NO_RC_LINE"))
-    elif hash_rc != 0:
-        t.problems.append(("", f"FIND_EXEC_RC:{hash_rc}"))
     for rel in sorted(t.files - set(t.hashes)):
         t.problems.append((rel, V_UNREADABLE_DEST))
     for rel in sorted(set(t.hashes) - t.files):
@@ -320,11 +343,17 @@ _CANARY_PARA = (
 )
 
 
+CANARY_CHUNK = 4 * 1024 * 1024     # crosshost_verify.HASH_READ_BUFFER
+CANARY_SIZE = 2 * CANARY_CHUNK + 100_000
+
+
 def canary_texts() -> tuple[bytes, bytes]:
-    """(original, mutated): ~200 KB of text; the mutated copy has exactly ONE lowercase `m`
-    (the first one at or after byte 100,000) changed to `M`. Same length."""
-    original = (_CANARY_PARA * (200_000 // len(_CANARY_PARA) + 1)).encode("ascii")
-    i = original.index(b"m", 100_000)
+    """(original, mutated): ~8.5 MB of book text; the mutated copy has exactly ONE lowercase
+    `m` changed to `M`, placed in the LAST, partial 4 MiB read chunk (past 2 x 4 MiB). A hash
+    that reads only a head, a sample, or whole chunks would call the pair equal (Fable #6)."""
+    reps = CANARY_SIZE // len(_CANARY_PARA) + 1
+    original = (_CANARY_PARA * reps).encode("ascii")[:CANARY_SIZE]
+    i = original.index(b"m", 2 * CANARY_CHUNK + 1)
     mutated = original[:i] + b"M" + original[i + 1:]
     assert len(mutated) == len(original) and sum(a != b for a, b in zip(original, mutated)) == 1
     return original, mutated
@@ -447,7 +476,38 @@ def _alarm(text: str) -> None:
 
 def _connect():
     import psycopg  # noqa: PLC0415
-    return psycopg.connect(cv.get_dsn(), connect_timeout=15)
+    return psycopg.connect(cv.get_dsn(), connect_timeout=10)
+
+
+_NETWORK_FS = {"nfs", "nfs4", "cifs", "smb3", "smbfs", "fuse.sshfs", "fuse.rclone", "9p", "afs", "ceph", "glusterfs"}
+
+
+def local_root_problem(path: str, mounts_file: str = "/proc/mounts") -> Optional[str]:
+    """Refuse a --local that is not a plain local dir: a symlink, a missing dir, anything under
+    /mnt/nas, or a network filesystem. A NAS path compared against itself reads VERIFIED and
+    the delete would remove the only copy (Fable #7; daily.sh warns of the same aliasing)."""
+    if os.path.islink(path):
+        return "local path is a symlink"
+    if not os.path.isdir(path):
+        return "local dir missing"
+    real = os.path.realpath(path)
+    if real == "/mnt/nas" or real.startswith("/mnt/nas/"):
+        return "local path is under /mnt/nas"
+    best, fstype = "", ""
+    try:
+        with open(mounts_file, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) < 3:
+                    continue
+                mp = parts[1].replace("\\040", " ")
+                if (real == mp or real.startswith(mp.rstrip("/") + "/")) and len(mp) > len(best):
+                    best, fstype = mp, parts[2]
+    except OSError as e:
+        return f"cannot read {mounts_file}: {e.strerror}"
+    if fstype in _NETWORK_FS:
+        return f"local path is on a network filesystem ({fstype} at {best})"
+    return None
 
 
 def _nas_path_ok(p: str) -> bool:
@@ -455,10 +515,12 @@ def _nas_path_ok(p: str) -> bool:
 
 
 def cmd_verify(args, target=None, connect=_connect) -> int:
+    bad = local_root_problem(args.local)
+    if bad:
+        print(f"verify_tree: refusing --local {args.local!r}: {bad}", file=sys.stderr)
+        print(f"VERDICT={T_NOT_VERIFIED}\nREASON={bad}")
+        return EXIT_USAGE if "missing" not in bad else EXIT_NOT_VERIFIED
     local_root = os.path.realpath(args.local)
-    if not os.path.isdir(local_root):
-        print(f"VERDICT={T_NOT_VERIFIED}\nREASON=local dir missing: {local_root}")
-        return EXIT_NOT_VERIFIED
     if not _nas_path_ok(args.nas_path):
         print(f"verify_tree: --nas-path must be an absolute /share/... path: {args.nas_path!r}", file=sys.stderr)
         return EXIT_USAGE
@@ -531,11 +593,15 @@ def main(argv=None) -> int:
     m.add_argument("--run-id", type=int, required=True)
     sub.add_parser("canary")
     args = ap.parse_args(argv)
-    if args.cmd == "verify":
-        return cmd_verify(args)
-    if args.cmd == "mark-deleted":
-        return cmd_mark_deleted(args)
-    return cmd_canary(args)
+    try:
+        if args.cmd == "verify":
+            return cmd_verify(args)
+        if args.cmd == "mark-deleted":
+            return cmd_mark_deleted(args)
+        return cmd_canary(args)
+    except Exception as e:  # noqa: BLE001 -- any crash is NOT_VERIFIED, never a silent pass
+        print(f"VERDICT={T_NOT_VERIFIED}\nREASON=verify_tree crashed: {type(e).__name__}: {e}")
+        return EXIT_NOT_VERIFIED
 
 
 if __name__ == "__main__":

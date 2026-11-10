@@ -9,6 +9,9 @@
 
 BEGIN;
 
+-- Never queue behind a long writer on integrity_checks (crosshost/dedup runs).
+SET LOCAL lock_timeout = '5s';
+
 ALTER TABLE diskaudit.integrity_checks DROP CONSTRAINT IF EXISTS integrity_checks_verdict_check;
 ALTER TABLE diskaudit.integrity_checks ADD CONSTRAINT integrity_checks_verdict_check CHECK (
     verdict IN ('match', 'mismatch', 'missing_dest', 'unreadable_source', 'unreadable_dest',
