@@ -398,10 +398,14 @@ def run_canary(target) -> tuple[bool, str]:
 
 
 def _remove_canary_dir(target, scratch_dir: str, nas_dir: str) -> None:
+    """Remove ONLY this run's canary file and its (then empty) dir. No recursive delete
+    (a recursive rm is a forbidden primitive in HavnVard, tests/test_crosshost_verify.py): the one
+    named file, then rmdir, which fails safely if anything else is in the dir."""
     prefix = f"{scratch_dir}/verify_tree_canary_"
     if not nas_dir.startswith(prefix) or "/" in nas_dir[len(prefix):] or ".." in nas_dir:
         raise ValueError(f"refusing to remove {nas_dir!r}")
-    target.ssh(f"rm -rf {shlex.quote(nas_dir)}")
+    canary_file = shlex.quote(f"{nas_dir}/book.txt")
+    target.ssh(f"rm -f {canary_file}; rmdir {shlex.quote(nas_dir)}")
 
 
 # --------------------------------------------------------------------------
@@ -479,7 +483,8 @@ def _connect():
     return psycopg.connect(cv.get_dsn(), connect_timeout=10)
 
 
-_NETWORK_FS = {"nfs", "nfs4", "cifs", "smb3", "smbfs", "fuse.sshfs", "fuse.rclone", "9p", "afs", "ceph", "glusterfs"}
+_NETWORK_FS = {"nfs", "nfs4", "cifs", "smb3", "smbfs", "fuse.sshfs", "fuse.rclone", "9p", "afs", "ceph",
+               "glusterfs", "autofs"}
 
 
 def local_root_problem(path: str, mounts_file: str = "/proc/mounts") -> Optional[str]:
@@ -501,7 +506,10 @@ def local_root_problem(path: str, mounts_file: str = "/proc/mounts") -> Optional
                 if len(parts) < 3:
                     continue
                 mp = parts[1].replace("\\040", " ")
-                if (real == mp or real.startswith(mp.rstrip("/") + "/")) and len(mp) > len(best):
+                # >= : on a tie the LATER line wins, because a later mount on the same point
+                # overlays the earlier one. Live 20261110: /mnt/nas-bkup-spark is listed as
+                # `autofs` first, then the real `nfs` mount on top (Opus diff review H1).
+                if (real == mp or real.startswith(mp.rstrip("/") + "/")) and len(mp) >= len(best):
                     best, fstype = mp, parts[2]
     except OSError as e:
         return f"cannot read {mounts_file}: {e.strerror}"

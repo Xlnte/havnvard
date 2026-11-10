@@ -256,6 +256,54 @@ def test_local_root_guards(tmp_path):
     assert "network filesystem" in vt.local_root_problem(str(d), str(mounts))
 
 
+def test_local_root_guard_autofs_then_nfs_same_mountpoint(tmp_path):
+    """Opus diff review H1: the live /proc/mounts lists /mnt/nas-bkup-spark twice, `autofs`
+    first and the real `nfs` mount on top. The longest-prefix match must take the LAST line
+    on a tie, or the NFS-mounted NAS share passes as a local dir and is compared to itself."""
+    d = tmp_path / "share"
+    d.mkdir()
+    mounts = tmp_path / "mounts"
+    mounts.write_text(
+        "/dev/nvme0n1p2 / ext4 rw 0 0\n"
+        f"systemd-1 {d} autofs rw,relatime,fd=70 0 0\n"
+        f"100.104.77.25:/bkup_spark {d} nfs rw,vers=3 0 0\n")
+    assert "nfs" in vt.local_root_problem(str(d), str(mounts))
+    only_autofs = tmp_path / "mounts2"
+    only_autofs.write_text(f"/dev/x / ext4 rw 0 0\nsystemd-1 {d} autofs rw 0 0\n")
+    assert "autofs" in vt.local_root_problem(str(d), str(only_autofs))
+
+
+def test_local_fifo_is_not_verified_and_never_opened(pair):
+    """Fable #2: a FIFO is refused by the lstat gate BEFORE any open(); open() on a FIFO with
+    no writer would block forever."""
+    import time  # noqa: PLC0415
+    local, nas, t = pair
+    _tree(local, {"a": b"1"})
+    _tree(nas, {"a": b"1"})
+    os.mkfifo(f"{local}/pipe")
+    t0 = time.monotonic()
+    verdict, results, _, _ = vt.verify_pair(local, nas, t)
+    assert time.monotonic() - t0 < 5
+    assert verdict == vt.T_NOT_VERIFIED
+    assert any(r.rel == "./pipe" and "NON_REGULAR" in r.notes for r in results)
+
+
+def test_canary_cleanup_has_no_recursive_delete(tmp_path):
+    """The canary cleanup removes one named file then rmdirs; it never issues rm -rf."""
+    t = LocalShellTarget(tmp_path)
+    nas_dir = f"{t.scratch_dir}/verify_tree_canary_1_2"
+    os.makedirs(nas_dir)
+    open(f"{nas_dir}/book.txt", "w").close()
+    vt._remove_canary_dir(t, t.scratch_dir, nas_dir)
+    assert not os.path.exists(nas_dir)
+    assert all("rm -rf" not in c for c, _ in t.calls)
+    # a foreign file in the canary dir is never removed: rmdir fails, the file stays
+    os.makedirs(nas_dir)
+    open(f"{nas_dir}/other", "w").close()
+    vt._remove_canary_dir(t, t.scratch_dir, nas_dir)
+    assert os.path.exists(f"{nas_dir}/other")
+
+
 def test_canary_cleanup_refuses_foreign_path(tmp_path):
     t = LocalShellTarget(tmp_path)
     with pytest.raises(ValueError):
