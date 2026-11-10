@@ -435,10 +435,10 @@ _ALLOWED_DELETE_SITES = {
     # only ever names this tool's own scratch files (<batch>.paths/.hashes/.hasherrs, hash_stat_batch.sh)
     # under the scratch dir; local temp files live in TemporaryDirectory (no os.remove at all).
     ("nas_trigkey_dedup.py", 'r = target.ssh("rm -f " + " ".join(remote_paths))'),
-    # verify_tree.py (1.5.0, INFRA-538): the canary's OWN 8.5 MB book.txt in
+    # verify_tree.py (INFRA-538): the canary's OWN six 8.5 MB book_N.txt copies (1.6.0) in
     # <NAS scratch>/verify_tree_canary_<pid>_<ts>/ (prefix-guarded in _remove_canary_dir),
     # then `rmdir` of that dir. Never a scanned path; no recursive delete.
-    ("verify_tree.py", 'target.ssh(f"rm -f {canary_file}; rmdir {shlex.quote(nas_dir)}")'),
+    ("verify_tree.py", 'target.ssh(f"rm -f {files}; rmdir {shlex.quote(nas_dir)}")'),
 }
 
 _DELETE_CALL_PATTERN = re.compile(r"os\.remove\(|os\.unlink\(|\brm\s+-f\b")

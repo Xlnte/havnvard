@@ -203,6 +203,63 @@ def test_canary_passes_on_honest_target(tmp_path):
     assert os.listdir(t.scratch_dir) == []          # NAS canary dir removed
 
 
+@pytest.mark.parametrize("idx", range(6))
+def test_canary_5_plus_1_any_position(tmp_path, idx):
+    """PAF 20261110: 5 identical copies + 1 m->M copy. Whichever of the 6 holds the change,
+    only that file reads different and the run passes."""
+    ok, why = vt.run_canary(LocalShellTarget(tmp_path), planted_index=idx)
+    assert ok, why
+    assert f"only book_{idx + 1}.txt different" in why
+
+
+def test_canary_fails_if_every_file_reads_different(tmp_path, monkeypatch):
+    """A broken path that called ALL 6 files different would still say MISMATCH for the tree.
+    The 5+1 canary requires exactly the planted file different, so it fails."""
+    real = vt.verify_pair
+
+    def all_differ(local, nas, target):
+        verdict, results, reason, stats = real(local, nas, target)
+        if verdict == vt.T_MISMATCH:
+            results = [vt.FileResult(r.rel, r.size_bytes, r.sha_source, r.sha_dest, vt.V_MISMATCH) for r in results]
+        return verdict, results, reason, stats
+    monkeypatch.setattr(vt, "verify_pair", all_differ)
+    ok, why = vt.run_canary(LocalShellTarget(tmp_path), planted_index=2)
+    assert not ok and "5 copies + 1" in why
+
+
+def test_canary_fails_if_wrong_file_reads_different(tmp_path, monkeypatch):
+    real = vt.verify_pair
+
+    def swap(local, nas, target):
+        verdict, results, reason, stats = real(local, nas, target)
+        out = []
+        for r in results:
+            v = {vt.V_MATCH: vt.V_MISMATCH, vt.V_MISMATCH: vt.V_MATCH}[r.verdict] if verdict == vt.T_MISMATCH and r.rel in ("./book_1.txt", "./book_2.txt") else r.verdict
+            out.append(vt.FileResult(r.rel, r.size_bytes, r.sha_source, r.sha_dest, v))
+        return verdict, out, reason, stats
+    monkeypatch.setattr(vt, "verify_pair", swap)
+    ok, why = vt.run_canary(LocalShellTarget(tmp_path), planted_index=0)
+    assert not ok
+
+
+def test_canary_fails_if_a_copy_is_missing_on_nas(tmp_path):
+    """The NAS listing drops one of the 6 copies: neither check can pass."""
+    t = LocalShellTarget(tmp_path)
+    t.hash_override = lambda out: "\n".join(l for l in out.split("\n") if "book_4.txt" not in l)
+    ok, why = vt.run_canary(t, planted_index=0)
+    assert not ok
+
+
+def test_canary_fails_when_nas_cp_fails(tmp_path):
+    t = LocalShellTarget(tmp_path)
+    real = t.ssh
+    t.ssh = lambda cmd, timeout_sec=None: (subprocess.CompletedProcess([], 1, "", "no cp")
+                                           if " cp " in f" {cmd}" else real(cmd, timeout_sec))
+    ok, why = vt.run_canary(t)
+    assert not ok and "cp rc=1" in why
+    assert os.listdir(t.scratch_dir) == []          # still cleaned up
+
+
 def test_canary_fails_when_nas_hash_ignores_content(tmp_path):
     """A broken NAS path that always reports the ORIGINAL's digest would let m->M read as a
     match. The canary must catch it."""
@@ -293,7 +350,8 @@ def test_canary_cleanup_has_no_recursive_delete(tmp_path):
     t = LocalShellTarget(tmp_path)
     nas_dir = f"{t.scratch_dir}/verify_tree_canary_1_2"
     os.makedirs(nas_dir)
-    open(f"{nas_dir}/book.txt", "w").close()
+    for n in vt.CANARY_NAMES:
+        open(f"{nas_dir}/{n}", "w").close()
     vt._remove_canary_dir(t, t.scratch_dir, nas_dir)
     assert not os.path.exists(nas_dir)
     assert all("rm -rf" not in c for c, _ in t.calls)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""verify_tree.py -- HavnVard 1.5.0 (Plane INFRA-538): full-byte proof before a copy is deleted.
+"""verify_tree.py -- HavnVard 1.6.0 (Plane INFRA-538; 5+1 canary 20261110): full-byte proof before a copy is deleted.
 
 PAF rule (20261109 23:39): no copy of a file is deleted unless 100% of its bytes are proven
 equal to the copy that is kept. Size, mtime, or a partial hash never count. A one-character
@@ -13,7 +13,7 @@ change (one lowercase `m` -> capital `M` in a book-sized text file) must read as
     verify_tree.py mark-deleted --run-id N
         Link a deletion to the VERIFIED run that allowed it (sets deleted_at).
     verify_tree.py canary
-        Run only the m->M canary (both code paths: local hash and NAS hash).
+        Run only the canary: 5 identical copies + 1 m->M copy must read as exactly that one file different; 6 identical copies must all read equal.
 
 Exit codes: 0 VERIFIED; 3 MISMATCH or NOT_VERIFIED (never delete); 4 canary failed (the
 check itself is broken: alarm, never delete); 2 usage error.
@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import secrets
 import shlex
 import stat
 import sys
@@ -39,7 +40,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import crosshost_verify as cv  # noqa: E402  (read-only reuse: local_content_hash, _NasTarget, get_dsn)
 from nas_dedup_core import classify_path  # noqa: E402
 
-__version__ = "1.5.0"
+__version__ = "1.6.0"
 
 EXIT_VERIFIED = 0
 EXIT_USAGE = 2
@@ -359,53 +360,91 @@ def canary_texts() -> tuple[bytes, bytes]:
     return original, mutated
 
 
-def run_canary(target) -> tuple[bool, str]:
-    """True only if the real comparison path says MISMATCH for the m->M pair AND VERIFIED for
-    the identical pair (positive control). The original goes to the NAS; the local side holds
-    either the mutated or the original copy, with the same name and mtime."""
+CANARY_COPIES = 6                  # PAF 20261110: 5 identical copies + 1 with the m->M change
+CANARY_NAMES = tuple(f"book_{n}.txt" for n in range(1, CANARY_COPIES + 1))
+
+
+def _canary_mutated_ok(verdict: str, results: list, planted: str) -> tuple[bool, str]:
+    """The 5+1 set must read MISMATCH with EXACTLY one differing file, the planted one, and
+    the other 5 must each read MATCH. A path that calls every file different, or the wrong
+    file different, fails."""
+    by = {r.rel: r.verdict for r in results}
+    want = {f"./{n}": (V_MISMATCH if n == planted else V_MATCH) for n in CANARY_NAMES}
+    if verdict != T_MISMATCH or by != want:
+        got = ", ".join(f"{k[2:]}={v}" for k, v in sorted(by.items())) or "no per-file results"
+        return False, f"tree={verdict}; per file: {got}"
+    return True, ""
+
+
+def _canary_same_ok(verdict: str, results: list) -> tuple[bool, str]:
+    """6 identical copies must read VERIFIED with all 6 files MATCH."""
+    by = {r.rel: r.verdict for r in results}
+    if verdict != T_VERIFIED or by != {f"./{n}": V_MATCH for n in CANARY_NAMES}:
+        got = ", ".join(f"{k[2:]}={v}" for k, v in sorted(by.items())) or "no per-file results"
+        return False, f"tree={verdict}; per file: {got}"
+    return True, ""
+
+
+def run_canary(target, planted_index: Optional[int] = None) -> tuple[bool, str]:
+    """PAF's m->M test, 5+1 form (20261110). The NAS gets 6 copies of the original book text.
+    Check 1: the local side holds 5 identical copies + 1 copy with one m->M, at a position that
+    changes every run; the real comparison path must call exactly that one file different and
+    the other 5 equal. Check 2 (positive control): 6 identical local copies must all read equal.
+    Same names and mtime on every copy, so only the bytes can tell them apart."""
     original, mutated = canary_texts()
+    idx = secrets.randbelow(CANARY_COPIES) if planted_index is None else planted_index
+    planted = CANARY_NAMES[idx]
     tag = f"verify_tree_canary_{os.getpid()}_{int(time.time())}"
     nas_dir = f"{target.scratch_dir}/{tag}"
     with tempfile.TemporaryDirectory(prefix="verify_tree_canary_") as tmp:
-        src = os.path.join(tmp, "book.txt")
+        src = os.path.join(tmp, CANARY_NAMES[0])
         with open(src, "wb") as f:
             f.write(original)
         mk = target.ssh(f"mkdir -p {shlex.quote(nas_dir)}")
         if mk.returncode != 0:
             return False, f"canary: NAS mkdir rc={mk.returncode}"
         try:
-            put = target.scp_put(src, f"{nas_dir}/book.txt")
+            put = target.scp_put(src, f"{nas_dir}/{CANARY_NAMES[0]}")
             if put.returncode != 0:
                 return False, f"canary: scp_put rc={put.returncode}"
+            cps = " && ".join(f"cp {CANARY_NAMES[0]} {n}" for n in CANARY_NAMES[1:])
+            cp = target.ssh(f"cd {shlex.quote(nas_dir)} && {cps}")
+            if cp.returncode != 0:
+                return False, f"canary: NAS cp rc={cp.returncode}"
             mut_dir = os.path.join(tmp, "mutated")
             same_dir = os.path.join(tmp, "same")
             os.makedirs(mut_dir)
             os.makedirs(same_dir)
-            for d, data in ((mut_dir, mutated), (same_dir, original)):
-                p = os.path.join(d, "book.txt")
-                with open(p, "wb") as f:
-                    f.write(data)
-                os.utime(p, (1_700_000_000, 1_700_000_000))
-            v_mut, _, why_mut, _ = verify_pair(mut_dir, nas_dir, target)
-            v_same, _, why_same, _ = verify_pair(same_dir, nas_dir, target)
+            for d, plant in ((mut_dir, True), (same_dir, False)):
+                for n in CANARY_NAMES:
+                    p = os.path.join(d, n)
+                    with open(p, "wb") as f:
+                        f.write(mutated if (plant and n == planted) else original)
+                    os.utime(p, (1_700_000_000, 1_700_000_000))
+            v_mut, r_mut, why_mut, _ = verify_pair(mut_dir, nas_dir, target)
+            v_same, r_same, why_same, _ = verify_pair(same_dir, nas_dir, target)
         finally:
             _remove_canary_dir(target, target.scratch_dir, nas_dir)
-    if v_mut != T_MISMATCH:
-        return False, f"canary: m->M pair gave {v_mut} ({why_mut}); the check cannot see a 1-byte change"
-    if v_same != T_VERIFIED:
-        return False, f"canary: identical pair gave {v_same} ({why_same}); the NAS hash path is broken"
-    return True, "canary ok: m->M = MISMATCH, identical = VERIFIED"
+    ok, got = _canary_mutated_ok(v_mut, r_mut, planted)
+    if not ok:
+        return False, (f"canary: 5 copies + 1 m->M (in {planted}) did not read as exactly that one "
+                       f"file different ({got}; {why_mut}); the check cannot be trusted")
+    ok, got = _canary_same_ok(v_same, r_same)
+    if not ok:
+        return False, f"canary: 6 identical copies did not all read equal ({got}; {why_same}); the NAS hash path is broken"
+    return True, (f"canary ok: 5 copies + 1 m->M = only {planted} different, other 5 equal; "
+                  f"6 identical = all equal")
 
 
 def _remove_canary_dir(target, scratch_dir: str, nas_dir: str) -> None:
-    """Remove ONLY this run's canary file and its (then empty) dir. No recursive delete
-    (a recursive rm is a forbidden primitive in HavnVard, tests/test_crosshost_verify.py): the one
-    named file, then rmdir, which fails safely if anything else is in the dir."""
+    """Remove ONLY this run's canary files and their (then empty) dir. No recursive delete
+    (a recursive rm is a forbidden primitive in HavnVard, tests/test_crosshost_verify.py): the
+    six named files, then rmdir, which fails safely if anything else is in the dir."""
     prefix = f"{scratch_dir}/verify_tree_canary_"
     if not nas_dir.startswith(prefix) or "/" in nas_dir[len(prefix):] or ".." in nas_dir:
         raise ValueError(f"refusing to remove {nas_dir!r}")
-    canary_file = shlex.quote(f"{nas_dir}/book.txt")
-    target.ssh(f"rm -f {canary_file}; rmdir {shlex.quote(nas_dir)}")
+    files = " ".join(shlex.quote(f"{nas_dir}/{n}") for n in CANARY_NAMES)
+    target.ssh(f"rm -f {files}; rmdir {shlex.quote(nas_dir)}")
 
 
 # --------------------------------------------------------------------------
