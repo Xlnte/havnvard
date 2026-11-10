@@ -1,0 +1,316 @@
+"""verify_tree.py (HavnVard 1.5.0, INFRA-538): full-byte proof before deletion.
+
+PAF's test case first: one lowercase `m` changed to capital `M` in a book-sized text file must
+read as DIFFERENT, with size, name and mtime all equal. The "NAS" here is a LocalShellTarget:
+the REAL remote_script() runs under `sh` (dash, the same POSIX family as the NAS BusyBox ash)
+against a tmp dir, so the production command text and parser are exercised end to end.
+"""
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import uuid
+from types import SimpleNamespace
+
+import psycopg
+import pytest
+
+import verify_tree as vt
+from conftest import connect_retry, rewrite
+
+
+class LocalShellTarget:
+    """ssh -> `sh -c` locally; scp_put -> copy. Knobs: hash_override(text)->text rewrites the
+    remote stdout (e.g. a broken NAS that ignores content); ssh_rc forces an ssh failure."""
+
+    def __init__(self, tmp_path):
+        self.scratch_dir = str(tmp_path / "nas_scratch")
+        os.makedirs(self.scratch_dir, exist_ok=True)
+        self.hash_override = None
+        self.ssh_rc = None
+        self.calls = []
+
+    def ssh(self, cmd, timeout_sec=None):
+        self.calls.append((cmd, timeout_sec))
+        if self.ssh_rc is not None and "sha256sum" in cmd:
+            return subprocess.CompletedProcess([], self.ssh_rc, stdout="", stderr="forced")
+        r = subprocess.run(["sh", "-c", cmd], capture_output=True, text=True, timeout=60)
+        out = r.stdout
+        if self.hash_override and "sha256sum" in cmd:
+            out = self.hash_override(out)
+        return subprocess.CompletedProcess([], r.returncode, stdout=out, stderr=r.stderr)
+
+    def scp_put(self, local_path, remote_path, timeout_sec=None):
+        shutil.copy2(local_path, remote_path)
+        return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+
+def _tree(root, files: dict):
+    for rel, data in files.items():
+        p = os.path.join(root, rel)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "wb") as f:
+            f.write(data)
+        os.utime(p, (1_700_000_000, 1_700_000_000))
+    return str(root)
+
+
+@pytest.fixture
+def pair(tmp_path):
+    return str(tmp_path / "local"), str(tmp_path / "nas"), LocalShellTarget(tmp_path)
+
+
+# ---------------------------------------------------------------- PAF's m -> M case
+
+def test_m_to_M_is_different_with_equal_size_name_mtime(pair):
+    local, nas, t = pair
+    original, mutated = vt.canary_texts()
+    assert len(original) >= 190_000 and len(original) == len(mutated)
+    assert sum(a != b for a, b in zip(original, mutated)) == 1
+    _tree(nas, {"book.txt": original})
+    _tree(local, {"book.txt": mutated})
+    st_l, st_n = os.stat(f"{local}/book.txt"), os.stat(f"{nas}/book.txt")
+    assert (st_l.st_size, int(st_l.st_mtime)) == (st_n.st_size, int(st_n.st_mtime))
+    verdict, results, reason, _ = vt.verify_pair(local, nas, t)
+    assert verdict == vt.T_MISMATCH, reason
+    assert [r.verdict for r in results] == [vt.V_MISMATCH]
+
+
+def test_identical_trees_verify(pair):
+    local, nas, t = pair
+    files = {"a.sql.gz": os.urandom(5000), "sub/b.dump": b"x" * 10, "space name.txt": b"hi"}
+    _tree(local, files)
+    _tree(nas, files)
+    verdict, results, reason, stats = vt.verify_pair(local, nas, t)
+    assert verdict == vt.T_VERIFIED, reason
+    assert stats["files"] == 3 and {r.verdict for r in results} == {vt.V_MATCH}
+
+
+# ---------------------------------------------------------------- incomplete = NOT_VERIFIED
+
+def test_missing_and_extra_files(pair):
+    local, nas, t = pair
+    _tree(local, {"a": b"1", "b": b"2"})
+    _tree(nas, {"a": b"1", "c": b"3"})
+    verdict, results, _, _ = vt.verify_pair(local, nas, t)
+    assert verdict == vt.T_NOT_VERIFIED
+    by = {r.rel: r.verdict for r in results}
+    assert by["./b"] == vt.V_MISSING_DEST and by["./c"] == vt.V_EXTRA_DEST and by["./a"] == vt.V_MATCH
+
+
+def test_empty_tree_is_not_verified(pair):
+    local, nas, t = pair
+    os.makedirs(local)
+    os.makedirs(nas)
+    assert vt.verify_pair(local, nas, t)[0] == vt.T_NOT_VERIFIED
+
+
+def test_missing_nas_dir_is_not_verified(pair):
+    local, nas, t = pair
+    _tree(local, {"a": b"1"})
+    verdict, _, reason, _ = vt.verify_pair(local, nas, t)
+    assert verdict == vt.T_NOT_VERIFIED and "NAS_PATH_MISSING" in reason
+
+
+def test_local_symlink_and_unsafe_name_block(pair):
+    local, nas, t = pair
+    _tree(local, {"a": b"1", "bad\\name": b"2"})
+    _tree(nas, {"a": b"1", "bad\\name": b"2"})
+    os.symlink("a", f"{local}/link")
+    verdict, results, _, _ = vt.verify_pair(local, nas, t)
+    assert verdict == vt.T_NOT_VERIFIED
+    notes = " ".join(r.notes for r in results)
+    assert "NON_REGULAR" in notes and "BACKSLASH_PATH" in notes
+
+
+def test_unreadable_local_file(pair):
+    if os.geteuid() == 0:
+        pytest.skip("root reads mode-000 files")
+    local, nas, t = pair
+    _tree(local, {"a": b"1"})
+    _tree(nas, {"a": b"1"})
+    os.chmod(f"{local}/a", 0)
+    try:
+        verdict, results, _, _ = vt.verify_pair(local, nas, t)
+    finally:
+        os.chmod(f"{local}/a", 0o644)
+    assert verdict == vt.T_NOT_VERIFIED and results[0].verdict == vt.V_UNREADABLE_SOURCE
+
+
+def test_ssh_failure_is_not_verified(pair):
+    local, nas, t = pair
+    _tree(local, {"a": b"1"})
+    _tree(nas, {"a": b"1"})
+    t.ssh_rc = 124
+    verdict, _, reason, _ = vt.verify_pair(local, nas, t)
+    assert verdict == vt.T_NOT_VERIFIED and "SSH_RC:124" in reason
+
+
+# ---------------------------------------------------------------- parser
+
+SHA = "a" * 64
+
+
+@pytest.mark.parametrize("out,why", [
+    (f"FILE|./a\n{SHA}  ./a\nRC|0\n", "NO_END_MARKER"),
+    (f"FILE|./a\n{SHA}  ./a\nEND|\n", "NO_RC_LINE"),
+    (f"FILE|./a\n{SHA}  ./a\nRC|1\nEND|\n", "FIND_EXEC_RC:1"),
+    ("FILE|./a\nRC|0\nEND|\n", vt.V_UNREADABLE_DEST),
+    (f"FILE|./a\n\\{SHA}  ./a\\\\b\nRC|0\nEND|\n", "ESCAPED_HASH_LINE"),
+    (f"FILE|./a\n{SHA}  ./a\n{SHA}  ./a\nRC|0\nEND|\n", "DUPLICATE_HASH_LINE"),
+    (f"NONREG|./lnk\nFILE|./a\n{SHA}  ./a\nRC|0\nEND|\n", "NON_REGULAR_DEST"),
+    (f"FILE|./a\n{SHA}  ./a\n{SHA}  ./b\nRC|0\nEND|\n", "HASH_WITHOUT_FILE"),
+    (f"FILE|./a\n{SHA}  ./a\ngarbage\nRC|0\nEND|\n", "UNTAGGED_LINE"),
+])
+def test_parse_remote_incomplete(out, why):
+    t = vt.parse_remote(out, 0)
+    assert not t.complete and why in {w for _, w in t.problems}
+
+
+def test_parse_remote_complete():
+    t = vt.parse_remote(f"FILE|./a b\n{SHA}  ./a b\nRC|0\nEND|\n", 0)
+    assert t.complete and t.hashes == {"./a b": SHA}
+
+
+def test_nas_timeout_scales():
+    assert vt.nas_timeout(0) == 600
+    assert vt.nas_timeout(13_000_000_000) == 1301
+
+
+# ---------------------------------------------------------------- canary
+
+def test_canary_passes_on_honest_target(tmp_path):
+    t = LocalShellTarget(tmp_path)
+    ok, why = vt.run_canary(t)
+    assert ok, why
+    assert os.listdir(t.scratch_dir) == []          # NAS canary dir removed
+
+
+def test_canary_fails_when_nas_hash_ignores_content(tmp_path):
+    """A broken NAS path that always reports the ORIGINAL's digest would let m->M read as a
+    match. The canary must catch it."""
+    original, _ = vt.canary_texts()
+    import hashlib  # noqa: PLC0415
+    fixed = hashlib.sha256(vt.canary_texts()[1]).hexdigest()   # always report the MUTATED digest
+    t = LocalShellTarget(tmp_path)
+    t.hash_override = lambda out: "\n".join(
+        (fixed + l[64:]) if len(l) > 66 and l[64:66] == "  " else l for l in out.split("\n"))
+    ok, why = vt.run_canary(t)
+    assert not ok and "m->M" in why
+
+
+def test_canary_fails_when_nas_always_differs(tmp_path):
+    t = LocalShellTarget(tmp_path)
+    t.hash_override = lambda out: out.replace("  ./", "  ./zz")    # names never line up
+    ok, why = vt.run_canary(t)
+    assert not ok
+
+
+def test_canary_cleanup_refuses_foreign_path(tmp_path):
+    t = LocalShellTarget(tmp_path)
+    with pytest.raises(ValueError):
+        vt._remove_canary_dir(t, t.scratch_dir, t.scratch_dir + "/../etc")
+    with pytest.raises(ValueError):
+        vt._remove_canary_dir(t, t.scratch_dir, "/share/other/verify_tree_canary_1")
+
+
+# ---------------------------------------------------------------- CLI + DB (throwaway schema)
+
+@pytest.fixture(scope="module")
+def tv_schema():
+    schema = "diskaudit_t_tv" + uuid.uuid4().hex[:8]
+    try:
+        admin = connect_retry(autocommit=True)
+    except psycopg.OperationalError as e:
+        pytest.skip(f"DB not reachable: {e}")
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        with admin.cursor() as cur:
+            cur.execute(f"CREATE SCHEMA {schema}")
+            cur.execute(f"CREATE TABLE {schema}.integrity_checks (LIKE diskaudit.integrity_checks INCLUDING ALL)")
+            with open(os.path.join(here, "migrations", "20261110_diskaudit_tree_verify_v1.sql")) as f:
+                sql = rewrite(f.read(), schema)
+            cur.execute(sql)
+            cur.execute(sql)                      # idempotent
+        yield schema
+    finally:
+        with admin.cursor() as cur:
+            cur.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+        admin.close()
+
+
+@pytest.fixture
+def connect(tv_schema):
+    from _dbguard import GuardedConn  # noqa: PLC0415
+    return lambda: GuardedConn(connect_retry(), tv_schema)
+
+
+def _args(local, nas):
+    return SimpleNamespace(local=local, nas_path=nas, purpose="pytest", local_host="test-host",
+                           nas_host="test-nas")
+
+
+def test_cli_verified_records_and_mark_deleted(pair, connect, capsys, monkeypatch):
+    local, nas, t = pair
+    monkeypatch.setattr(vt, "_alarm", lambda text: pytest.fail(f"alarm: {text}"))
+    _tree(local, {"a": b"1", "b": b"22"})
+    _tree(nas, {"a": b"1", "b": b"22"})
+    args = _args(local, nas)
+    monkeypatch.setattr(vt, "_nas_path_ok", lambda p: True)
+    rc = vt.cmd_verify(args, target=t, connect=connect)
+    out = capsys.readouterr().out
+    assert rc == vt.EXIT_VERIFIED, out
+    run_id = int(out.split("VERIFY_RUN_ID=")[1].split()[0])
+    c = connect()
+    row = c.cursor().execute("SELECT verdict, files, canary_ok FROM diskaudit.tree_verifications WHERE run_id=%s",
+                    (run_id,)).fetchone()
+    assert row == ("VERIFIED", 2, True)
+    n = c.cursor().execute("SELECT count(*) FROM diskaudit.integrity_checks WHERE tree_run_id=%s AND basis='fresh' "
+                  "AND verdict='match'", (run_id,)).fetchone()[0]
+    assert n == 2
+    c.close()
+    assert vt.cmd_mark_deleted(SimpleNamespace(run_id=run_id), connect=connect) == 0
+    assert vt.cmd_mark_deleted(SimpleNamespace(run_id=run_id), connect=connect) == vt.EXIT_NOT_VERIFIED
+
+
+def test_cli_mismatch_exit3_and_cannot_mark_deleted(pair, connect, capsys, monkeypatch):
+    local, nas, t = pair
+    monkeypatch.setattr(vt, "_nas_path_ok", lambda p: True)
+    _tree(local, {"a": b"m"})
+    _tree(nas, {"a": b"M"})
+    assert vt.cmd_verify(_args(local, nas), target=t, connect=connect) == vt.EXIT_NOT_VERIFIED
+    out = capsys.readouterr().out
+    run_id = int(out.split("VERIFY_RUN_ID=")[1].split()[0])
+    assert "VERDICT=MISMATCH" in out
+    assert vt.cmd_mark_deleted(SimpleNamespace(run_id=run_id), connect=connect) == vt.EXIT_NOT_VERIFIED
+
+
+def test_cli_db_failure_is_not_verified(pair, capsys, monkeypatch):
+    local, nas, t = pair
+    monkeypatch.setattr(vt, "_nas_path_ok", lambda p: True)
+    _tree(local, {"a": b"1"})
+    _tree(nas, {"a": b"1"})
+
+    def boom():
+        raise psycopg.OperationalError("db down")
+    assert vt.cmd_verify(_args(local, nas), target=t, connect=boom) == vt.EXIT_NOT_VERIFIED
+    assert "result not recorded" in capsys.readouterr().out
+
+
+def test_cli_canary_failure_exit4_and_alarm(pair, connect, capsys, monkeypatch):
+    local, nas, t = pair
+    monkeypatch.setattr(vt, "_nas_path_ok", lambda p: True)
+    alarms = []
+    monkeypatch.setattr(vt, "_alarm", alarms.append)
+    _tree(local, {"a": b"1"})
+    _tree(nas, {"a": b"1"})
+    t.hash_override = lambda out: out.replace("  ./", "  ./zz")
+    assert vt.cmd_verify(_args(local, nas), target=t, connect=connect) == vt.EXIT_CANARY
+    assert alarms and "VERDICT=CANARY_FAILED" in capsys.readouterr().out
+
+
+def test_cli_rejects_non_share_nas_path(pair, capsys):
+    local, nas, t = pair
+    _tree(local, {"a": b"1"})
+    assert vt.cmd_verify(_args(local, "/tmp/../etc"), target=t, connect=None) == vt.EXIT_USAGE
