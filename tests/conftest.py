@@ -25,6 +25,14 @@ _COPIED = ("scan_runs", "dedup_runs", "files", "run_heartbeats", "dedup_worker_s
            "scan_errors", "files_staging")  # last two: scan.merge + load_nas_inventory tests (1.4.2)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_havnvard_config(tmp_path, monkeypatch):
+    """Every test gets its own HavnVard config and state dirs. Without this, a backup test that did not ask for
+    `hubenv` wrote its [nas] section into the operator's real ~/.config/havnvard/backup.toml (found 20261111)."""
+    monkeypatch.setenv("HAVNVARD_CONFIG_DIR", str(tmp_path / "_iso_cfg"))
+    monkeypatch.setenv("HAVNVARD_STATE_DIR", str(tmp_path / "_iso_state"))
+
+
 def connect_retry(autocommit=False, attempts=20, delay=1.0):
     """psycopg.connect that rides out a momentarily full connection table (the live DB shares ~100 slots with
     other services); a real outage still fails after ~attempts*delay seconds."""
