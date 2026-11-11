@@ -17,7 +17,7 @@ SOURCE = "havnvard-backup"
 def _load():
     path = os.environ.get("HAVNVARD_ALERTLIB_PATH", DEFAULT_PATH)
     if path not in sys.path:
-        sys.path.insert(0, path)
+        sys.path.append(path)   # append, never insert(0): /srv-first shadowing is a known defect class (INFRA-504)
     return importlib.import_module("alertlib")
 
 
