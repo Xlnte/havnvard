@@ -12,7 +12,6 @@ from pathlib import Path
 from . import config
 from .config import BackupError
 from .render import render
-from .util import hub_password_dir, restic_bin, run
 
 SMB_RE = re.compile(r"^//[A-Za-z0-9._-]+/[^\s]+$")
 
@@ -69,9 +68,12 @@ def nas_target(smb: str, user: str, cred_file: str, mountpoint: str, out_dir: Pa
     return lines
 
 
-def nas_copy() -> int:
-    """Copy every hub repo that has a hub-side password file onto the NAS mount (restic copy, same password).
-    Returns 0 when every device copied, 1 otherwise; a missing mount is an error, not a pass."""
+def nas_copy(max_seconds: int = 21000, bwlimit: str = "0") -> int:
+    """Mirror every hub repo onto the NAS mount as-is: the files are already encrypted, so this needs NO
+    device passwords (review 20261111 F1: the earlier `restic copy` version made the hub hold every device's
+    password just to copy). Reuses the offsite uploader with the mount as a local rclone path, so it keeps the
+    same copy-only, snapshots-last, cut-off-repair rules. A missing mount is an error, not a pass."""
+    from .offsite import _run_target
     cfg = config.load()
     nas, hub = cfg.get("nas"), cfg.get("hub_local")
     if not nas or not hub:
@@ -79,27 +81,11 @@ def nas_copy() -> int:
     mp = Path(nas["mountpoint"])
     if not os.path.ismount(mp):
         raise BackupError(f"{mp} is not mounted; refusing to write to the local disk instead")
-    restic = restic_bin()
-    pdir, ok, bad = hub_password_dir(), [], []
-    devices = sorted(p.stem for p in pdir.glob("*.pass")) if pdir.is_dir() else []
-    if not devices:
-        raise BackupError(f"no device password files in {pdir}; nothing can be copied")
-    for dev in devices:
-        src, dst = Path(hub["repo_root"]) / dev, mp / nas.get("repo_subdir", "restic") / dev
-        pw = str(pdir / f"{dev}.pass")
-        if not (src / "config").is_file():
-            bad.append((dev, "no repo on the hub yet"))
-            continue
-        common = ["--password-file", pw, "--from-repo", str(src), "--from-password-file", pw]
-        if not (dst / "config").is_file():
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            r = run([restic, "-r", str(dst), "init", *common, "--copy-chunker-params"])
-            if r.returncode != 0:
-                bad.append((dev, f"init rc {r.returncode}: {r.stderr.strip()[-150:]}"))
-                continue
-        r = run([restic, "-r", str(dst), "copy", "--retry-lock", "30m", *common])
-        (ok if r.returncode == 0 else bad).append(dev if r.returncode == 0 else (dev, f"copy rc {r.returncode}: {r.stderr.strip()[-150:]}"))
-    print(f"nas-copy: {len(ok)}/{len(devices)} devices copied")
-    for dev, why in bad:
-        print(f"  FAILED {dev}: {why}")
-    return 0 if not bad else config.PROBLEM_EXIT
+    root = Path(hub["repo_root"])
+    if not root.is_dir():
+        raise BackupError(f"hub repo_root {root} is not a directory")
+    dst = mp / nas.get("repo_subdir", "restic")
+    dst.mkdir(parents=True, exist_ok=True)
+    rc = _run_target("nas", str(dst), root, max_seconds, bwlimit)
+    print(f"nas-copy: rc={rc} (0 = every repo mirrored, 75 = time budget used, 2 = failure)")
+    return rc

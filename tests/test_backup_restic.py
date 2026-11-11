@@ -94,7 +94,10 @@ def test_nas_copy_requires_mount_then_copies(hubenv, monkeypatch):
     with pytest.raises(BackupError):                  # not a mount point: must not write to the local disk
         nas.nas_copy()
     monkeypatch.setattr(nas.os.path, "ismount", lambda p: True)
+    # F1: mirroring must not need hub-side passwords, so point the password dir at an empty one
+    monkeypatch.setattr("backup.util.hub_password_dir", lambda: tmp / "no-passwords")
     assert nas.nas_copy() == 0
+    # the mirror is a complete repo that opens with the device's own password
     assert len(json.loads(restic(mp / "restic" / "dev1", pdir / "dev1.pass", "snapshots", "--json"))) == 3
 
 

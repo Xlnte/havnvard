@@ -104,12 +104,12 @@ python -m backup nas-target --smb //nas/havnvard-bkup --user havnvard --cred-fil
 python -m backup nas-copy
 ```
 Uses a normal SMB user (the NAS only allows SSH for administrators). `nas-target` renders the mount unit; the admin
-step is printed. Put the NAS password into the credentials file yourself; never paste it in chat.
+step is printed. `nas-copy` mirrors the already-encrypted repo files (no passwords needed on the hub). Put the NAS password into the credentials file yourself; never paste it in chat.
 
 ### 6. Watch it and prove it
 ```bash
 python -m backup health          # snapshot age (> 26 h), last job, hub and NAS free space, offsite; non-zero on any problem
-python -m backup prune           # hub only; default keep 7 daily, 4 weekly, 6 monthly; --dry-run first
+python -m backup prune           # hub only; default keep 7 daily, 4 weekly (no monthly; PAF 20261111); --dry-run first
 python -m backup restore-drill my-laptop   # restores 20 random files, full SHA-256 compare, prints X/Y matched
 ```
 Alerts go through the shared `alertlib`; if it cannot be reached `health` says `ALERT NOT SENT` and still exits non-zero.

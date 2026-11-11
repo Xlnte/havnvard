@@ -10,7 +10,7 @@ from . import config
 from .config import BackupError
 from .util import hub_password_dir, restic_bin, run
 
-DEFAULTS = {"keep_daily": 7, "keep_weekly": 4, "keep_monthly": 6}
+DEFAULTS = {"keep_daily": 7, "keep_weekly": 4, "keep_monthly": 0}   # PAF 20261111: about 5 weeks is enough
 
 
 def retention(over: dict) -> dict:

@@ -564,7 +564,7 @@ BACKED_UP_VERIFIED from snapshots, the "not backed up" report, bit-rot re-hash s
 | `enroll DEVICE --paths ...` | Random password files (600, never printed, never overwritten), excludes, client timer; prints the hub `.htpasswd` hash line | Exit 2 on bad name or missing path |
 | `client-run [--init]` | One backup (what the timer runs); exit code is restic's (3 = some files unreadable, snapshot saved) | Hub unreachable or wrong password: exit 2, recorded for `health` |
 | `offsite add / run` | Copy-only upload of the encrypted repos to any rclone remote; data before snapshots; flag-after-3-resends | 0 done, 75 time budget used, 2 failure |
-| `nas-target`, `nas-copy` | SMB mount unit; `restic copy` of every hub repo to the NAS | Refuses to write if the share is not mounted |
+| `nas-target`, `nas-copy` | SMB mount unit; mirror of every hub repo's encrypted files to the NAS (no passwords on the hub) | Refuses to write if the share is not mounted |
 | `health` | Snapshot age > 26 h, last job, hub and NAS free space (< 500 GB), offsite recency and flagged files, via alertlib | Exit 1 problem, 2 could not check |
-| `prune` | Hub-side forget + prune (default 7 daily, 4 weekly, 6 monthly); stale locks cleared only if older than N hours | Exit 1 if any repo failed |
+| `prune` | Hub-side forget + prune (default 7 daily, 4 weekly (no monthly; PAF 20261111)); stale locks cleared only if older than N hours | Exit 1 if any repo failed |
 | `restore-drill DEVICE` | Restores a random sample, full SHA-256 compare, prints X/Y; self-test canary first | Nothing comparable is NOT a pass |
