@@ -1,9 +1,10 @@
-"""`coverage-sync DEVICE`: mark files BACKED_UP_VERIFIED when the device's latest restic snapshot holds the same
+"""`coverage-sync DEVICE`: mark files BACKED_UP_UNVERIFIED (never VERIFIED) when the device's latest restic snapshot holds the same
 path + size + mtime (to the second). Matching is pure (no DB, no restic); the DB write takes a connection argument.
 
 Honest limit: this proves "the snapshot lists this file as it is now", not a SHA-256 compare (restic uses its own
 hashes; the restore drill is the byte-level proof). Rows are therefore tagged match_method='restic_snapshot_listing'
-and the note says so. `backup_coverage.py classify` rewrites every row, so run coverage-sync AFTER classify.
+and the note says so. Review 20261111: a listing is not a hash check, so it never promotes past
+BACKED_UP_UNVERIFIED (backup_coverage.py rule; HavnVard 1.6.0: VERIFIED means full SHA-256). `backup_coverage.py classify` rewrites every row, so run coverage-sync AFTER classify.
 """
 from __future__ import annotations
 
@@ -81,7 +82,7 @@ CANDIDATES_SQL = (
     "WHERE bc.host = %s AND bc.classification = ANY(%s) AND f.still_exists"
 )
 UPDATE_SQL = (
-    "UPDATE diskaudit.backup_coverage SET classification = 'BACKED_UP_VERIFIED', "
+    "UPDATE diskaudit.backup_coverage SET classification = 'BACKED_UP_UNVERIFIED', "
     "match_method = 'restic_snapshot_listing', matched_restic_target = %s, restic_snapshot_id = %s, "
     "restic_verified_at = now(), checked_at = now(), "
     "notes = COALESCE(notes || '; ', '') || %s WHERE host = %s AND path = %s "
@@ -135,5 +136,5 @@ def coverage_sync(device: str, dry_run: bool = False) -> int:
     finally:
         conn.close()
     print(f"coverage-sync {device}: snapshot {snap}, {len(listing)} files listed, "
-          f"{n} {'would be ' if dry_run else ''}marked BACKED_UP_VERIFIED")
+          f"{n} {'would be ' if dry_run else ''}marked BACKED_UP_UNVERIFIED (in a restic snapshot; not hash-verified)")
     return 0

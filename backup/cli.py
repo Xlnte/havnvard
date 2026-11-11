@@ -71,7 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
     hr.add_argument("--repo-dir", default="havnvard", help="HavnVard checkout on the hub (relative to its home or absolute)")
     hr.add_argument("--render-units", metavar="DIR", help="write the hourly service+timer here instead of running")
 
-    cs = sub.add_parser("coverage-sync", help="mark files BACKED_UP_VERIFIED from the device's latest restic snapshot")
+    cs = sub.add_parser("coverage-sync", help="mark files BACKED_UP_UNVERIFIED (in a snapshot, not hash-checked) from the latest restic snapshot")
     cs.add_argument("device")
     cs.add_argument("--dry-run", action="store_true", help="count matches, write nothing")
 

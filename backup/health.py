@@ -10,6 +10,7 @@ import datetime as dt
 import json
 import os
 import shutil
+import sys
 import time
 from pathlib import Path
 
@@ -107,7 +108,9 @@ def run_health(send_alerts: bool = True, as_json: bool = False) -> int:
         if send_alerts:
             bad = [c for c in doc["checks"] if not c["ok"]]
             if bad:
-                alerts.fire(ALERT_KEY, "HavnVard Backup: " + "; ".join(f"{c['name']}: {c['detail']}" for c in bad))
+                sent, detail = alerts.fire(ALERT_KEY, "HavnVard Backup: " + "; ".join(f"{c['name']}: {c['detail']}" for c in bad))
+                if not sent:   # review 20261111: never silent about an alert that could not be raised
+                    print(f"ALERT NOT SENT: {detail}", file=sys.stderr)
             else:
                 alerts.resolve(ALERT_KEY)
         return doc["exit_code"]

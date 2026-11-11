@@ -70,7 +70,7 @@ def test_sync_coverage_updates_only_matches_and_commits():
     conn = FakeConn([("/d/a", 10, t), ("/d/zzz", 1, t)])
     assert coverage.sync_coverage(conn, "spark-20cf", "abc123", listing) == 1
     upd = [x for x in conn.log if x[0] == "executemany"][0]
-    assert [p[4] for p in upd[2]] == ["/d/a"] and "BACKED_UP_VERIFIED" in upd[1] and conn.log[-1] == ("commit",)
+    assert [p[4] for p in upd[2]] == ["/d/a"] and "BACKED_UP_UNVERIFIED" in upd[1] and "'BACKED_UP_VERIFIED'" not in upd[1] and conn.log[-1] == ("commit",)
 
 
 def test_sync_coverage_dry_run_writes_nothing():

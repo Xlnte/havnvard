@@ -111,7 +111,7 @@ step is printed. `nas-copy` mirrors the already-encrypted repo files (no passwor
 python -m backup health          # snapshot age (> 26 h), last job, hub and NAS free space, offsite; non-zero on any problem
 python -m backup prune           # hub only; default keep 7 daily, 4 weekly (no monthly; PAF 20261111); --dry-run first
 python -m backup restore-drill my-laptop   # restores 20 random files, full SHA-256 compare, prints X/Y matched
-python -m backup coverage-sync my-laptop    # mark files BACKED_UP_VERIFIED when the latest snapshot holds the same path+size+mtime
+python -m backup coverage-sync my-laptop    # mark files BACKED_UP_UNVERIFIED (never VERIFIED: a listing is not a hash check) when the latest snapshot holds the same path+size+mtime
 python -m backup not-backed-up --host trigkey --by folder --limit 25   # biggest NOT backed-up folders (or --by type)
 python -m backup check-timers   # list havnvard-restic-* timers whose script or backup source no longer exists
 ```
