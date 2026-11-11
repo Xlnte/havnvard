@@ -2,7 +2,7 @@
 
 **Storage Assurance.** Whole-disk file inventory, deduplication, and
 file-status classification system for spark-20cf + attached NAS
-(nas-ts453a). v1.4.3.
+(nas-ts453a). v2.0.0 (adds HavnVard Backup, see below).
 
 ## Status
 
@@ -45,6 +45,86 @@ instead of a day), `--exclude <dir>`, `--limit N` (hash only, publishes nothing)
 Design, requirements and test plan:
 `/home/parker/runbooks/20261109-havnvard-nas-dedup/20261109_ARCHITECTURE.md`; operation: RUNBOOK.md
 section "NAS within-host dedup".
+
+## Install HavnVard Backup
+
+HavnVard Backup (2.0.0) turns restic into a HavnVard feature: one always-on **hub** keeps an encrypted, append-only
+repository per device; the hub prunes, copies to a NAS and uploads to any cloud storage rclone supports.
+Everything is `python -m backup ...` (Python 3.11+, standard library only). **Nothing here runs sudo or installs a
+service for you: the tool writes the unit files to `./out/` and prints the commands for you (or your Claude) to run.**
+To let Claude drive the install, tell it: "set up HavnVard Backup, follow CLAUDE_SETUP.md".
+
+### Before you start
+- One always-on Linux machine as the hub, with a disk at least 2 x the data to back up, formatted **ext4** (not exFAT or NTFS).
+- Every device can reach the hub: same home network, or Tailscale.
+- Admin (sudo) rights on the hub; ordinary user rights on each device.
+- `restic` and `rclone` on the machines that use them; [`rest-server`](https://github.com/restic/rest-server) on the hub.
+- A cloud storage account for the offsite copy: your existing Google Drive, OneDrive or Internxt works, plus about 10
+  minutes to authorise rclone. **Suggested, not required:** a separate account used only for backups, so a hacked everyday
+  account cannot reach the backups and the backups do not eat its quota.
+- A password manager or paper for each device's backup password. **Without it a lost device's backups cannot be read.**
+  `enroll` creates the password and never prints it: copy `~/.config/havnvard/restic.pass` into your password manager now.
+
+### 1. Install the hub (on the hub machine)
+```bash
+python -m backup hub install --repo-root /data/restic-hub --listen <hub LAN or Tailscale address> --port 8000
+```
+Renders the append-only rest-server unit and the disk guard, health and prune timers into `./out/` and prints the
+install commands. The disk guard stops the hub below 100 GB free and restarts it at 125 GB, so a backup can never fill
+the disk. `--listen` defaults to loopback, which no other device can reach.
+
+### 2. Choose the hub and enrol each device (on every device, including the hub itself)
+```bash
+python -m backup hub set <hub-host>[:8000]
+python -m backup enroll my-laptop --paths ~/Documents ~/Pictures --excludes generic \
+    --limit-upload 4096 --quiet-hours 08-18
+```
+`enroll` creates `~/.config/havnvard/restic.pass` and `rest.pass` (random, mode 600, never overwritten if present), the
+excludes file, and the backup timer in `./out/`. It prints one line to append to the hub's `.htpasswd` (a hash, not the
+password). Then `python -m backup client-run --init` makes the first backup. `--limit-upload` caps upload in KiB/s (0 = none).
+`--quiet-hours 08-18` means no backup starts in those local hours. Excludes profiles: `generic`, `spark`, `pafpad`, or your own file.
+
+### 3. Hub-side passwords (so the hub can prune and copy)
+Append-only devices cannot delete or prune. For the hub to do that, copy each device's `restic.pass` to the hub as
+`~/.config/havnvard/hub-passwords/<device>.pass` (mode 600, over SSH or by hand; never by chat).
+
+### 4. Offsite copy to any rclone remote (on the hub)
+```bash
+rclone config                                   # authorise Google Drive, OneDrive or Internxt once
+python -m backup offsite add gdrive --rclone-remote gdrive:havnvard-backup
+python -m backup offsite add gdrive-crypt --rclone-remote gdrive-crypt: --crypt   # optional: an rclone crypt remote
+python -m backup offsite run                    # resumes where it stopped; run it from a timer
+```
+The repos are already encrypted by restic; `--crypt` additionally hides file names. Uploads are copy-only, never delete
+anything the hub has, and a file that keeps coming back damaged is flagged and reported (and shown by `health`).
+
+### 5. Second on-site copy on the NAS (optional)
+```bash
+python -m backup nas-target --smb //nas/havnvard-bkup --user havnvard --cred-file ~/.config/havnvard/nas.cred --mountpoint /mnt/havnvard-nas
+python -m backup nas-copy
+```
+Uses a normal SMB user (the NAS only allows SSH for administrators). `nas-target` renders the mount unit; the admin
+step is printed. Put the NAS password into the credentials file yourself; never paste it in chat.
+
+### 6. Watch it and prove it
+```bash
+python -m backup health          # snapshot age (> 26 h), last job, hub and NAS free space, offsite; non-zero on any problem
+python -m backup prune           # hub only; default keep 7 daily, 4 weekly, 6 monthly; --dry-run first
+python -m backup restore-drill my-laptop   # restores 20 random files, full SHA-256 compare, prints X/Y matched
+```
+Alerts go through the shared `alertlib`; if it cannot be reached `health` says `ALERT NOT SENT` and still exits non-zero.
+**A device is not backed up until `restore-drill` prints all files matched.**
+
+### Restore one file
+```bash
+export RESTIC_REPOSITORY=rest:http://<hub>:8000/<device>/ RESTIC_PASSWORD_FILE=~/.config/havnvard/restic.pass
+export RESTIC_REST_USERNAME=<device> RESTIC_REST_PASSWORD="$(cat ~/.config/havnvard/rest.pass)"
+restic snapshots && restic restore latest --target /tmp/restore --include /home/me/Documents/file.txt
+```
+
+### Phones
+HavnVard Backup 2.0 installs nothing on phones. Put phone data in a folder that a backed-up computer receives (for
+example with Syncthing, Immich or a cable copy) and include that folder in `--paths`.
 
 ## Files
 

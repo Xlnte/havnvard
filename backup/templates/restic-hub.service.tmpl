@@ -1,0 +1,11 @@
+[Unit]
+Description=HavnVard backup hub (rest-server, append-only, private repos)
+After=network-online.target
+
+[Service]
+ExecStart=$rest_server --path $repo_root --listen $listen --append-only --private-repos --htpasswd-file $htpasswd
+Restart=always
+RestartSec=20
+
+[Install]
+WantedBy=default.target

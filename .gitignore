@@ -25,3 +25,6 @@ reports/
 
 # Local scratch / IDE
 .DS_Store
+
+# Rendered systemd units from `python -m backup ... --out`
+out/

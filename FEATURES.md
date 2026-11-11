@@ -2,7 +2,7 @@
 
 **How to use the features.** For an operator who is new to HavnVard.
 
-**Last updated: 2026-07-25**
+**Last updated: 2026-11-11 (2.0.0 adds HavnVard Backup)**
 
 ## ⚠️ ABSOLUTE CONSTRAINT — READ FIRST
 
@@ -27,6 +27,9 @@ delete/move decision is yours (PAF's) alone, made by reading these reports.
 | Duplicate detection (dedup.py / rdfind) | **WORKING** | `python dedup.py --host spark-20cf` |
 | Within-host duplicate detection (nas-ts453a / trigkey — no rdfind available) | **WORKING** (new, 2026-07-25) | `python nas_trigkey_dedup.py --host nas-ts453a \| trigkey` |
 | Cross-host content-hash verification | **PARTIAL** (new, in flight on this branch, 2026-07-25) | `python crosshost_verify.py candidates \| hash \| match \| report` |
+| HavnVard Backup: hub install, enrol a device, client backup (restic, append-only) | **WORKING** (2.0.0) | `python -m backup hub install \| hub set \| enroll \| client-run` |
+| HavnVard Backup: offsite to any rclone remote (optional crypt), NAS second copy | **WORKING** (2.0.0) | `python -m backup offsite add \| offsite run \| nas-target \| nas-copy` |
+| HavnVard Backup: health (stale snapshot, job result, free space), prune, restore drill | **WORKING** (2.0.0) | `python -m backup health \| prune \| restore-drill DEVICE` |
 | File-status classification (active/load-bearing/stale/possibly-obsolete/orphaned) | **WORKING** | query `diskaudit.v_file_status` / `diskaudit.mv_file_status` |
 | Load-bearing override (protect cold-but-live infra files) | **WORKING** | `python refresh_load_bearing_paths.py` |
 | Backup-coverage check (critical_patterns-scoped) | **WORKING** | query `diskaudit.v_backup_coverage` |
@@ -545,3 +548,23 @@ Full runbook: `/home/parker/runbooks/20260725-havnvard-ui/RUNBOOK.md`.
 - Plane: INFRA-97 (main), INFRA-98 (monitoring), INFRA-99 (deferred v3),
   INFRA-109 (remaining restic targets), INFRA-110 (TechWatch schedule
   collision).
+
+
+---
+
+## HavnVard Backup (2.0.0)
+
+Full install steps: `README.md` "Install HavnVard Backup"; agent steps: `CLAUDE_SETUP.md`. Not in 2.0: marking files
+BACKED_UP_VERIFIED from snapshots, the "not backed up" report, bit-rot re-hash schedule, dashboard, Windows backup, phone apps.
+
+| Command | What it does | Failure behaviour |
+|---|---|---|
+| `hub install` | Renders the append-only rest-server unit, disk guard, health and prune timers; prints install commands | Runs no sudo or systemctl |
+| `hub set HOST[:PORT]` | Writes the hub address to `~/.config/havnvard/backup.toml` | Rejects bad addresses |
+| `enroll DEVICE --paths ...` | Random password files (600, never printed, never overwritten), excludes, client timer; prints the hub `.htpasswd` hash line | Exit 2 on bad name or missing path |
+| `client-run [--init]` | One backup (what the timer runs); exit code is restic's (3 = some files unreadable, snapshot saved) | Hub unreachable or wrong password: exit 2, recorded for `health` |
+| `offsite add / run` | Copy-only upload of the encrypted repos to any rclone remote; data before snapshots; flag-after-3-resends | 0 done, 75 time budget used, 2 failure |
+| `nas-target`, `nas-copy` | SMB mount unit; `restic copy` of every hub repo to the NAS | Refuses to write if the share is not mounted |
+| `health` | Snapshot age > 26 h, last job, hub and NAS free space (< 500 GB), offsite recency and flagged files, via alertlib | Exit 1 problem, 2 could not check |
+| `prune` | Hub-side forget + prune (default 7 daily, 4 weekly, 6 monthly); stale locks cleared only if older than N hours | Exit 1 if any repo failed |
+| `restore-drill DEVICE` | Restores a random sample, full SHA-256 compare, prints X/Y; self-test canary first | Nothing comparable is NOT a pass |

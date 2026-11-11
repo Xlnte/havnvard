@@ -1,0 +1,14 @@
+/home/parker/.cache
+/home/parker/snap
+/home/parker/.npm
+/home/parker/.nvm
+/home/parker/.unsloth
+/home/parker/.local/share/Trash
+/home/parker/.config/restic
+**/node_modules
+**/.venv
+**/__pycache__
+**/Cache
+**/Code Cache
+**/GPUCache
+**/Service Worker/CacheStorage

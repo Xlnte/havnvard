@@ -1,0 +1,24 @@
+/home/parker/.cache
+/home/parker/snap
+/home/parker/.npm
+/home/parker/.nvm
+/home/parker/.unsloth
+/home/parker/.local/share/Trash
+/home/parker/.config/restic
+**/node_modules
+**/.venv
+**/__pycache__
+**/Cache
+**/Code Cache
+**/GPUCache
+**/Service Worker/CacheStorage
+/home/parker/.ollama
+/home/parker/.local/share/containers
+# 20261109 PAF: model weights and envs are re-downloadable; do not back up
+/home/parker/.lmstudio/models
+/home/parker/ComfyUI/models
+/home/parker/ComfyUI/downloads_staging
+/home/parker/ComfyUI/venv
+/home/parker/ComfyUI/comfyui-env
+/home/parker/comfyenv
+/home/parker/mambaforge

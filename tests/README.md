@@ -18,3 +18,4 @@ transactions, the NAS-dedup tests do not touch production at all).
   table through it, and ALSO refuses any write naming a real host (`nas-ts453a`, `trigkey`, `spark-20cf`, ...). Synthetic hosts are `_test_*`.
 * `_fake_target.py::FakeTarget` runs the real `hash_stat_batch.sh` locally; no real SSH, no NAS.
 * The crosshost tests keep their own convention (`_test_` hosts on the live schema, session-end sweep) and are unchanged.
+| `test_backup_core.py`, `test_backup_restic.py` | HavnVard Backup (`backup/`, 2.0.0): config, enrol (idempotent, no secret printed), hub install runs nothing, disk guard, client run, health + alerts, drill (incl. silent corruption), prune, NAS copy, offsite repair/flag. Tmp dirs, local restic repos, local-path rclone remotes; never the live DB, hub or NAS. |

@@ -399,7 +399,26 @@ each as a `scan_errors` row `UNSAFE_NAME_LF` (the entry and its subtree are not 
 
 **1.4.3 change notes (INFRA-522 R142-6, INFRA-518 R142-8, 20261109):** (1) `files_staging` gains a nullable `scan_id`; every staged row is tagged and `merge()` reads only its own scan's rows. Migration `migrations/20261109_diskaudit_files_staging_scan_id_v1.sql` (additive, `lock_timeout` 5 s) must be applied BEFORE 1.4.3 is deployed. (2) `scan_guard.py`: a session-level advisory lock per (host, root); a second scan of the same root exits 3 with `REFUSED` on stderr before touching the DB (also `load_nas_inventory.py`, per host + share root). Start-up cleanup deletes only staged rows no live scan can own (finished scans, legacy NULL scan_id, dead `running` scans of the same host+root). (3) A directory whose listing, or an entry whose stat, fails during an otherwise complete crawl (local EACCES/EIO; NAS `find: <dir>: Permission denied`, `stat: can't stat '<path>'`) is a held path: stored rows at/under it are NOT marked disappeared, and its `scan_errors` row gains `[HELD_BACK: N stored rows ...]`. Nested held paths overlap in N. `nas_native_crawl.sh` is unchanged: BusyBox 1.24.1 `find` prints `find: <abs dir>: Permission denied` (verified on the NAS as `sparkbkup`, non-root).
 
-**Version 1.4.3** (`module.yaml`, README, this RUNBOOK, `thoth.census.version` for `havnvard` must agree).
+**Version 2.0.0** (`module.yaml`, README, this RUNBOOK, `thoth.census.version` for `havnvard` must agree).
+
+## HavnVard Backup (`python -m backup`, 2.0.0)
+
+Spec: `/home/parker/runbooks/20261110-havnvard-restic/20261110_SPEC.md`. Install steps: README "Install HavnVard Backup".
+Config `~/.config/havnvard/backup.toml`; secrets `restic.pass`, `rest.pass`, `hub-passwords/*.pass` (all 600, never in git);
+state `~/.local/state/havnvard/` (last job, offsite logs/flag/tries/hold files, disk-guard marker).
+
+| Task | Command | Notes |
+|---|---|---|
+| Hub status | `python -m backup health` | 0 ok, 1 problem, 2 could not check. Alerts via alertlib key `havnvard-backup-health` |
+| Hub stopped by disk guard | free space above 125 GB; the guard restarts it only if it stopped it | marker `~/.local/state/havnvard/hub-diskguard.stopped` contains `stopped`; emptying it makes the hub stay down on purpose |
+| Hold a repo back from offsite | write its name in `~/.local/state/havnvard/offsite-NAME.hold` | |
+| Flagged offsite file | listed in `offsite-NAME.flagged`; compare offsite vs hub copy, then clear the line and its `.tries` line | restic can read the repo only if the file is correct |
+| Prune | `python -m backup prune --dry-run` then without | runs on the hub only |
+| Prove a device | `python -m backup restore-drill DEVICE` | all files must match |
+| Lost device password | not recoverable; restore the password from the password manager | |
+
+Rollback: stop and disable the user units (`systemctl --user disable --now havnvard-backup.timer ...`); repos on the hub are untouched.
+Tests: `pytest tests/test_backup_core.py tests/test_backup_restic.py` (tmp dirs, local restic repos and local-path rclone remotes only).
 
 ## Common failures + recovery
 
