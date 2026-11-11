@@ -401,7 +401,7 @@ each as a `scan_errors` row `UNSAFE_NAME_LF` (the entry and its subtree are not 
 
 **Version 2.0.0** (`module.yaml`, README, this RUNBOOK, `thoth.census.version` for `havnvard` must agree).
 
-## HavnVard Backup (`python -m backup`, 2.0.0)
+## HavnVard Backup (`python -m backup`, 2.1.0)
 
 Spec: `/home/parker/runbooks/20261110-havnvard-restic/20261110_SPEC.md`. Install steps: README "Install HavnVard Backup".
 Config `~/.config/havnvard/backup.toml`; secrets `restic.pass`, `rest.pass`, `hub-passwords/*.pass` (all 600, never in git);
@@ -413,12 +413,27 @@ state `~/.local/state/havnvard/` (last job, offsite logs/flag/tries/hold files, 
 | Hub stopped by disk guard | free space above 125 GB; the guard restarts it only if it stopped it | marker `~/.local/state/havnvard/hub-diskguard.stopped` contains `stopped`; emptying it makes the hub stay down on purpose |
 | Hold a repo back from offsite | write its name in `~/.local/state/havnvard/offsite-NAME.hold` | |
 | Flagged offsite file | listed in `offsite-NAME.flagged`; compare offsite vs hub copy, then clear the line and its `.tries` line | restic can read the repo only if the file is correct |
+| Hub without alertlib | on Spark: `python -m backup health-relay --ssh HOST --python PY --repo-dir DIR` | exit 0 healthy, 1 hub problem (alerted), 2 relay failed (alerted); render the hourly timer with `--render-units DIR` |
+| Coverage link | `python -m backup coverage-sync DEVICE [--dry-run]` after `backup_coverage.py classify` | needs `POSTGRES_URL`; apply migration `20261111_diskaudit_restic_coverage_v1.sql` first (by hand) |
+| Not backed up | `python -m backup not-backed-up [--host H] [--by type\|folder] [--limit N]` | |
 | Prune | `python -m backup prune --dry-run` then without | runs on the hub only |
 | Prove a device | `python -m backup restore-drill DEVICE` | all files must match |
 | Lost device password | not recoverable; restore the password from the password manager | |
 
+### Archiving an app
+
+Archiving an app must also stop its backups (GHY-209/210 were the same miss twice: a class, not a bug). In the same change:
+
+1. Spark, `spark-backup` repo: disable `havnvard-restic-<app>.timer` AND `havnvard-restic-<app>-retention.timer`
+   (`sudo systemctl disable --now ...`), and archive the unit files and scripts in that repo.
+2. HavnVard config: remove the app's paths from the device's `paths` in `~/.config/havnvard/backup.toml` and re-run `enroll`
+   (or edit `[device] paths`).
+3. Run `python -m backup check-timers`: it must print that every timer still has its script and source (exit 0). It lists
+   any `havnvard-restic-*` timer whose ExecStart script, WorkingDirectory or `BACKUP_SRC` no longer exists.
+4. Leave the app's existing restic repo in place until PAF says to delete it.
+
 Rollback: stop and disable the user units (`systemctl --user disable --now havnvard-backup.timer ...`); repos on the hub are untouched.
-Tests: `pytest tests/test_backup_core.py tests/test_backup_restic.py` (tmp dirs, local restic repos and local-path rclone remotes only).
+Tests: `pytest tests/test_backup_core.py tests/test_backup_restic.py tests/test_backup_round2.py` (tmp dirs, local restic repos and local-path rclone remotes only).
 
 ## Common failures + recovery
 

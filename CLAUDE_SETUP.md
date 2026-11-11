@@ -51,7 +51,9 @@ NAS: `python -m backup nas-target ...` (the user fills the password into the cre
 `python -m backup nas-copy`.
 
 ## 7. Prove it (required)
-1. `python -m backup health` on the hub and on the device: exit 0.
+1. `python -m backup health` on the hub and on the device: exit 0. If the hub has no `alertlib` (trigkey), also set up, on Spark,
+   `python -m backup health-relay --ssh <hub> --python <path> --repo-dir <dir> --render-units ./out`, install the rendered
+   hourly timer, and run `health-relay` once by hand: exit 0.
 2. `python -m backup restore-drill <device-name>`: it must print `N/N matched`. If it prints `0/0` or any mismatch, the
    setup is NOT done: report exactly what it printed.
 3. Restore one named file by hand once (README "Restore one file") and open it with the user.

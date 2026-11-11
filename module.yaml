@@ -1,6 +1,6 @@
 name: HavnVard
 display_name: HavnVard — Storage Assurance (Whole-Disk File Inventory)
-version: 2.0.0
+version: 2.1.0
 type: scheduled-scanner
 status: active
 grandfather_status: standardized
@@ -25,8 +25,10 @@ description: >
   HavnVard feature: `python -m backup` (hub install, hub set, enroll, client-run, offsite, nas-target, nas-copy,
   health, prune, restore-drill). Standard library only; renders systemd units, never installs them. Config and
   secrets under ~/.config/havnvard/ (GHY-38).
+  2.1.0: coverage-sync (restic snapshot listing -> BACKED_UP_VERIFIED, migration 20261111 not applied by the build),
+  not-backed-up report, health --json + health-relay (hub without alertlib), check-timers (archived-app timers).
 entrypoints:
-  backup_cli: python -m backup {hub|enroll|client-run|offsite|nas-target|nas-copy|health|prune|restore-drill} (2.0.0; docs README.md "Install HavnVard Backup", CLAUDE_SETUP.md)
+  backup_cli: python -m backup {hub|enroll|client-run|offsite|nas-target|nas-copy|health|health-relay|prune|restore-drill|coverage-sync|not-backed-up|check-timers} (2.1.0; docs README.md "Install HavnVard Backup", CLAUDE_SETUP.md)
   scanner: /srv/diskaudit/scan.py
   timer: diskaudit-scan.timer (systemd, daily OnCalendar=*-*-* 08:00:00)
   nas_crawl_script: /srv/diskaudit/nas_native_crawl.sh (BusyBox sh, scp'd to and run on nas-ts453a via ssh, not a Spark-side entrypoint itself)

@@ -63,6 +63,24 @@ def build_parser() -> argparse.ArgumentParser:
 
     h = sub.add_parser("health", help="snapshot age, last job, free space, offsite; non-zero on any problem")
     h.add_argument("--no-alert", action="store_true")
+    h.add_argument("--json", action="store_true", help="print one JSON object (ok, exit_code, checks) instead of text")
+
+    hr = sub.add_parser("health-relay", help="on Spark: run `health --json` on a hub over ssh, alert locally via alertlib")
+    hr.add_argument("--ssh", required=True, metavar="HOST")
+    hr.add_argument("--python", default="python3", help="python on the hub")
+    hr.add_argument("--repo-dir", default="havnvard", help="HavnVard checkout on the hub (relative to its home or absolute)")
+    hr.add_argument("--render-units", metavar="DIR", help="write the hourly service+timer here instead of running")
+
+    cs = sub.add_parser("coverage-sync", help="mark files BACKED_UP_VERIFIED from the device's latest restic snapshot")
+    cs.add_argument("device")
+    cs.add_argument("--dry-run", action="store_true", help="count matches, write nothing")
+
+    nb = sub.add_parser("not-backed-up", help="report: what is NOT backed up, biggest first")
+    nb.add_argument("--host")
+    nb.add_argument("--by", choices=["type", "folder"], default="folder")
+    nb.add_argument("--limit", type=int, default=25)
+
+    sub.add_parser("check-timers", help="list havnvard-restic-* timers whose script or backup source is gone")
 
     pr = sub.add_parser("prune", help="hub-side retention")
     pr.add_argument("--keep-daily", type=int)
@@ -80,7 +98,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _dispatch(a: argparse.Namespace) -> int:
-    from . import drill, enroll, health, hub, nas, offsite, prune
+    from . import coverage, drill, enroll, health, hub, nas, nobackup, offsite, prune, relay, timers
     if a.cmd == "hub":
         if a.hub_cmd == "install":
             print("\n".join(hub.hub_install(a.repo_root, a.port, a.listen, Path(a.out), a.rest_server)))
@@ -107,7 +125,18 @@ def _dispatch(a: argparse.Namespace) -> int:
     if a.cmd == "nas-copy":
         return nas.nas_copy()
     if a.cmd == "health":
-        return health.run_health(not a.no_alert)
+        return health.run_health(not a.no_alert, a.json)
+    if a.cmd == "health-relay":
+        if a.render_units:
+            print("\n".join(str(p) for p in relay.render_units(Path(a.render_units), a.ssh, a.python, a.repo_dir)))
+            return 0
+        return relay.relay(a.ssh, a.python, a.repo_dir)
+    if a.cmd == "coverage-sync":
+        return coverage.coverage_sync(a.device, a.dry_run)
+    if a.cmd == "not-backed-up":
+        return nobackup.not_backed_up(a.host, a.by, a.limit)
+    if a.cmd == "check-timers":
+        return timers.run_check()
     if a.cmd == "prune":
         return prune.prune({"keep_daily": a.keep_daily, "keep_weekly": a.keep_weekly,
                             "keep_monthly": a.keep_monthly}, a.stale_lock_hours, a.dry_run)

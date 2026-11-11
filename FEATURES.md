@@ -567,4 +567,9 @@ BACKED_UP_VERIFIED from snapshots, the "not backed up" report, bit-rot re-hash s
 | `nas-target`, `nas-copy` | SMB mount unit; mirror of every hub repo's encrypted files to the NAS (no passwords on the hub) | Refuses to write if the share is not mounted |
 | `health` | Snapshot age > 26 h, last job, hub and NAS free space (< 500 GB), offsite recency and flagged files, via alertlib | Exit 1 problem, 2 could not check |
 | `prune` | Hub-side forget + prune (default 7 daily, 4 weekly (no monthly; PAF 20261111)); stale locks cleared only if older than N hours | Exit 1 if any repo failed |
+| `health --json` | Same checks as one JSON object `{ok, exit_code, checks[]}`; exit 2 with `{error}` if it cannot run | 2.1.0 |
+| `health-relay --ssh HOST` | On Spark: runs the hub's `health --json --no-alert` over ssh, alerts via local alertlib; ssh failure or bad output = alert | 2.1.0; `--render-units DIR` writes the hourly timer |
+| `coverage-sync DEVICE` | Latest restic snapshot listing vs `diskaudit.backup_coverage`: same path+size+mtime -> BACKED_UP_VERIFIED | 2.1.0; needs migration `20261111_diskaudit_restic_coverage_v1.sql`; run after `backup_coverage.py classify`; listing match, not a SHA-256 compare |
+| `not-backed-up` | NOT_BACKED_UP totals per host and top folders or file types by bytes (hardlink-deduplicated) | 2.1.0 |
+| `check-timers` | Lists havnvard-restic-* timers whose ExecStart script, WorkingDirectory or BACKUP_SRC is gone | 2.1.0; read-only |
 | `restore-drill DEVICE` | Restores a random sample, full SHA-256 compare, prints X/Y; self-test canary first | Nothing comparable is NOT a pass |

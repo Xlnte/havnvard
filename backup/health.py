@@ -89,7 +89,28 @@ def collect(now: float | None = None) -> list[tuple[str, bool, str]]:
     return res
 
 
-def run_health(send_alerts: bool = True) -> int:
+def to_json(results: list[tuple[str, bool, str]]) -> dict:
+    """Machine-readable result. exit_code keeps the CLI meaning: 0 healthy, 1 a check found a problem."""
+    ok = all(r[1] for r in results)
+    return {"ok": ok, "exit_code": 0 if ok else config.PROBLEM_EXIT,
+            "checks": [{"name": n, "ok": o, "detail": d} for n, o, d in results]}
+
+
+def run_health(send_alerts: bool = True, as_json: bool = False) -> int:
+    if as_json:
+        try:
+            doc = to_json(collect())
+        except BackupError as e:   # still machine-readable, exit 2 = the check could not run
+            print(json.dumps({"ok": False, "exit_code": config.ERROR_EXIT, "error": str(e), "checks": []}))
+            return config.ERROR_EXIT
+        print(json.dumps(doc))
+        if send_alerts:
+            bad = [c for c in doc["checks"] if not c["ok"]]
+            if bad:
+                alerts.fire(ALERT_KEY, "HavnVard Backup: " + "; ".join(f"{c['name']}: {c['detail']}" for c in bad))
+            else:
+                alerts.resolve(ALERT_KEY)
+        return doc["exit_code"]
     results = collect()
     bad = [r for r in results if not r[1]]
     for name, ok, detail in results:
