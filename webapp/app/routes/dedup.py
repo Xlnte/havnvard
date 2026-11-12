@@ -1,5 +1,5 @@
-"""View A — DEDUP: duplicate groups for all three devices (spark-20cf, trigkey,
-nas-ts453a), one row per (duplicate_group_id, host).
+"""View A — DEDUP: duplicate groups for all three devices (server-1, agent-1,
+nas-1), one row per (duplicate_group_id, host).
 
 Source: diskaudit.mv_dedup_groups_by_host (materialized, indexed — see
 migrations/20260725_diskaudit_havnvard_ui_mv.sql +

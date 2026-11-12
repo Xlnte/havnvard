@@ -75,13 +75,13 @@ class RemoteBatchHasher:
             # and-or list) — over an ssh pipe (no pty) the local client then
             # blocks until that whole job, including the long-running hash
             # script, actually exits. Confirmed live: launch() hung to its
-            # 60s timeout against trigkey even with `< /dev/null` added.
+            # 60s timeout against agent-1 even with `< /dev/null` added.
             # Wrapping the backgrounding step in its own `( ... )` subshell
             # makes that subshell's only job "start the background process
             # and record its pid", which completes immediately, so `cat` runs
             # right after instead of the ssh channel waiting on job exit.
             #
-            # QNAP QTS's busybox ash (the nas-ts453a shell) has no `nohup`
+            # QNAP QTS's busybox ash (the nas-1 shell) has no `nohup`
             # binary at all ("nohup: command not found") but does ship
             # `setsid`; detect availability on the remote side rather than
             # assuming either exists, falling back to a bare backgrounded

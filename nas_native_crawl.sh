@@ -7,8 +7,8 @@
 # deletes it as part of cleanup).
 #
 # Crawls ONE top-level share directory (e.g. "Public", "homes", or
-# "20049999_PJKYLEpics shared") using only BusyBox-provided find/stat/xargs/
-# readlink -- confirmed present on nas-ts453a, no Entware, no python3.
+# "Family photos") using only BusyBox-provided find/stat/xargs/
+# readlink -- confirmed present on nas-1, no Entware, no python3.
 #
 # Why per-share, not one giant find over the whole NAS: a failure partway
 # through only loses one share's progress, and each share's output can be
@@ -31,7 +31,7 @@
 #
 # Usage: nas_native_crawl.sh <share-name>
 #   nas_native_crawl.sh Public
-#   nas_native_crawl.sh "20049999_PJKYLEpics shared"
+#   nas_native_crawl.sh "Family photos"
 #
 # Output, all under /share/CACHEDEV1_DATA/.diskaudit_scratch/ (filenames use
 # a sanitized share name -- spaces/slashes replaced with underscore -- but

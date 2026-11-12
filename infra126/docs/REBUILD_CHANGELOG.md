@@ -15,7 +15,7 @@
 - A timer that depended on the venv command being accidentally present in `PATH`.
 - Remote batches with no central heartbeat during a long hash.
 - Stale operator verdicts remaining closed after a new divergence.
-- A UI/report that counted initial trigkey hashes as recent verification.
+- A UI/report that counted initial agent-1 hashes as recent verification.
 
 ## Added
 

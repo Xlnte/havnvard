@@ -31,7 +31,7 @@ This list reflects the open-item snapshot supplied with INFRA-126. It is not a l
 ## Directly relevant applications and infrastructure
 
 - HavnVard / diskaudit
-- PostgreSQL `ultra_crm.diskaudit`
+- PostgreSQL `havnvard.diskaudit`
 - Spark scanner and client agents
 - NAS BusyBox crawler
 - `crosshost_verify.py`
@@ -46,7 +46,7 @@ This list reflects the open-item snapshot supplied with INFRA-126. It is not a l
 - TechWatch
 - restic
 - QNAP RAID scrub and future snapshots
-- Spark, NAS, trigkey
+- Spark, NAS, agent-1
 - Grafana
 - TG PRESI
 - Plane

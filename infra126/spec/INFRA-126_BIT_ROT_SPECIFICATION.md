@@ -5,7 +5,7 @@
 **Version:** 1.0 rebuilt  
 **Date:** 2026-07-26  
 **Application:** HavnVard / `diskaudit`  
-**Owner:** PAF  
+**Owner:** the operator  
 **Status:** Code-review and controlled-deployment package
 
 ---
@@ -350,7 +350,7 @@ Package-level acceptance requires:
 Live acceptance requires:
 
 - reviewed migrations on the actual database;
-- successful bounded Spark/NAS/trigkey runs;
+- successful bounded Spark/NAS/agent-1 runs;
 - exact remote recovery test;
 - TG and Plane delivery tests;
 - Grafana and UI rendering;

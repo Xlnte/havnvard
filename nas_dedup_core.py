@@ -7,7 +7,7 @@ a deterministic function of its arguments, so the safety-critical decisions
 are unit-testable without a Postgres or a NAS (HV-REQ-31).
 
 Plane: INFRA-519 (work), INFRA-520 (source gaps). Design:
-/home/parker/runbooks/20261109-havnvard-nas-dedup/20261109_ARCHITECTURE.md
+/home/user/runbooks/20261109-havnvard-nas-dedup/20261109_ARCHITECTURE.md
 """
 from __future__ import annotations
 

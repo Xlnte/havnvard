@@ -10,7 +10,7 @@ app.register_blueprint(infra126_bp)
 Routes:
 
 - `GET /havnvard/verification-status`
-- `GET /havnvard/verification-status?host=spark-20cf&min_hash_age_days=30`
+- `GET /havnvard/verification-status?host=server-1&min_hash_age_days=30`
 - `GET /havnvard/verification-file/<file_key>`
 - `GET /havnvard/verification-divergences.csv`
 - `GET /havnvard/verification-divergences.json`

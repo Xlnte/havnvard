@@ -71,7 +71,7 @@ CLASSIFICATION_KEYS_EXCLUDING_OS_APP: list[str] = [
 
 PROVENANCE_LABELS: dict[str, str] = {
     "nas-native": "NAS-native (QNAP BusyBox sha256sum)",
-    "local": "Local (Spark/trigkey NVMe)",
+    "local": "Local (Spark/agent-1 NVMe)",
     "trigkey-agent": "trigkey-agent",
     "rdfind-pipeline": "rdfind pipeline (local, no cross-host agent)",
     "inode-stat": "Inode stat (no hashing needed)",

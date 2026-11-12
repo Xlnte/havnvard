@@ -28,7 +28,7 @@
 ## Gate 4: Remote execution
 
 - [ ] NAS persistent scratch exists and has sufficient free space.
-- [ ] Trigkey scratch exists.
+- [ ] Agent-1 scratch exists.
 - [ ] SSH, SCP, `sha256sum`, `stat -c`, and `base64 -d` work on each target.
 - [ ] A killed local worker leaves an exact remote PID and recovery command.
 - [ ] Exact-PID recovery succeeds without affecting unrelated processes.

@@ -41,8 +41,8 @@ Result: PASS
 - restic voting evidence requires passing repository verification
 
 NOT VALIDATED IN THIS SANDBOX
-- live ultra_crm PostgreSQL migrations or query plans
-- Spark/NAS/trigkey file hashing or SSH
+- live havnvard PostgreSQL migrations or query plans
+- Spark/NAS/agent-1 file hashing or SSH
 - TG PRESI delivery
 - Plane ticket creation
 - HELM WaitingRoom runtime commands

@@ -21,10 +21,10 @@ constraint as the DEDUP/CLEANUP views.
 Performance note (measured live 2026-07-25): the group's own member rows
 come back in under 1ms via idx_diskaudit_files_dup_group. The "sibling
 consolidation" directory-population count is the expensive part -- for a
-spark-20cf group it costs ~2s (a scan bounded by duplicate_group_id IS NOT
+server-1 group it costs ~2s (a scan bounded by duplicate_group_id IS NOT
 NULL, which is only ~30% selective on that host: ~3M of ~4.46M spark rows
 already carry a duplicate_group_id, so no index materially narrows it).
-For nas-ts453a/trigkey (the hosts the worked backup-snapshot example lives
+For nas-1/agent-1 (the hosts the worked backup-snapshot example lives
 on) it is sub-second. Acceptable for a human-triggered, rarely-clicked
 detail page -- NOT acceptable for the paginated list views, which is why
 those stay on the indexed materialized view instead.

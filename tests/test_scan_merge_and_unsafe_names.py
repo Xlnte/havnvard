@@ -119,9 +119,9 @@ def test_disappearance_never_crosses_into_a_like_lookalike_root(gconn):
 
 
 @pytest.mark.parametrize("root,waived", [
-    ("/run/media/parker/C", ["/run"]),
+    ("/run/media/user/C", ["/run"]),
     ("/run", ["/run"]),
-    ("/mnt/air/x", ["/mnt/air"]),
+    ("/mnt/backup/x", ["/mnt/backup"]),
     ("/home/user", []),
     ("/runner", []),  # prefix match must respect path boundaries
 ])

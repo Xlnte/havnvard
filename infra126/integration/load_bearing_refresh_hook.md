@@ -5,7 +5,7 @@ The existing `refresh_load_bearing_paths.py` process remains authoritative. INFR
 After the existing refresh resolves exact files, emit JSON Lines containing:
 
 ```json
-{"host":"spark-20cf","path":"/etc/systemd/system/example.service","inode":12345,"source":"systemd"}
+{"host":"server-1","path":"/etc/systemd/system/example.service","inode":12345,"source":"systemd"}
 ```
 
 Then ingest the exact result in bounded transactions:

@@ -3,7 +3,7 @@
 ## STARTUP
 
 ```bash
-cd /srv/ultraops/diskaudit/infra126
+cd /opt/havnvard/infra126
 source .venv/bin/activate
 set -a
 source /etc/havnvard/infra126.env
@@ -41,9 +41,9 @@ ORDER BY last_seen_divergence_at DESC LIMIT 50;"
 Bounded test:
 
 ```bash
-havnvard-bitrot run --host spark-20cf --tier A --max-items 10
-havnvard-bitrot run --host nas-ts453a --tier A --max-items 10
-havnvard-bitrot run --host trigkey --tier A --max-items 10
+havnvard-bitrot run --host server-1 --tier A --max-items 10
+havnvard-bitrot run --host nas-1 --tier A --max-items 10
+havnvard-bitrot run --host agent-1 --tier A --max-items 10
 ```
 
 Full scheduled tiers:
@@ -110,7 +110,7 @@ Execute only the recorded exact-PID/token recovery command.
 ```sql
 SELECT hash_status,last_verified_at,verification_count
 FROM diskaudit.files
-WHERE host='spark-20cf' AND path='/approved/test/path';
+WHERE host='server-1' AND path='/approved/test/path';
 ```
 
 Expected: `hash_status='verified'`, non-null `last_verified_at`, `verification_count >= 1`.

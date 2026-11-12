@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""diskaudit — NAS-native inventory loader (nas-ts453a via native BusyBox crawl).
+"""diskaudit — NAS-native inventory loader (nas-1 via native BusyBox crawl).
 
 Companion to scan.py (local Spark filesystem crawl). Where scan.py walks the
 filesystem itself in Python, this script drives a crawl that runs NATIVELY on
@@ -33,7 +33,7 @@ Usage:
     load_nas_inventory.py --share Public --skip-crawl \\
         --skip-transfer                                   # reload from existing local inbox files
 
-Plane: INFRA-97 (diskaudit). Runbook: /home/parker/runbooks/20260717-diskaudit-v2-dedup/README.md
+Plane: INFRA-97 (diskaudit). Runbook: /home/user/runbooks/20260717-diskaudit-v2-dedup/README.md
 """
 from __future__ import annotations
 
@@ -69,7 +69,7 @@ NAS_HOST = _site.nas_host()
 NAS_SHARE_BASE = _site.nas_share_base()
 NAS_SCRATCH_DIR = f"{NAS_SHARE_BASE}/.diskaudit_scratch"
 NAS_TOKEN_FILE = _site.nas("admin_token_file") or "/etc/havnvard/nas_admin.env"
-# Never touch /etc/forge/tokens/nas_backup.env -- unrelated production credential
+# Never touch /etc/havnvard/nas_backup.env -- unrelated production credential
 # used by spark-backup-db.sh, explicitly off-limits per this project's scope.
 
 CRAWL_SCRIPT_LOCAL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nas_native_crawl.sh")
@@ -136,7 +136,7 @@ NAS_EXCLUDE_COMPONENTS = DEFAULT_EXCLUDE_COMPONENTS + NAS_EXTRA_EXCLUDE_COMPONEN
 
 def _nas_creds() -> tuple[str, str]:
     """Read NAS_ADMIN_USER/NAS_ADMIN_PASS from the root:600 token file via sudo cat.
-    Never inline these -- SoT is /etc/forge/tokens/nas_admin.env, root-owned."""
+    Never inline these -- SoT is /etc/havnvard/nas_admin.env, root-owned."""
     out = subprocess.run(
         ["sudo", "cat", NAS_TOKEN_FILE], capture_output=True, text=True, check=True
     ).stdout
@@ -197,7 +197,7 @@ def nas_scp_put(local_path: str, remote_path: str, check: bool = True) -> subpro
 
 def _shq(s: str) -> str:
     """Single-quote a string for safe inclusion in a remote shell command
-    (handles the space in '20049999_PJKYLEpics shared')."""
+    (handles share names with spaces, e.g. 'Family photos')."""
     return "'" + s.replace("'", "'\\''") + "'"
 
 

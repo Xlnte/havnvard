@@ -1,12 +1,12 @@
 """Per-host SSH transports for INFRA-126 remote hashing.
 
-Some hosts (nas-ts453a) refuse publickey auth entirely for the backup account
+Some hosts (nas-1) refuse publickey auth entirely for the backup account
 and can only be reached with sshpass + a root-owned credentials file, while
-others (trigkey) are plain key-based ssh. This module keeps that difference in
+others (agent-1) are plain key-based ssh. This module keeps that difference in
 one place so remote.py never builds an ssh/scp argv itself.
 
 The sshpass pattern here is a deliberate port of the proven implementation in
-/srv/diskaudit/crosshost_verify.py (sudo-cat credential loading and
+/opt/havnvard/crosshost_verify.py (sudo-cat credential loading and
 0600 password-file handling), extended with timeout/check passthrough and an
 explicitly closed stdin on every subprocess call.
 """
@@ -32,7 +32,7 @@ _SSH_OPTS_COMMON = ["-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTime
 def _run(argv: list[str], *, timeout: int, check: bool) -> subprocess.CompletedProcess[str]:
     """Every ssh/scp call closes stdin. A backgrounding ssh that inherits this
     process's stdin never returns until its own timeout fires (observed live
-    against trigkey), which is why stdin is DEVNULL everywhere here."""
+    against agent-1), which is why stdin is DEVNULL everywhere here."""
     return subprocess.run(
         argv,
         text=True,

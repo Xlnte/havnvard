@@ -36,9 +36,9 @@ Explicit UTC timer check: PASS
 
 This sandbox did not have access to:
 
-- the live `ultra_crm` PostgreSQL instance;
+- the live `havnvard` PostgreSQL instance;
 - the complete current HavnVard repository;
-- Spark/NAS/trigkey SSH sessions;
+- Spark/NAS/agent-1 SSH sessions;
 - TG PRESI delivery;
 - Plane ticket creation;
 - HELM WaitingRoom runtime;

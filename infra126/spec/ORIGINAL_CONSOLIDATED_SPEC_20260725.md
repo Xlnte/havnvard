@@ -4,7 +4,7 @@
 **For:** Implementation via Claude Code (or ChatGPT for code generation)  
 **Scope:** HavnVard (technical name: diskaudit) v2 → v3 ecosystem  
 **Related Plane Items:** 45 consolidated  
-**Owner:** PAF (Parker Fairfield)
+**Owner:** the operator (the owner)
 
 ---
 
@@ -19,9 +19,9 @@ points in time**. Every hash was taken today (`first_hash == last_hash`); nothin
 **The Core Gap:**  
 ```
 host         hashed   first_hash   last_hash    hashed >30d ago
-nas-ts453a    8,580   2026-07-25   2026-07-25         0        ← EXACTLY ZERO
-spark-20cf    8,687   2026-07-25   2026-07-25         0        ← EXACTLY ZERO
-trigkey     158,285   2026-07-25   2026-07-25         0        ← EXACTLY ZERO
+nas-1    8,580   2026-07-25   2026-07-25         0        ← EXACTLY ZERO
+server-1    8,687   2026-07-25   2026-07-25         0        ← EXACTLY ZERO
+agent-1     158,285   2026-07-25   2026-07-25         0        ← EXACTLY ZERO
 ```
 
 A standing assurance loop — periodic re-hashing + comparison against historical baseline — must
@@ -42,10 +42,10 @@ in front of them.
 |-----------|--------|---------|-------|
 | **Whole-disk inventory (Spark)** | ✅ LIVE | 20260717-diskaudit-v1 | 10.7M rows, daily scan via `diskaudit-scan.timer` |
 | **Whole-disk inventory (NAS)** | ✅ LIVE | 20260717-diskaudit-v2-dedup | 2.3M rows; native BusyBox crawl via SSH, ~29.3k files/sec |
-| **Client agent (trigkey)** | ✅ LIVE | CLIENT_INSTALL.md | 380k rows; systemd-installed; autonomous scan |
+| **Client agent (agent-1)** | ✅ LIVE | CLIENT_INSTALL.md | 380k rows; systemd-installed; autonomous scan |
 | **Dedup detection (rdfind)** | ✅ LIVE | 20260717-diskaudit-v2-dedup | 689k groups found; 409.6 GB reclaimable identified |
 | **NAS-only dedup** | ✅ LIVE (new 2026-07-25) | 20260725-havnvard-crosshost-integrity | `nas_trigkey_dedup.py` for hosts without rdfind |
-| **Cross-host SHA-256 verification** | ✅ LIVE (new 2026-07-25) | 20260725-havnvard-crosshost-integrity | `crosshost_verify.py`; 0.3% of spark-20cf files, 0.1% of trigkey in candidate set |
+| **Cross-host SHA-256 verification** | ✅ LIVE (new 2026-07-25) | 20260725-havnvard-crosshost-integrity | `crosshost_verify.py`; 0.3% of server-1 files, 0.1% of agent-1 in candidate set |
 | **File-status classification** | ✅ LIVE | 20260718-diskaudit-classification | Labels: active / load-bearing / stale / possibly-obsolete / orphaned |
 | **Load-bearing override** | ✅ LIVE | 20260718-diskaudit-classification | 443 patterns; protects cold-but-live infrastructure |
 | **Backup coverage (critical patterns)** | ✅ LIVE | 20260718-diskaudit-backup-coverage | Scoped to 27 rules; shows if critical files have copies elsewhere |
@@ -59,8 +59,8 @@ in front of them.
 
 **Database schema status:**  
 ```
-ultra_crm.diskaudit.* (Primary)
-  files               8.4M+ rows (spark/nas/trigkey)
+havnvard.diskaudit.* (Primary)
+  files               8.4M+ rows (spark/nas/agent-1)
   scan_runs           Track start/finish/status of inventory scans
   scan_errors         Capture permission/read failures per scan
   dedup_runs          Dedup job lifecycle (rdfind or nas_trigkey_dedup)
@@ -94,9 +94,9 @@ Migrations applied (all additive/idempotent):
 
 | Host | Role | FS | Capacity | Content (rows) | Scan Method | Notes |
 |------|------|----|----|---|---|---|
-| **spark-20cf** | Primary compute | ext4 NVMe | 3.6T (68% used, 1.1T free) | 10.7M | Local Python `scan.py` + `stat()` | Ubuntu 24.04 ARM64; root access for cross-user dirs |
-| **nas-ts453a** | QNAP TS-453A QTS 5.2.9 | ext4 RAID5 | 15.4T (49% used, 7.9T free) | 2.3M | Native BusyBox crawl via SSH, **never mount** | No Python; 64MB `/tmp` (shared tmpfs); ssh + scp only |
-| **trigkey** | Ubuntu desktop | ext4 NVMe | 468G (6% used) | 380k | Remote agent + systemd scan | Passwordless sudo; already installed; client architecture |
+| **server-1** | Primary compute | ext4 NVMe | 3.6T (68% used, 1.1T free) | 10.7M | Local Python `scan.py` + `stat()` | Ubuntu 24.04 ARM64; root access for cross-user dirs |
+| **nas-1** | QNAP TS-453A QTS 5.2.9 | ext4 RAID5 | 15.4T (49% used, 7.9T free) | 2.3M | Native BusyBox crawl via SSH, **never mount** | No Python; 64MB `/tmp` (shared tmpfs); ssh + scp only |
+| **agent-1** | Ubuntu desktop | ext4 NVMe | 468G (6% used) | 380k | Remote agent + systemd scan | Passwordless sudo; already installed; client architecture |
 
 **Key constraints:**
 - **NAS is not Linux:** BusyBox `sh`, no Python, no GNU tools. `find -printf` does not work. `/tmp` is 64MB tmpfs shared with live NAS system processes.
@@ -117,13 +117,13 @@ ORDER BY host;
 
  host       | hashed   | total     | min(hashed_at)  | max(hashed_at)
  -----------+----------+-----------+-----------------+----------------
- nas-ts453a |     8,580 | 2,290,057 | 2026-07-25      | 2026-07-25
- spark-20cf |     8,687 | 10,719,162| 2026-07-25      | 2026-07-25
- trigkey    |   158,285 |    380,102 | 2026-07-25      | 2026-07-25
+ nas-1 |     8,580 | 2,290,057 | 2026-07-25      | 2026-07-25
+ server-1 |     8,687 | 10,719,162| 2026-07-25      | 2026-07-25
+ agent-1    |   158,285 |    380,102 | 2026-07-25      | 2026-07-25
 ```
 
-**Interpretation:** Only 0.37% of Spark, 0.04% of NAS, 41.6% of trigkey have hashes. All hashes are from today
-(cross-host candidate set ~23k rows; candidate set ~0.3% of Spark, ~0.1% of trigkey). `first_hash == last_hash`
+**Interpretation:** Only 0.37% of Spark, 0.04% of NAS, 41.6% of agent-1 have hashes. All hashes are from today
+(cross-host candidate set ~23k rows; candidate set ~0.3% of Spark, ~0.1% of agent-1). `first_hash == last_hash`
 for every row. Bit-rot detection is **mathematically impossible** until a re-hash produces a **different result**.
 
 ---
@@ -174,7 +174,7 @@ All 3,110 were **legitimate live-state drift**, not damage. But:
 ### Safety & Integrity
 
 1. **HavnVard/diskaudit NEVER deletes, moves, renames, overwrites any scanned file, ever.**  
-   Not via any API, shell, or filesystem call. Labels, reports, classification only. Delete is PAF's decision alone.
+   Not via any API, shell, or filesystem call. Labels, reports, classification only. Delete is the operator's decision alone.
    Guard test exists: `test_no_forbidden_delete_move_primitives_anywhere` fails whole suite if violated.
 
 2. **Hash match is identity proof, not integrity proof.**  
@@ -219,7 +219,7 @@ All 3,110 were **legitimate live-state drift**, not damage. But:
     Do not duplicate protection. Restic manifests already provide `[verification_state]`.
 
 12. **Three-way trust is not available yet.**  
-    Only Spark + NAS + trigkey exist. No third independent copy. Cannot yet prove "this copy is definitely bad."
+    Only Spark + NAS + agent-1 exist. No third independent copy. Cannot yet prove "this copy is definitely bad."
     Until a third copy (or verified snapshot history from restic) exists, "mismatch" is inconclusive.
 
 ---
@@ -321,7 +321,7 @@ without SQL.
 3. **Alert rules:**
    - `mutable_score < 20 AND hash changed` → TG PRESI: **"[HOST] possible corruption: PATH"** + divergence details + 4-week history
    - `mutable_score > 80 AND hash changed` → Log entry only (expected drift), no TG alert
-   - `operator_verdict = 'confirmed_corruption'` → Escalate to PAF inbox + Plane ticket HIGHEST
+   - `operator_verdict = 'confirmed_corruption'` → Escalate to the operator inbox + Plane ticket HIGHEST
 
 **Acceptance Criterion:**  
 Run a test hash divergence (e.g., `echo zzz >> test.txt` on Spark, re-hash, detect mismatch, classify as legitimate).
@@ -339,7 +339,7 @@ Verify that `legitimate_drift` is logged but NOT alerted, and `unconfirmed_corru
 Majority vote:
 - If H₁ == H₂ ≠ H₃ → Spark + NAS are in agreement; snapshot is stale. Flag snapshot for re-verification.
 - If H₁ ≠ H₂ == H₃ → NAS + snapshot agree; Spark is the divergence. Alert operator + add to `corruption_suspects`.
-- If H₁ ≠ H₂ ≠ H₃ → Three-way split. Cannot resolve; escalate to PAF.
+- If H₁ ≠ H₂ ≠ H₃ → Three-way split. Cannot resolve; escalate to the operator.
 
 **Two-copy case (current):**
 - Spark ≠ NAS → Unresolvable; add to `corruption_suspects` with flag **"no third copy; operator must choose authoritative version"**.
@@ -424,7 +424,7 @@ When NAS SMART data becomes available (INFRA-116 unblocks this), correlate drive
 
 Once a third copy exists (restic snapshot or offsite backup), and a mismatch is confirmed:
 - **Candidate recommendation:** "File is corrupt on Spark; NAS copy is valid (hash-proven); restore from NAS?"
-- **Operator approval:** PAF reads recommendation, explicitly types "approve: <snapshot-id> <path>" to authorize.
+- **Operator approval:** the operator reads recommendation, explicitly types "approve: <snapshot-id> <path>" to authorize.
 - **Execution:** FERJA (separate component) reads approval, restores NAS → Spark, re-hashes to confirm.
 
 **Rationale:** Three-way majority vote + FERJA isolation = safe automated cleanup without risking accidental data loss.
@@ -802,15 +802,15 @@ COMMIT;
 
 ## APPENDIX B: Runbook Skeleton
 
-**Filename:** `/home/parker/runbooks/20260726-infra-126-bitrot-verification/RUNBOOK.md`
+**Filename:** `/home/user/runbooks/20260726-infra-126-bitrot-verification/RUNBOOK.md`
 
 ### Manual Tier A Hash Run
 
 ```bash
-cd /srv/ultraops/diskaudit && source .venv/bin/activate
-python tier_a_verify.py --host spark-20cf --test-mode
-python tier_a_verify.py --host spark-20cf
-python tier_a_verify.py --host nas-ts453a  # ~7 min
+cd /opt/havnvard && source .venv/bin/activate
+python tier_a_verify.py --host server-1 --test-mode
+python tier_a_verify.py --host server-1
+python tier_a_verify.py --host nas-1  # ~7 min
 ```
 
 ### Health Check
@@ -882,6 +882,6 @@ Start with the build order (Part VI); stop when acceptance criteria (Part V) are
 ---
 
 **Generated by Claude Code on 2026-07-25.  
-Repo: `/srv/ultraops/diskaudit` + `/home/parker/runbooks/`.  
+Repo: `/opt/havnvard` + `/home/user/runbooks/`.  
 Related memory: `[[project_havnvard_build]]`, `[[feedback_havnvard_never_autodelete]]`.  
-For questions: Refer to the 45 Plane items consolidated in Part IX, or the existing runbooks under `/home/parker/runbooks/20260725-*`.
+For questions: Refer to the 45 Plane items consolidated in Part IX, or the existing runbooks under `/home/user/runbooks/20260725-*`.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# havnvard-hub-pull (HavnVard 2.2.4, INFRA-547): copy the trigkey hub's restic repos into PAFPAD's ~/restic-hub,
+# havnvard-hub-pull (HavnVard 2.2.4, INFRA-547): copy the agent-1 hub's restic repos into DESKTOP-1's ~/restic-hub,
 # the folder restic-hub-offsite uploads to Internxt. Runs as ExecStartPre of restic-hub-offsite.service (drop-in
 # 10-hub-pull.conf), so a pull and an upload never overlap.
 #
@@ -15,7 +15,7 @@
 # - Bounded: the whole pull is cut at MAX_MIN minutes so the upload keeps its time budget.
 # Exit 0 = copied (or nothing new); 1 = could not list or copy (desktop alert + log; $ST/havnvard-hub-pull.ok not updated).
 set -uo pipefail
-SRC_HOST="${SRC_HOST:-trigkey}"
+SRC_HOST="${SRC_HOST:-hub}"
 SRC_DIR="${SRC_DIR:-/mnt/havnvard-hub/restic-hub}"
 DST="${DST:-$HOME/restic-hub}"
 SETTLE_MIN="${SETTLE_MIN:-10}"

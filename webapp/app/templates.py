@@ -11,8 +11,8 @@ object here means the chrome is installed exactly once, and `base.html`
 (extended by every page template) picks up `forge_header()`/`forge_footer()`
 regardless of which route rendered the page.
 
-See /srv/forge_core (github.com/ParkerFairfield/forge_core, INFRA-165) for
-the chrome component itself; /srv/ultraops/crm-search/main.py for the
+See the forge_core library (vendored chrome; INFRA-165) for
+the chrome component itself; /srv/apps/crm-search/main.py for the
 closest working FastAPI+Jinja2 reference consumer.
 """
 from __future__ import annotations

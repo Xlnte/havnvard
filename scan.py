@@ -3,19 +3,19 @@
 
 Walks a single filesystem device (skips other mounts, -xdev style) and records
 path / size / permissions / owner / group / inode / nlink / extension / mtime /
-atime / btime into Postgres (schema `diskaudit`, database ultra_crm). Upserts a
+atime / btime into Postgres (schema `diskaudit`, database havnvard). Upserts a
 living inventory keyed by path — files that disappear between scans are marked
 still_exists=false, never dropped.
 
 v1 is intentionally log-only: no duplicate detection, no PRESCAB dispatch, no
 delete candidates. Never runs rm / unlink / any delete API — that is a hard
 constraint, not an oversight. See:
-  - design doc: /home/parker/.claude/plans/witty-swinging-shore.md
-  - runbook:    /home/parker/runbooks/20260717-diskaudit-v1/README.md
+  - design doc: /home/user/.claude/plans/witty-swinging-shore.md
+  - runbook:    /home/user/runbooks/20260717-diskaudit-v1/README.md
   - Plane:      INFRA-97
 
 Usage:
-  scan.py --dry-run --root /home/parker      # cheap bounded validation run
+  scan.py --dry-run --root /home/user      # cheap bounded validation run
   scan.py --dry-run                          # full-disk dry run (no DB writes to `files`)
   scan.py                                    # full-disk real run (what the monthly timer runs)
 """
@@ -36,8 +36,14 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from heartbeat import HeartbeatThrottle, write_heartbeat  # noqa: E402
 from scan_guard import clear_stale_staging, refuse_if_locked  # noqa: E402
 
-# ---- DSN resolution — same SoT + fallback order as /srv/ultraops/cabinet-tools/_lib/pg_client.py
+# ---- DSN resolution — same SoT + fallback order as /srv/apps/cabinet-tools/_lib/pg_client.py
 from havnvard_site import get_dsn  # noqa: E402,F401  (3.0.0: one shared lookup; see havnvard_site.py)
+from havnvard_site import local_host as _site_local_host  # noqa: E402
+from havnvard_site import section as _site_section  # noqa: E402
+
+
+def _site_extra_excludes() -> list[str]:
+    return list(_site_section("scan").get("extra_excludes") or [])
 
 
 # ---- statx(2) for birth time — Python's os.stat() does not expose this on Linux
@@ -118,15 +124,14 @@ def get_btime(path: str):
 # meaning.
 # Network/remote mounts are excluded by default: scan.py's --root defaults to "/",
 # so anything mounted under /mnt would otherwise be crawled as if it were local disk.
-# /mnt/acer-2020 is an on-demand sshfs automount of a PORTABLE laptop over Tailscale
+# /mnt/laptop-3 is an on-demand sshfs automount of a PORTABLE laptop over Tailscale
 # (added 20260901). Crawling it would pull that machine's whole filesystem across the
 # tailnet into diskaudit.files, and would block on a sleeping laptop. The NAS mounts are
 # excluded for the same reason -- they are crawled deliberately and separately by
 # diskaudit-nas-crawl.service / load_nas_inventory.py with --host set correctly, which is
 # how remote hosts are SUPPOSED to enter the inventory.
 DEFAULT_EXCLUDES = ("/proc", "/sys", "/dev", "/run", "/var/lib/docker", "/var/lib/containerd",
-                    "/mnt/acer-2020", "/mnt/nas", "/mnt/nas-bkup", "/mnt/nas-bkup-spark",
-                    "/mnt/nas-diskaudit", "/mnt/air")
+                    ) + tuple(_site_extra_excludes())   # 3.0.0: site mounts, [scan] extra_excludes
 
 # Same "docker/containerd overlay noise" problem as above, but as a PATH COMPONENT
 # match rather than a fixed absolute prefix -- found the hard way scanning a mounted
@@ -142,7 +147,7 @@ DEFAULT_EXCLUDE_COMPONENTS = ("docker", "containerd")
 
 def effective_excludes(root: str, extra=()) -> tuple[list[str], list[str]]:
     """An explicit --root is never excluded by a DEFAULT exclude that is its ancestor (or itself): scanning
-    /run/media/<user>/C (PAFPAD's NTFS C: drive) was silently skipped because /run is a default exclude (INFRA-518).
+    /run/media/<user>/C (DESKTOP-1's NTFS C: drive) was silently skipped because /run is a default exclude (INFRA-518).
     Returns (effective_excludes, waived). Only DEFAULT_EXCLUDES are waivable; caller-supplied `extra` (--exclude)
     entries are deliberate and always kept."""
     root = os.path.abspath(root)
@@ -400,7 +405,7 @@ FROM per WHERE e.scan_id = %(scan_id)s AND e.path = per.p;
 
 
 # Bound on the held-path statements (R143-2): both compare every not-re-seen row under the root with every held path,
-# so their cost is (not-re-seen rows) x (held paths). Bench: 250 held x 50 k rows ~ 26 s on spark-20cf. Above the
+# so their cost is (not-re-seen rows) x (held paths). Bench: 250 held x 50 k rows ~ 26 s on server-1. Above the
 # budget the disappearance step is DEFERRED for this run (nothing is marked disappeared; one error row says so) -- the
 # safe direction: the next clean scan catches up. A whole unreadable share is 1 held path, so it stays in budget.
 HELD_PAIR_BUDGET = 50_000_000
@@ -471,7 +476,7 @@ def merge(conn, scan_id: int, host: str, root: str, held_paths=()):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--host", default="spark-20cf", help="Host tag for these rows (default: spark-20cf). Use a different value when scanning a mounted remote path, e.g. --host nas-ts453a.")
+    ap.add_argument("--host", default=_site_local_host(), help="Host tag for these rows (default: this machine's [hosts] local). Use a different value when scanning a mounted remote path, e.g. --host nas-1.")
     ap.add_argument("--root", default="/", help="Root path to crawl (default: /)")
     ap.add_argument("--dry-run", action="store_true", help="Crawl + stage only; skip merge into diskaudit.files")
     ap.add_argument("--batch-size", type=int, default=5000)

@@ -18,9 +18,9 @@ If prototype tables already contain production observations, do not drop them. C
 ## 2. Install the package without enabling timers
 
 ```bash
-sudo install -d -o parker -g parker /srv/ultraops/diskaudit/infra126
-rsync -a --delete ./INFRA-126-REBUILT/ /srv/ultraops/diskaudit/infra126/
-cd /srv/ultraops/diskaudit/infra126
+sudo install -d -o havnvard -g havnvard /opt/havnvard/infra126
+rsync -a --delete ./INFRA-126-REBUILT/ /opt/havnvard/infra126/
+cd /opt/havnvard/infra126
 python3 -m venv .venv
 .venv/bin/pip install --upgrade pip
 .venv/bin/pip install -e '.[web,test]'
@@ -33,9 +33,9 @@ PYTHONPATH=src .venv/bin/pytest -q
 
 ```bash
 sudo install -d -m 0750 /etc/havnvard
-sudo install -m 0640 -o root -g parker config/infra126.env.example /etc/havnvard/infra126.env
+sudo install -m 0640 -o root -g havnvard config/infra126.env.example /etc/havnvard/infra126.env
 sudo vi /etc/havnvard/infra126.env
-sudo install -d -o parker -g parker /var/log/havnvard/infra126
+sudo install -d -o havnvard -g havnvard /var/log/havnvard/infra126
 ```
 
 Required adapters:
@@ -86,15 +86,15 @@ Expected minimums:
 NAS:
 
 ```bash
-ssh sparkbkup@nas-ts453a.tail5f354b.ts.net \
+ssh backup@nas-1.example.ts.net \
   'mkdir -p /share/CACHEDEV1_DATA/.diskaudit_scratch/infra126 && chmod 700 /share/CACHEDEV1_DATA/.diskaudit_scratch/infra126'
 ```
 
-Trigkey:
+Agent-1:
 
 ```bash
-ssh parker@trigkey.tail5f354b.ts.net \
-  'sudo install -d -o parker -g parker -m 0700 /var/lib/havnvard/infra126'
+ssh havnvard@agent-1.example.ts.net \
+  'sudo install -d -o havnvard -g havnvard -m 0700 /var/lib/havnvard/infra126'
 ```
 
 Never use NAS `/tmp`.
@@ -103,9 +103,9 @@ Never use NAS `/tmp`.
 
 ```bash
 . /etc/havnvard/infra126.env
-.venv/bin/havnvard-bitrot run --host spark-20cf --tier A --max-items 10
-.venv/bin/havnvard-bitrot run --host nas-ts453a --tier A --max-items 10
-.venv/bin/havnvard-bitrot run --host trigkey --tier A --max-items 10
+.venv/bin/havnvard-bitrot run --host server-1 --tier A --max-items 10
+.venv/bin/havnvard-bitrot run --host nas-1 --tier A --max-items 10
+.venv/bin/havnvard-bitrot run --host agent-1 --tier A --max-items 10
 ```
 
 A capped run deliberately exits nonzero if more eligible files remain. That is not a silent success. Inspect the ten completed items and then run an uncapped acceptance run during an approved window.

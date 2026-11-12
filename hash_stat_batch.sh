@@ -11,9 +11,9 @@
 #   - a completion trailer carrying the script's own counts, so the driver can
 #     tell a finished batch from a truncated one.
 #
-# POSIX/BusyBox-compatible (no bashisms) -- one script for nas-ts453a
+# POSIX/BusyBox-compatible (no bashisms) -- one script for nas-1
 # (BusyBox v1.24.1: stat supports %s %Y %i %d %h %F, no ns, no --version) and
-# trigkey (GNU coreutils).
+# agent-1 (GNU coreutils).
 #
 # Usage: hash_stat_batch.sh <scratch-dir> <batch-name>
 #   Reads   <scratch-dir>/<batch-name>.paths

@@ -9,8 +9,8 @@
 #
 # POSIX/BusyBox-compatible (no bashisms: no arrays, no [[, no `local`) so ONE
 # script works unmodified on both:
-#   - nas-ts453a  (BusyBox v1.24.1 coreutils, /bin/sh = bash 3.2.57 sh-compat)
-#   - trigkey     (full bash / GNU coreutils -- a strict superset, so the
+#   - nas-1  (BusyBox v1.24.1 coreutils, /bin/sh = bash 3.2.57 sh-compat)
+#   - agent-1     (full bash / GNU coreutils -- a strict superset, so the
 #                  BusyBox-safe subset used here still works)
 # Same "write once, works on the constrained shell too" principle already
 # established by nas_native_crawl.sh.
@@ -36,7 +36,7 @@
 # writes its own <batch-name>.hashes / <batch-name>.hasherrs output files
 # under the scratch dir the caller told it to use.
 #
-# Sudo READ fallback: some candidate paths (e.g. trigkey's root-owned
+# Sudo READ fallback: some candidate paths (e.g. agent-1's root-owned
 # /var/lib/snapd/snaps/*.snap, mode 0600) are unreadable by the ssh user
 # directly. If a plain `sha256sum` fails AND `sudo` exists on this host,
 # retry once via `sudo -n sha256sum` (passwordless, non-interactive -- never
@@ -81,11 +81,11 @@ while IFS= read -r p || [ -n "$p" ]; do
     if [ ! -f "$p" ]; then
         # [ -f ] is false BOTH for a genuinely absent file AND for one whose
         # parent directory this account cannot traverse (EACCES) -- e.g.
-        # trigkey's /root/.profile. Where sudo exists, re-check as root so a
+        # agent-1's /root/.profile. Where sudo exists, re-check as root so a
         # merely-unreadable-by-us file falls through to the hashing attempt
         # below (whose sudo fallback CAN read it) instead of being
         # misreported as MISSING. Found 2026-08-30: ~500 real, root-readable
-        # trigkey files were being logged MISSING on every dedup run.
+        # agent-1 files were being logged MISSING on every dedup run.
         if [ "$HAVE_SUDO" = "1" ] && sudo -n test -f "$p" 2>/dev/null; then
             :  # exists; fall through to hashing
         else
@@ -107,7 +107,7 @@ while IFS= read -r p || [ -n "$p" ]; do
     # sha256sum output is "<64-hex-char-hash>  <path>" (GNU) or similar
     # (BusyBox). Take only the hash and pair it with OUR OWN known-good $p
     # rather than re-parsing the (possibly escaped) path out of the output.
-    # Two traps here, both hit for real on 2026-08-30 (trigkey run 28):
+    # Two traps here, both hit for real on 2026-08-30 (agent-1 run 28):
     #   1. NEVER pass the line through `echo` -- POSIX/dash echo interprets
     #      backslash escapes, so a line starting '\211a4fa...' became a raw
     #      0x89 byte + 61 hex chars, corrupting the digest (surfaced in the

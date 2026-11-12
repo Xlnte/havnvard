@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """diskaudit — TRUE backup-coverage classifier (HavnVard).
 
-Answers the owner's actual question -- "what on Spark/trigkey is NOT safely
+Answers the owner's actual question -- "what on Spark/agent-1 is NOT safely
 on the NAS" -- across the COMPLETE file universe, not the <1% candidate set
 that crosshost_verify.py's cross-host-size-match or v_backup_coverage's
 critical_patterns filter cover (both measured 2026-07-25; see
@@ -10,15 +10,15 @@ for the full design-flaw writeup).
 
 Pipeline, run in this order (classify lands FIRST -- fast, no remote I/O):
 
-    backup_coverage.py classify --host spark-20cf
-    backup_coverage.py classify --host trigkey
-    backup_coverage.py verify   --host spark-20cf   # cheap: promotes rows to
+    backup_coverage.py classify --host server-1
+    backup_coverage.py classify --host agent-1
+    backup_coverage.py verify   --host server-1   # cheap: promotes rows to
                                                      # VERIFIED using hash
                                                      # evidence ALREADY on disk
                                                      # in diskaudit.files /
                                                      # integrity_checks -- does
                                                      # NOT launch new hashing.
-    backup_coverage.py report   --host spark-20cf --out /path/to/report.md
+    backup_coverage.py report   --host server-1 --out /path/to/report.md
 
 classify does three things per in-scope file:
   1. Scope check against diskaudit.backup_scope_rules (bulk SQL, first match
@@ -31,7 +31,7 @@ classify does three things per in-scope file:
      uses BLAKE2b internally, not sha256, so it can never become a hash proof
      against diskaudit.files.content_sha256 -- it is never promoted past
      UNVERIFIED by this fact alone.
-  3. Everything else: heuristic match against nas-ts453a's already-crawled
+  3. Everything else: heuristic match against nas-1's already-crawled
      diskaudit.files inventory by (basename, size) [+-2min mtime tolerance
      when both mtimes are present] -> BACKED_UP_UNVERIFIED /
      match_method='path_size_mtime'. NOTE: an earlier design assumption that
@@ -214,7 +214,7 @@ def cmd_classify(conn, host: str, limit: int | None) -> None:
 
     # Bulk-write via COPY-into-staging + one set-based INSERT ... ON CONFLICT,
     # same pattern dedup.py's write_groups() uses (and for the same reason:
-    # one UPDATE/INSERT per file is unacceptably slow at spark-20cf's
+    # one UPDATE/INSERT per file is unacceptably slow at server-1's
     # ~5.7M-file scale -- see 20260717_diskaudit_dedup_staging_v2.sql).
     with conn.cursor() as cur2:
         cur2.execute("DELETE FROM diskaudit.backup_coverage_staging WHERE host = %s", (host,))
@@ -352,7 +352,7 @@ def cmd_verify(conn, host: str, limit: int | None) -> None:
     conn.commit()
 
     # integrity_checks columns are named spark_host/spark_path/nas_path (the
-    # "spark_*" naming predates trigkey support in crosshost_verify.py but is
+    # "spark_*" naming predates agent-1 support in crosshost_verify.py but is
     # used generically for whichever host is the verification SOURCE --
     # confirmed via \d diskaudit.integrity_checks, 2026-07-25).
     q = """

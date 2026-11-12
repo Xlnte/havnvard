@@ -5,7 +5,7 @@ Finds files with IDENTICAL CONTENT on one host. Its output feeds an operator
 quarantine script that moves files, so the two failures this tool exists to
 prevent are (a) a file reported as a duplicate that is not one, and (b) a
 failure that reads as "no duplicates". Design + requirements (HV-REQ-01..38):
-/home/parker/runbooks/20261109-havnvard-nas-dedup/ (Plane INFRA-519 / INFRA-520).
+/home/user/runbooks/20261109-havnvard-nas-dedup/ (Plane INFRA-519 / INFRA-520).
 
 How it works (all remote work is READ-ONLY sha256sum/stat; HavnVard never
 deletes, moves or renames a scanned file):
@@ -35,7 +35,7 @@ Exit codes: 0 completed | 2 run failed | 3 database unreachable | 4 refused
 (a whole-host run is already active) | 143/130 terminated by SIGTERM/SIGINT.
 
 Run supervised, never bare background:
-    systemd-run --unit=havnvard-nas-dedup --uid=parker --working-directory=/srv/diskaudit \\
+    systemd-run --unit=havnvard-nas-dedup --uid=havnvard --working-directory=/opt/havnvard \\
         .venv/bin/python3 nas_trigkey_dedup.py --host NAS_HOST \\
         --exclude /share/CACHEDEV1_DATA/bkup_spark
 """

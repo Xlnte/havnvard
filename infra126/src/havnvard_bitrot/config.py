@@ -92,9 +92,9 @@ def _parse_exclusions(raw: str | None) -> tuple[PathExclusion, ...]:
     """Parse INFRA126_EXCLUDE_PATH_PREFIXES.
 
     Accepted forms (all equivalent in power):
-      * JSON array of objects:  [{"host":"spark-20cf","prefix":"/home/UltraOC/","reason":"..."}]
-      * JSON array of strings:  ["spark-20cf:/home/UltraOC/", "/global/prefix/"]
-      * comma/newline list:     spark-20cf:/home/UltraOC/,/global/prefix/
+      * JSON array of objects:  [{"host":"server-1","prefix":"/home/UltraOC/","reason":"..."}]
+      * JSON array of strings:  ["server-1:/home/UltraOC/", "/global/prefix/"]
+      * comma/newline list:     server-1:/home/UltraOC/,/global/prefix/
 
     An explicitly empty value ("" or "[]") disables exclusions entirely -- that
     is a deliberate operator choice and is distinct from the variable being

@@ -6,7 +6,7 @@ import pytest
 
 from havnvard_bitrot.config import HostConfig, load_settings
 
-POSTGRES_URL = "postgresql://role:password@127.0.0.1:5432/ultra_crm"
+POSTGRES_URL = "postgresql://role:password@127.0.0.1:5432/havnvard"
 
 
 def _env(monkeypatch, hosts_json: str | None = None) -> None:

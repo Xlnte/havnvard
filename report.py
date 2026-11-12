@@ -19,7 +19,7 @@ Renders three files per run, all under reports/ (gitignored -- see
     cleanup_candidates_<UTC-timestamp>.md
 
 HARD CONSTRAINT: every recommendation in every report is phrased as a
-CANDIDATE for the owner (PAF) to review -- "candidate for possible removal
+CANDIDATE for the owner (the operator) to review -- "candidate for possible removal
 on <host>", "consider", "may be safe to" -- never an instruction, and this
 module never deletes/moves/renames anything itself. It only reads from
 Postgres and writes new .md files under out_dir.
@@ -29,7 +29,7 @@ docstring): on a single host, rows sharing the same `inode` are guaranteed
 to be byte-identical BY CONSTRUCTION (that's what a hardlink is) -- they are
 the same physical copy on disk, occupying `size_bytes` ONCE, not once per
 path. Treating hardlinked rows as independent duplicates would grossly
-overstate "reclaimable space" (spark-20cf alone carries ~2M hardlinked file
+overstate "reclaimable space" (server-1 alone carries ~2M hardlinked file
 rows). Every space calculation below first collapses each (host, inode)
 pair down to a single physical copy before computing anything.
 """
@@ -144,7 +144,7 @@ def render_dedup_report(conn, out_dir: str) -> tuple[str, dict]:
     )
     lines.append("")
     lines.append(
-        "**These are candidates for PAF's review only.** Nothing in this report is an "
+        "**These are candidates for the operator's review only.** Nothing in this report is an "
         "instruction to delete/move anything, and HavnVard itself never does so."
     )
     lines.append("")
@@ -167,11 +167,11 @@ def render_dedup_report(conn, out_dir: str) -> tuple[str, dict]:
         reclaimable_here = sum(max(0, n - 1) * size_bytes for n in by_host_count.values())
         total_reclaimable_same_host += reclaimable_here
 
-        verified_on_nas = "nas-ts453a" in hosts_present
+        verified_on_nas = _site.nas_host() in hosts_present
         if verified_on_nas and len(hosts_present) >= 2:
-            # every physical copy NOT on nas-ts453a is a candidate: nas already
+            # every physical copy NOT on nas-1 is a candidate: nas already
             # holds a cryptographically-verified copy of this content.
-            non_nas_physical = sum(1 for p in physical if p["host"] != "nas-ts453a")
+            non_nas_physical = sum(1 for p in physical if p["host"] != _site.nas_host())
             total_verified_backed_up_bytes += non_nas_physical * size_bytes
 
         group_summaries.append({
@@ -195,7 +195,7 @@ def render_dedup_report(conn, out_dir: str) -> tuple[str, dict]:
     lines.append("")
     lines.append(
         "Context (independently verified 2026-07-25 against live diskaudit.files -- "
-        "see runbook): spark-20cf alone carries ~2,020,483 hardlinked file rows out of "
+        "see runbook): server-1 alone carries ~2,020,483 hardlinked file rows out of "
         "~5,424,882 total regular files. A naive byte-sum over all rows sharing a size/hash "
         "massively overstates reclaimable space by counting each hardlinked path as if it "
         "were an independent copy. The figures above are already hardlink-corrected."
@@ -272,7 +272,7 @@ def render_nas_integrity_report(conn, out_dir: str) -> tuple[str, dict]:
     lines.append(f"Generated: {datetime.now(timezone.utc).isoformat()}")
     lines.append("")
     lines.append(
-        "**Answers: \"is my Spark/trigkey data genuinely intact on the NAS?\"** "
+        "**Answers: \"is my Spark/agent-1 data genuinely intact on the NAS?\"** "
         "Every row here is cryptographic (SHA-256) evidence, not a filename/size heuristic. "
         "A `match` verdict proves the source and NAS copies were bit-identical **at the "
         "moment both were hashed** -- it does NOT guarantee against later bit rot, a "
@@ -309,7 +309,7 @@ def render_nas_integrity_report(conn, out_dir: str) -> tuple[str, dict]:
         lines.append("_None found._")
     lines.append("")
 
-    lines.append("## Missing on NAS (no matching content hash found on nas-ts453a) -- capped at 200 by size")
+    lines.append("## Missing on NAS (no matching content hash found on nas-1) -- capped at 200 by size")
     lines.append("")
     lines.append(
         "Caveat: checked only against the NAS candidate set hashed so far "
@@ -362,7 +362,7 @@ _CLEANUP_CANDIDATES_SQL = """
     FROM diskaudit.files f
     JOIN diskaudit.integrity_checks ic
         ON ic.spark_host = f.host AND ic.spark_path = f.path
-    WHERE f.still_exists AND f.host != 'nas-ts453a'
+    WHERE f.still_exists AND f.host != %s
       AND ic.verdict = 'match'
     ORDER BY f.size_bytes DESC
     LIMIT 500
@@ -371,7 +371,7 @@ _CLEANUP_CANDIDATES_SQL = """
 
 def render_cleanup_candidates(conn, out_dir: str) -> tuple[str, dict]:
     with conn.cursor() as cur:
-        cur.execute(_CLEANUP_CANDIDATES_SQL)
+        cur.execute(_CLEANUP_CANDIDATES_SQL, (_site.nas_host(),))
         rows = cur.fetchall()
 
     lines = []
@@ -381,9 +381,9 @@ def render_cleanup_candidates(conn, out_dir: str) -> tuple[str, dict]:
     lines.append("")
     lines.append(
         "**RECOMMENDATIONS ONLY -- not instructions.** Every row below is a file on "
-        "spark-20cf or trigkey whose content has been cryptographically verified "
-        "(SHA-256 match) to also exist on nas-ts453a as of the `checked_at` timestamp. "
-        "That makes it a *candidate* PAF may choose to review for local cleanup -- "
+        "server-1 or agent-1 whose content has been cryptographically verified "
+        "(SHA-256 match) to also exist on nas-1 as of the `checked_at` timestamp. "
+        "That makes it a *candidate* the operator may choose to review for local cleanup -- "
         "HavnVard never deletes, moves, renames, or overwrites any of these files itself, "
         "and this list carries no authority to do so. Treat `checked_at` as a point-in-time "
         "fact: re-verify before actually acting if much time has passed."

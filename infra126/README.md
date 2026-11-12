@@ -4,7 +4,7 @@ Scheduled periodic re-hashing and divergence detection for HavnVard/diskaudit.
 
 ## Delivery status
 
-This archive is a **complete implementation package for code review and controlled deployment**, not proof that the live Spark/NAS/trigkey environment has been changed or validated.
+This archive is a **complete implementation package for code review and controlled deployment**, not proof that the live Spark/NAS/agent-1 environment has been changed or validated.
 
 Package validation performed in the build sandbox:
 
@@ -16,9 +16,9 @@ Package validation performed in the build sandbox:
 
 Live-machine gates remain explicit:
 
-- PostgreSQL migrations must be reviewed and run on `ultra_crm`.
+- PostgreSQL migrations must be reviewed and run on `havnvard`.
 - Actual `diskaudit.files` column types and existing constraints must be confirmed.
-- Spark, NAS, and trigkey hashing must be exercised against small test batches.
+- Spark, NAS, and agent-1 hashing must be exercised against small test batches.
 - HELM WaitingRoom, TG PRESI, and Plane command adapters must be connected.
 - The HavnVard Flask blueprint and Grafana JSON must be integrated into the existing applications.
 - systemd timers must not be enabled until the manual acceptance run passes.

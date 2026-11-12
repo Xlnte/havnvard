@@ -5,7 +5,7 @@ Every verification run requests P3 admission before enqueuing or hashing work.
 Acquire input:
 
 ```json
-{"run_id":"UUID","host":"nas-ts453a","tier":"A","priority":"P3"}
+{"run_id":"UUID","host":"nas-1","tier":"A","priority":"P3"}
 ```
 
 Release receives the same shape.

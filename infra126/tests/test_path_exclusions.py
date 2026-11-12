@@ -23,7 +23,7 @@ from havnvard_bitrot.waitingroom import WaitingRoomGate
 
 from test_verifier import FakeRepository, Sink, candidate_for, settings
 
-POSTGRES_URL = "postgresql://role:password@127.0.0.1:5432/ultra_crm"
+POSTGRES_URL = "postgresql://role:password@127.0.0.1:5432/havnvard"
 
 
 def _env(monkeypatch, value: str | None) -> None:

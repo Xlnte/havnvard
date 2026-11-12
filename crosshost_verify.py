@@ -3,7 +3,7 @@
 
 Answers the two questions the owner actually cares about, with cryptographic
 evidence, non-destructively:
-    1. "Is my Spark/trigkey data genuinely intact on the NAS?"
+    1. "Is my Spark/agent-1 data genuinely intact on the NAS?"
     2. "What can I safely delete from Spark?"
 
 Why this tool exists (not just more dedup.py): dedup.py drives `rdfind`, which
@@ -11,7 +11,7 @@ needs local filesystem access. The NAS is not mounted on Spark (mount-based
 crawling plateaued at ~20 files/sec and was abandoned for the SSH-based
 native crawl in load_nas_inventory.py/nas_native_crawl.sh) -- so NAS files
 have never been deduped or cross-checked: `dedup_checked_at` is NULL for
-every nas-ts453a and trigkey row.
+every nas-1 and agent-1 row.
 
 Key insight (verified against production data 2026-07-25): cross-host
 duplicates MUST share a byte size, so we never need to hash everything.
@@ -38,9 +38,9 @@ Subcommands:
 
 Usage:
     crosshost_verify.py candidates
-    crosshost_verify.py hash --host trigkey
-    crosshost_verify.py hash --host nas-ts453a --limit 500
-    crosshost_verify.py hash --host spark-20cf
+    crosshost_verify.py hash --host agent-1
+    crosshost_verify.py hash --host nas-1 --limit 500
+    crosshost_verify.py hash --host server-1
     crosshost_verify.py match
     crosshost_verify.py report
 """
@@ -126,13 +126,13 @@ def candidate_files(
     content_sha256, hashed_at)].
 
     `only_unhashed=True` restricts to rows never successfully hashed --
-    used by the remote (NAS/trigkey) hash paths, which can't cheaply re-stat
-    the file locally to check for drift the way the local spark-20cf path can.
+    used by the remote (NAS/agent-1) hash paths, which can't cheaply re-stat
+    the file locally to check for drift the way the local server-1 path can.
 
     Includes `inode`/`nlink` so callers can dedupe hashing work across
     hardlinked paths: on the SAME host, the same inode is guaranteed to be
     the same bytes on disk (that's what a hardlink means), so there is no
-    need to re-read-and-hash it once per path. spark-20cf alone has ~2M
+    need to re-read-and-hash it once per path. server-1 alone has ~2M
     hardlinked file rows (nlink>1) -- hashing each path independently would
     mean redundant disk reads for data that's already known-identical by
     construction. `hash_local_host()` groups by inode and hashes one
@@ -175,7 +175,7 @@ def cmd_candidates(conn, args):
 
 
 # ---------------------------------------------------------------------------
-# hash: spark-20cf (local)
+# hash: server-1 (local)
 # ---------------------------------------------------------------------------
 
 def _renice_self():
@@ -220,7 +220,7 @@ def _write_integrity_unreadable(conn, host: str, path: str, size_bytes, notes: s
 
 def hash_local_host(conn, host: str, run_id: int, min_size: int, limit: int | None, batch_commit: int = 200,
                     reuse_stored: bool = True):
-    """Hash candidate files on THIS host (spark-20cf) directly via os.stat +
+    """Hash candidate files on THIS host (server-1) directly via os.stat +
     hashlib. Resumable: a row that already has content_sha256 is skipped
     UNLESS a fresh os.stat() shows its size/mtime has drifted from what's
     recorded in diskaudit.files, in which case it is re-hashed (self-heal
@@ -235,7 +235,7 @@ def hash_local_host(conn, host: str, run_id: int, min_size: int, limit: int | No
     Only ONE representative path per inode is actually read off disk and
     hashed; the resulting sha256 is then fanned out to every sibling path
     sharing that inode with a single UPDATE ... WHERE inode = . This avoids
-    ~2M redundant disk reads on spark-20cf alone (nlink>1 rows there), and
+    ~2M redundant disk reads on server-1 alone (nlink>1 rows there), and
     keeps `files_hashed` reporting the real number of disk reads performed
     (fan-out rows are counted separately, not double-counted as "hashed").
     """
@@ -373,7 +373,7 @@ def hash_local_host(conn, host: str, run_id: int, min_size: int, limit: int | No
 
 
 # ---------------------------------------------------------------------------
-# hash: nas-ts453a / trigkey (remote, via hash_batch.sh)
+# hash: nas-1 / agent-1 (remote, via hash_batch.sh)
 # ---------------------------------------------------------------------------
 
 HASH_BATCH_SCRIPT_LOCAL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hash_batch.sh")
@@ -387,13 +387,13 @@ _SSH_OPTS_COMMON = ["-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTime
 NAS_SCRATCH_DIR = _site.nas("scratch_dir") or _site.nas_share_base() + "/.diskaudit_scratch"
 NAS_HOST_TOKEN_FILE = _site.nas("backup_token_file") or "/etc/havnvard/nas_backup.env"
 # Intentionally DIFFERENT credential than load_nas_inventory.py's crawl path
-# (which uses /etc/forge/tokens/nas_admin.env, an admin-group account). This
+# (which uses /etc/havnvard/nas_admin.env, an admin-group account). This
 # tool uses the nas_backup account instead -- verified 2026-07-25 to have
-# read access across shares (homes/, PAFOther/, bkup_spark/), which is all
+# read access across shares (e.g. homes/ and backup shares), which is all
 # this tool needs (read-only content hashing, no crawl/find of whole shares).
 # Both accounts reject publickey auth; both use sshpass + a password file.
 
-# trigkey: normal Ubuntu box, passwordless sudo, real disk /tmp (no NAS-style
+# agent-1: normal Ubuntu box, passwordless sudo, real disk /tmp (no NAS-style
 # tmpfs constraint) -- reachable via plain key-based ssh, no sshpass needed.
 # (3.0.0: one class per remote agent machine, settings from [agents.NAME] in the site file.)
 
@@ -464,8 +464,8 @@ def _with_sshpass(argv: list[str], password: str, timeout_sec: int | None = None
 
 
 class _RemoteHashTarget:
-    """Abstracts the remote-hashing transport differences between nas-ts453a
-    (sshpass + BusyBox, must avoid /tmp) and trigkey (key-based ssh, normal
+    """Abstracts the remote-hashing transport differences between nas-1
+    (sshpass + BusyBox, must avoid /tmp) and agent-1 (key-based ssh, normal
     /tmp is fine) behind one interface, so the batch-orchestration logic in
     `hash_remote_host()` is written once."""
 
@@ -536,7 +536,7 @@ def hash_remote_host(
     conn, host: str, run_id: int, min_size: int, limit: int | None,
     batch_size: int = 500,
 ):
-    """Hash candidate files on a remote host (nas-ts453a or trigkey) by
+    """Hash candidate files on a remote host (nas-1 or agent-1) by
     scp'ing hash_batch.sh + a path-list to the host's own scratch dir,
     running it over ssh, scp'ing the two result files back, loading them
     into Postgres, and cleaning up scratch files on BOTH sides -- same
@@ -545,7 +545,7 @@ def hash_remote_host(
     Only ever hashes files never successfully hashed before (content_sha256
     IS NULL) -- resumable in the sense that a killed/restarted run picks up
     exactly where it left off, without re-doing already-hashed files. Unlike
-    the local spark-20cf path, this does not cheaply re-verify mtime/size
+    the local server-1 path, this does not cheaply re-verify mtime/size
     drift on every already-hashed row (that would mean a live remote stat
     per file, defeating the point of batching) -- if a remote file changes
     content in place, `dedup_checked_at`/`hashed_at` staleness is a known,
@@ -776,7 +776,7 @@ _MATCH_GROUP_SQL = """
     )
 """
 
-# 1) Exact content match: every spark/trigkey file with a hashed NAS
+# 1) Exact content match: every spark/agent-1 file with a hashed NAS
 #    counterpart sharing the SAME content_sha256 -- cryptographic proof of
 #    bit-identity at time of test.
 _MATCH_INTEGRITY_MATCH_SQL = """

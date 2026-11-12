@@ -32,7 +32,7 @@ Show the user the printed commands and run them with their yes. Check: `systemct
 ## 4. Enrol this device
 ```
 python -m backup hub set <hub-host>[:port]
-python -m backup enroll <device-name> --paths <folders...> [--excludes generic|spark|pafpad] [--limit-upload KIB] [--quiet-hours HH-HH]
+python -m backup enroll <device-name> --paths <folders...> [--excludes generic|spark|desktop-1] [--limit-upload KIB] [--quiet-hours HH-HH]
 ```
 `enroll` prints a `name:{SHA}...` line: append it to the hub's `.htpasswd` (`~/.config/havnvard/hub.htpasswd` on the hub), then
 `systemctl --user kill -s HUP restic-hub.service` there. Then tell the user, in plain words: **"Save
@@ -51,7 +51,7 @@ NAS: `python -m backup nas-target ...` (the user fills the password into the cre
 `python -m backup nas-copy`.
 
 ## 7. Prove it (required)
-1. `python -m backup health` on the hub and on the device: exit 0. If the hub has no `alertlib` (trigkey), also set up, on Spark,
+1. `python -m backup health` on the hub and on the device: exit 0. If the hub has no `alertlib` (agent-1), also set up, on Spark,
    `python -m backup health-relay --ssh <hub> --python <path> --repo-dir <dir> --render-units ./out`, install the rendered
    hourly timer, and run `health-relay` once by hand: exit 0.
 2. `python -m backup restore-drill <device-name>`: it must print `N/N matched`. If it prints `0/0` or any mismatch, the

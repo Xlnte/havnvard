@@ -14,11 +14,11 @@ Manual registration example:
 
 ```bash
 python scripts/register_copy_link.py \
-  --logical-host spark-20cf \
+  --logical-host server-1 \
   --logical-path /srv/data/archive.tar.gz \
   --source-kind live_host \
-  --source-id nas-ts453a \
-  --source-host nas-ts453a \
+  --source-id nas-1 \
+  --source-host nas-1 \
   --source-path /share/Backup/spark/srv/data/archive.tar.gz
 ```
 

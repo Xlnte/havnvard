@@ -20,8 +20,8 @@ Never deletes, never hardlinks, never modifies files -- read-only with respect t
 files being scanned; only writes are into diskaudit.files.
 
 Usage:
-  dedup.py --host spark-20cf                       # derive directory scope from diskaudit.files
-  dedup.py --host nas-ts453a --root /mnt/nas-audit  # explicit root (v2 Part B, NAS mount case)
+  dedup.py --host server-1                       # derive directory scope from diskaudit.files
+  dedup.py --host nas-1 --root /mnt/nas-audit  # explicit root (v2 Part B, NAS mount case)
 """
 from __future__ import annotations
 
@@ -318,7 +318,7 @@ WHERE f.host = s.host AND f.path = s.path AND s.host = %(host)s;
 def write_groups(conn, host: str, groups: dict[str, list[str]], batch_size: int = 10000, dedup_tool: str = "rdfind"):
     """Bulk-write via COPY-into-staging + one set-based UPDATE...FROM, instead of one
     UPDATE per file -- the per-file loop measured at ~22 of 78 total minutes on the
-    /srv/ultraops test run (1.8M files), a real and unacceptable cost at this scale.
+    /srv/apps test run (1.8M files), a real and unacceptable cost at this scale.
 
     dedup_tool is recorded per-row so serial (rdfind) vs parallel (rdfind-parallel)
     invocations are distinguishable in the DB afterward."""

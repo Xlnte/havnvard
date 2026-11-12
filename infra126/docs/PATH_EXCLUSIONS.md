@@ -3,9 +3,9 @@
 ## What it is
 
 A configurable list of absolute path prefixes the verifier will **never enqueue**
-for re-hashing. Introduced 2026-09-01 for `/home/UltraOC/` on `spark-20cf`: the
+for re-hashing. Introduced 2026-09-01 for `/home/UltraOC/` on `server-1`: the
 deprecated UltraOC account home is mode `0750` and owned by `UltraOC`, the
-verifier runs as `parker`, so every baseline under it hashed `unreadable`.
+verifier runs as `havnvard`, so every baseline under it hashed `unreadable`.
 Those 34 items were 34 of the 38 errors on every Tier C run, which propagated
 `completed_with_errors` -> `cli.py` exit 2 -> `havnvard-infra126-c.service`
 failed. `ever_verified_files = 0` under that prefix, so excluding it costs no
@@ -17,9 +17,9 @@ coverage.
 
 | Value | Meaning |
 |---|---|
-| unset | shipped default: `spark-20cf:/home/UltraOC/` |
-| `spark-20cf:/home/UltraOC/,/global/prefix/` | comma/newline list; `host:` optional (omitted = all hosts) |
-| `[{"host":"trigkey","prefix":"/mnt/x/","reason":"PLANE-1"}]` | JSON array, carries a reason string |
+| unset | shipped default: `server-1:/home/UltraOC/` |
+| `server-1:/home/UltraOC/,/global/prefix/` | comma/newline list; `host:` optional (omitted = all hosts) |
+| `[{"host":"agent-1","prefix":"/mnt/x/","reason":"PLANE-1"}]` | JSON array, carries a reason string |
 | `""` (empty) | exclusions disabled entirely — deliberate operator choice |
 
 Rejected loudly at load: relative prefixes, and `/`.
@@ -55,7 +55,7 @@ success over data it could not check:
 remaining-due count still counted it, every run would report
 `completed_with_errors` forever.
 
-## Proof (2026-09-01, live, spark-20cf Tier C)
+## Proof (2026-09-01, live, server-1 Tier C)
 
 | Run | exclusions | checked | read-failure errors | `excluded_by_policy` | run errors | status |
 |---|---|---|---|---|---|---|

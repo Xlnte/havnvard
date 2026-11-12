@@ -9,7 +9,7 @@ After the existing restic check process finishes:
 ```bash
 python scripts/record_restic_check.py \
   --snapshot-id SNAPSHOT \
-  --host spark-20cf \
+  --host server-1 \
   --passed \
   --corrupt-count 0 \
   --details-json '{"repository":"/path/to/repo"}'
@@ -24,7 +24,7 @@ python scripts/restic_hash_copy.py \
   --repository /path/to/repo \
   --snapshot SNAPSHOT \
   --snapshot-path /path/inside/snapshot \
-  --logical-host spark-20cf \
+  --logical-host server-1 \
   --logical-path /live/path \
   --source-id restic:spark-primary
 ```

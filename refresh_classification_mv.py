@@ -11,7 +11,7 @@ load-bearing refresh -- up to ~3 weeks of drift between "file data changed" and 
 reflects it."
 
 Standalone CLI, no side effects on import -- same traceability convention as
-refresh_load_bearing_paths.py. See runbook: /home/parker/runbooks/20260718-diskaudit-classification/README.md
+refresh_load_bearing_paths.py. See runbook: /home/user/runbooks/20260718-diskaudit-classification/README.md
 
 Usage:
   refresh_classification_mv.py

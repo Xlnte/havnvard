@@ -1,6 +1,6 @@
 """verify_tree.py (HavnVard 1.5.0, INFRA-538): full-byte proof before deletion.
 
-PAF's test case first: one lowercase `m` changed to capital `M` in a book-sized text file must
+The operator's test case first: one lowercase `m` changed to capital `M` in a book-sized text file must
 read as DIFFERENT, with size, name and mtime all equal. The "NAS" here is a LocalShellTarget:
 the REAL remote_script() runs under `sh` (dash, the same POSIX family as the NAS BusyBox ash)
 against a tmp dir, so the production command text and parser are exercised end to end.
@@ -61,7 +61,7 @@ def pair(tmp_path):
     return str(tmp_path / "local"), str(tmp_path / "nas"), LocalShellTarget(tmp_path)
 
 
-# ---------------------------------------------------------------- PAF's m -> M case
+# ---------------------------------------------------------------- the operator's m -> M case
 
 def test_m_to_M_is_different_with_equal_size_name_mtime(pair):
     local, nas, t = pair
@@ -205,7 +205,7 @@ def test_canary_passes_on_honest_target(tmp_path):
 
 @pytest.mark.parametrize("idx", range(6))
 def test_canary_5_plus_1_any_position(tmp_path, idx):
-    """PAF 20261110: 5 identical copies + 1 m->M copy. Whichever of the 6 holds the change,
+    """The operator 20261110: 5 identical copies + 1 m->M copy. Whichever of the 6 holds the change,
     only that file reads different and the run passes."""
     ok, why = vt.run_canary(LocalShellTarget(tmp_path), planted_index=idx)
     assert ok, why
@@ -337,7 +337,7 @@ def test_local_root_guard_autofs_then_nfs_same_mountpoint(tmp_path):
     mounts.write_text(
         "/dev/nvme0n1p2 / ext4 rw 0 0\n"
         f"systemd-1 {d} autofs rw,relatime,fd=70 0 0\n"
-        f"100.104.77.25:/bkup_spark {d} nfs rw,vers=3 0 0\n")
+        f"192.0.2.40:/bkup_spark {d} nfs rw,vers=3 0 0\n")
     assert "nfs" in vt.local_root_problem(str(d), str(mounts))
     only_autofs = tmp_path / "mounts2"
     only_autofs.write_text(f"/dev/x / ext4 rw 0 0\nsystemd-1 {d} autofs rw 0 0\n")

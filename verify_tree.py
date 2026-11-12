@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """verify_tree.py -- HavnVard 1.6.0 (Plane INFRA-538; 5+1 canary 20261110): full-byte proof before a copy is deleted.
 
-PAF rule (20261109 23:39): no copy of a file is deleted unless 100% of its bytes are proven
+The operator rule (20261109 23:39): no copy of a file is deleted unless 100% of its bytes are proven
 equal to the copy that is kept. Size, mtime, or a partial hash never count. A one-character
 change (one lowercase `m` -> capital `M` in a book-sized text file) must read as DIFFERENT.
 
@@ -330,7 +330,7 @@ def verify_pair(local_root: str, nas_path: str, target) -> tuple[str, list, str,
 
 
 # --------------------------------------------------------------------------
-# canary (PAF's m -> M test, every run)
+# canary (the operator's m -> M test, every run)
 # --------------------------------------------------------------------------
 
 _CANARY_PARA = (
@@ -360,7 +360,7 @@ def canary_texts() -> tuple[bytes, bytes]:
     return original, mutated
 
 
-CANARY_COPIES = 6                  # PAF 20261110: 5 identical copies + 1 with the m->M change
+CANARY_COPIES = 6                  # the operator 20261110: 5 identical copies + 1 with the m->M change
 CANARY_NAMES = tuple(f"book_{n}.txt" for n in range(1, CANARY_COPIES + 1))
 
 
@@ -389,7 +389,7 @@ def _canary_same_ok(verdict: str, results: list) -> tuple[bool, str]:
 
 
 def run_canary(target, planted_index: Optional[int] = None) -> tuple[bool, str]:
-    """PAF's m->M test, 5+1 form (20261110). The NAS gets 6 copies of the original book text.
+    """the operator's m->M test, 5+1 form (20261110). The NAS gets 6 copies of the original book text.
     Check 1: the local side holds 5 identical copies + 1 copy with one m->M, at a position that
     changes every run; the real comparison path must call exactly that one file different and
     the other 5 equal. Check 2 (positive control): 6 identical local copies must all read equal.

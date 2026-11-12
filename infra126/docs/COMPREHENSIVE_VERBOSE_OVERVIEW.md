@@ -3,7 +3,7 @@
 ## v1, v+1, and v+2 Roadmap
 
 **Application:** HavnVard / `diskaudit`  
-**Owner:** PAF  
+**Owner:** the operator  
 **Rebuild date:** 2026-07-26  
 **Package status:** Complete code-review and controlled-deployment package. Live deployment and live-machine acceptance remain pending.
 
@@ -186,7 +186,7 @@ An accepted mutable change does not count as verification. Only the later exact 
 5. Reject the observation as `changed_during_hash` if device, inode, size, or mtime changed.
 6. Enforce a per-file timeout.
 
-### NAS and trigkey remote hashing
+### NAS and agent-1 remote hashing
 
 1. Refuse NAS `/tmp` as scratch space.
 2. Create a unique run directory under persistent INFRA-126 scratch.
@@ -354,7 +354,7 @@ Deployment remains staged:
 1. Review live schema and prototype tables.
 2. Apply migrations without enabling timers.
 3. Connect TG PRESI, Plane, and HELM WaitingRoom adapters.
-4. Run ten-item Spark, NAS, and trigkey Tier A batches.
+4. Run ten-item Spark, NAS, and agent-1 Tier A batches.
 5. Validate exact hash, divergence, failure, and alert behavior.
 6. Enable Tier A, D, E, and monitoring first.
 7. Enable Tier B and C only after maintenance-window review and observed Tier A/E stability.
@@ -437,7 +437,7 @@ The July 25 inventory and coverage figures in the source specification are histo
 Package-level validation proves that the code compiles, shell syntax parses, dashboard JSON parses, safety guards pass, and the isolated test suite passes. It does not prove:
 
 - production PostgreSQL compatibility;
-- live Spark/NAS/trigkey throughput;
+- live Spark/NAS/agent-1 throughput;
 - actual TG or Plane delivery;
 - HELM WaitingRoom command compatibility;
 - restic repository evidence;

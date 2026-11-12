@@ -5,11 +5,11 @@ Builds diskaudit.load_bearing_paths: the "load-bearing override" that protects c
 files (a monthly cron script, a yearly-run tool, a rarely-touched config) from being mislabeled
 stale/possibly-obsolete purely by mtime/atime age. This is the PRESCAB-cabinet-converged core
 insight for the whole classification layer — see:
-  - design doc: /home/parker/.claude/plans/witty-swinging-shore.md
-  - runbook:    /home/parker/runbooks/20260718-diskaudit-classification/README.md
-  - migration:  /srv/ultraops/migrations/20260718_diskaudit_classification_v1.sql
+  - design doc: /home/user/.claude/plans/witty-swinging-shore.md
+  - runbook:    /home/user/runbooks/20260718-diskaudit-classification/README.md
+  - migration:  /srv/apps/migrations/20260718_diskaudit_classification_v1.sql
 
-TRACEABILITY IS A HARD REQUIREMENT, not polish (PAF, 2026-07-18: "we don't want a GREP going
+TRACEABILITY IS A HARD REQUIREMENT, not polish (the operator, 2026-07-18: "we don't want a GREP going
 haywire and not knowing where it is being fired from"). Concretely, this script:
   1. Only ever reads from a small, explicit, BOUNDED set of sources — no recursive find over the
      filesystem, no iteration over "every user" or "every file". See SYSTEMD_GLOB, CRONTAB_USERS,
@@ -39,7 +39,7 @@ Safety rule for pattern shape (this is the actual "GREP going haywire" guard):
 Idempotent / safe to re-run: upserts on (pattern, source), never deletes. If a systemd unit or
 crontab line disappears, its previously-found load_bearing_paths row is simply not refreshed
 again (last_verified_at stops advancing) — it is NOT auto-removed, matching this project's
-standing no-auto-delete rule. Pruning a stale entry is a manual, PAF-reviewed decision.
+standing no-auto-delete rule. Pruning a stale entry is a manual, the operator-reviewed decision.
 
 Usage:
   refresh_load_bearing_paths.py                 # real run: scan sources, upsert, refresh MV
@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import os
 import json
 import shlex
 import subprocess
@@ -72,7 +73,10 @@ SYSTEMD_GLOB = "/etc/systemd/system/*.service"  # non-recursive, explicit — no
 # CLAUDE.md (Part II, USER ARCHITECTURE). Deliberately NOT an iteration over every system/passwd
 # user: clip and UltraOC are deprecated accounts, sandbox is isolated-testing-only, and iterating
 # blindly over all accounts is exactly the unbounded-scan pattern this script must avoid.
-CRONTAB_USERS = ["parker", "nemo"]
+import havnvard_site as _site  # noqa: E402  (3.0.0)
+
+# Users whose crontabs are read ([load_bearing] crontab_users in the site file; default: the running user).
+CRONTAB_USERS = list(_site.section("load_bearing").get("crontab_users") or [os.environ.get("USER") or "root"])
 
 DENY_WILDCARD_PREFIXES = (
     "/usr", "/bin", "/sbin", "/lib", "/lib64",
@@ -287,7 +291,7 @@ def main():
         with conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO diskaudit.load_bearing_refresh_runs (host, status) VALUES (%s, 'running') RETURNING id",
-                ("spark-20cf",),
+                (_site.local_host(),),
             )
             run_id = cur.fetchone()[0]
         conn.commit()

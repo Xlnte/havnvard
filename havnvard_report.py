@@ -238,15 +238,15 @@ def render(m: dict, delta: dict) -> str:
         _cap_line("🛜 NAS  ", cap.get("nas")),
         "",
         f"📊 {_hc(m['total_files'])} files indexed · 2 hosts",
-        f"  🖥️ Spark {_hc(sp['files'])} · {human_bytes(sp['bytes'])}  ⟳ {_fresh_flag(m['freshness'].get('spark-20cf'))}",
-        f"  🛜 NAS   {_hc(na['files'])} · {human_bytes(na['bytes'])}  ⟳ {_fresh_flag(m['freshness'].get('nas-ts453a'))}",
+        f"  🖥️ Spark {_hc(sp['files'])} · {human_bytes(sp['bytes'])}  ⟳ {_fresh_flag(m['freshness'].get(_site.local_host()))}",
+        f"  🛜 NAS   {_hc(na['files'])} · {human_bytes(na['bytes'])}  ⟳ {_fresh_flag(m['freshness'].get(_site.nas_host()))}",
         "",
         "📁 Top NAS shares",
     ]
     for s in m["nas_shares"]:
         if s["bytes"] < 1024 * 1024:
             continue
-        tag = "  ⏳" if m["running_scans"] and s["share"] in ("PAFOther",) else ""
+        tag = "  ⏳" if m["running_scans"] and s["share"] in tuple(_site.section("report").get("slow_shares") or ()) else ""
         lines.append(f"  {s['share']:<12}{_hc(s['files']):>7}  {human_bytes(s['bytes']):>9}{tag}")
 
     # health — errors as a daily trend, not a raw headline number

@@ -12,7 +12,7 @@ tmp/
 reports/
 
 # Secrets — real values NEVER live in this repo. They live at
-# /etc/forge/tokens/*.pass and *.env, outside any git working tree.
+# /etc/havnvard/*.pass and *.env, outside any git working tree.
 .env
 .env.*
 !.env.example

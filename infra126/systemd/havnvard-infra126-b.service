@@ -5,10 +5,10 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=parker
-WorkingDirectory=/srv/ultraops/diskaudit/infra126
+User=havnvard
+WorkingDirectory=/opt/havnvard/infra126
 EnvironmentFile=/etc/havnvard/infra126.env
-ExecStart=/srv/ultraops/diskaudit/infra126/.venv/bin/python scripts/run_scheduled_tier.py --tier B --max-items 500000
+ExecStart=/opt/havnvard/infra126/.venv/bin/python scripts/run_scheduled_tier.py --tier B --max-items 500000
 Nice=17
 IOSchedulingClass=idle
 TimeoutStartSec=12h

@@ -1,4 +1,4 @@
-"""View C — BACKUP: files on Spark + trigkey NOT safely on the NAS (candidates
+"""View C — BACKUP: files on Spark + agent-1 NOT safely on the NAS (candidates
 to copy).
 
 Primary source: diskaudit.backup_coverage (host, path, classification,
@@ -6,8 +6,8 @@ match_method) -- the concurrent agent's coverage table, landed live during
 this build (confirmed via to_regclass() 2026-07-25: table + backup_scope_rules
 both exist). classification IN ('NOT_BACKED_UP','BACKED_UP_UNVERIFIED',
 'EXCLUDED') with match_method IN ('none','path_size_mtime') observed so far --
-no 'hash_proven'/'restic_snapshot_listing' rows yet, and only trigkey has been
-evaluated (spark-20cf: 0 rows) as of this build. The KPI banner surfaces that
+no 'hash_proven'/'restic_snapshot_listing' rows yet, and only agent-1 has been
+evaluated (server-1: 0 rows) as of this build. The KPI banner surfaces that
 per-host evaluation gap explicitly so it never reads as "spark is all safe".
 
 Fallback source (used only if backup_coverage is ever absent, e.g. schema
@@ -124,7 +124,7 @@ async def _kpi_coverage(conn, f: dict) -> dict:
     # Coverage-completeness banner: how many rows exist per source host in
     # backup_coverage at all (any classification), vs how many still_exists
     # files diskaudit.files has for that host -- makes an unevaluated host
-    # (e.g. spark-20cf mid-build) visibly obvious rather than reading as "all
+    # (e.g. server-1 mid-build) visibly obvious rather than reading as "all
     # safe".
     per_host = await conn.fetch(
         "SELECT host, count(*) AS evaluated FROM diskaudit.backup_coverage "

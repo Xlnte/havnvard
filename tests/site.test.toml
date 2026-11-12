@@ -14,3 +14,6 @@ ssh_key = "~/.ssh/id_ed25519"
 
 [nas]
 share_base = "/share/CACHEDEV1_DATA"
+
+[scan]
+extra_excludes = ["/mnt/backup"]

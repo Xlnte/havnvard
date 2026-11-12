@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=parker
-WorkingDirectory=/srv/ultraops/diskaudit
-ExecStart=/srv/ultraops/diskaudit/.venv/bin/python /srv/ultraops/diskaudit/havnvard_report.py --analyze
+User=havnvard
+WorkingDirectory=/opt/havnvard
+ExecStart=/opt/havnvard/.venv/bin/python /opt/havnvard/havnvard_report.py --analyze
 TimeoutStartSec=20min

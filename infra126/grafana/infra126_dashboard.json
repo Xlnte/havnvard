@@ -29,7 +29,7 @@
           "matcher": {"id": "byName", "options": "path"},
           "properties": [{
             "id": "links",
-            "value": [{"title": "Open file verification", "url": "https://spark-20cf.tail5f354b.ts.net:9457/havnvard/verification-file/${__data.fields.file_key}"}]
+            "value": [{"title": "Open file verification", "url": "https://server-1.example.ts.net:9457/havnvard/verification-file/${__data.fields.file_key}"}]
           }]
         }]
       },

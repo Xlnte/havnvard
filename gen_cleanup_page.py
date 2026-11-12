@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Generate the Spark/trigkey duplicate-cleanup page (List B).
+"""Generate the Spark/agent-1 duplicate-cleanup page (List B).
 
-Served as a static page from /srv/ultraops/helm-status (an existing Caddy
+Served as a static page from /srv/apps/helm-status (an existing Caddy
 file_server root on :9456) so there is a URL immediately, without waiting on the
 full HavnVard UI service.
 
@@ -66,7 +66,7 @@ WITH grp AS (
          count(DISTINCT inode) AS real_copies
   FROM diskaudit.files
   WHERE still_exists AND duplicate_group_id IS NOT NULL AND file_type='regular'
-    AND host IN ('spark-20cf','trigkey')
+    AND host = ANY(%s)
   GROUP BY host, duplicate_group_id, size_bytes
   HAVING count(DISTINCT inode) > 1),
 ranked AS (
@@ -163,7 +163,7 @@ def main() -> None:
     with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
         cur.execute(SUMMARY)
         summary = cur.fetchall()
-        cur.execute(DETAIL, (TOP_N,))
+        cur.execute(DETAIL, (list(_site.source_hosts()), TOP_N))
         detail = cur.fetchall()
 
         cur.execute("""SELECT host, count(*) FILTER (WHERE dedup_checked_at IS NOT NULL) ck,
@@ -236,7 +236,7 @@ def main() -> None:
             f'<td class="num">{r["inode"]}</td><td class="num">{r["nlink"]}</td>'
             f'<td class="num">{r["real_copies"]}</td><td>{act}</td></tr>')
     p.append("</tbody></table></div>")
-    p.append('<div class="sub" style="margin-top:26px">Source: <code>ultra_crm.diskaudit</code>. '
+    p.append('<div class="sub" style="margin-top:26px">Source: <code>havnvard.diskaudit</code>. '
              "Deleting is performed only by a separate authorized process after review — "
              "HavnVard itself has no delete capability.</div></div>")
 

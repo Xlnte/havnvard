@@ -15,11 +15,12 @@ these calls), but should be visible in the log.
 """
 from __future__ import annotations
 
+import os
 import sys
 
 import psycopg
 
-sys.path.insert(0, "/srv/diskaudit")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from heartbeat import write_heartbeat  # noqa: E402
 from scan import get_dsn  # noqa: E402
 

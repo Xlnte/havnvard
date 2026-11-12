@@ -6,7 +6,7 @@ diskaudit system health: total files/bytes tracked, duplicate/reclaimable space,
 recent (7-day) stale or failed runs.
 
 Dispatches via POST to :9103/dispatch (logic_governance mode) and logs response to
-ultra_crm.jobs.cabinet_runs. This is an operational state review, not a creative task,
+havnvard.jobs.cabinet_runs. This is an operational state review, not a creative task,
 so logic_governance (cold, deterministic, source-bound) is appropriate.
 
 Usage:
@@ -14,7 +14,7 @@ Usage:
   weekly_prescab_review.py             # dispatch to PRESCAB, log response
   weekly_prescab_review.py --test-mode # dispatch with [TEST] prefix to TG
 
-See: /home/parker/runbooks/20260718-diskaudit-prescab-weekly-review/README.md
+See: /home/user/runbooks/20260718-diskaudit-prescab-weekly-review/README.md
 """
 from __future__ import annotations
 
@@ -431,7 +431,7 @@ def log_dispatch_result(
     helm_layer: Optional[str] = None,
 ) -> None:
     """
-    Log dispatch result to ultra_crm.jobs.cabinet_runs.
+    Log dispatch result to havnvard.jobs.cabinet_runs.
     Follows the pattern from dispatch_client.py.
     """
     try:
@@ -487,7 +487,7 @@ def main():
 
     try:
         dsn = get_dsn()
-        log.info("Connecting to ultra_crm...")
+        log.info("Connecting to havnvard...")
         with psycopg.connect(dsn) as conn:
             log.info("Querying diskaudit state...")
             host_summary = query_host_summary(conn)

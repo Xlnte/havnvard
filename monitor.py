@@ -31,7 +31,7 @@ Usage:
   monitor.py --test-mode                # prefix all outgoing messages with [TEST]
   monitor.py --stale-minutes 15         # override staleness threshold (default 10)
 
-See: /home/parker/.claude/plans/witty-swinging-shore.md, Plane INFRA-98.
+See: /home/user/.claude/plans/witty-swinging-shore.md, Plane INFRA-98.
 """
 from __future__ import annotations
 

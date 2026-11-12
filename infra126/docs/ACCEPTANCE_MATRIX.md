@@ -12,7 +12,7 @@ Legend: **PASS-PACKAGE** means validated in the build sandbox. **LIVE-PENDING** 
 | Tier D stabilization | PASS-PACKAGE | Queue schema and selector |
 | Tier E critical override | PASS-PACKAGE | Policy/classifier tests |
 | Local SHA-256 | PASS-PACKAGE | Real temporary-file hashing test |
-| NAS/trigkey remote worker syntax | PASS-PACKAGE | Compilation and `sh -n` |
+| NAS/agent-1 remote worker syntax | PASS-PACKAGE | Compilation and `sh -n` |
 | NAS remote execution | LIVE-PENDING | Requires QNAP SSH |
 | No NAS `/tmp` | PASS-PACKAGE | Config and runtime rejection |
 | Metadata-before/after race detection | PASS-PACKAGE | Hashing implementation |

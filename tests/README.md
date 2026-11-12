@@ -1,6 +1,12 @@
 # Tests
 
-Run: `cd /srv/diskaudit && .venv/bin/pytest tests/ -v` (about 5 minutes; the crosshost tests touch the live DB inside rolled-back
+Run: `.venv/bin/pytest tests/ -v` (and `cd infra126 && pytest tests`).
+
+* Every test reads `tests/site.test.toml` (hosts `server-1`, `nas-1`, `agent-1`), never your real site file.
+* **Database tests are skipped unless `HAVNVARD_TEST_DSN` names a scratch PostgreSQL database** with the `diskaudit`
+  schema applied (`migrations/` in order). `POSTGRES_URL` is overridden for the whole test session, so code under
+  test can never reach a production database. Never point `HAVNVARD_TEST_DSN` at production: the crosshost tests
+  commit `_test_` rows and sweep them at session end.
 transactions, the NAS-dedup tests do not touch production at all).
 
 | File | What it covers |
@@ -17,5 +23,5 @@ transactions, the NAS-dedup tests do not touch production at all).
 * `_dbguard.py::GuardedConn` rewrites every `diskaudit.` reference to that schema, so code under test physically cannot reach a production
   table through it, and ALSO refuses any write naming a real host (the hosts in tests/site.test.toml). Synthetic hosts are `_test_*`.
 * `_fake_target.py::FakeTarget` runs the real `hash_stat_batch.sh` locally; no real SSH, no NAS.
-* The crosshost tests keep their own convention (`_test_` hosts on the live schema, session-end sweep) and are unchanged.
+* The crosshost tests keep their own convention (`_test_` hosts, session-end sweep) on the scratch database.
 | `test_backup_core.py`, `test_backup_restic.py` | HavnVard Backup (`backup/`, 2.0.0): config, enrol (idempotent, no secret printed), hub install runs nothing, disk guard, client run, health + alerts, drill (incl. silent corruption), prune, NAS copy, offsite repair/flag. Tmp dirs, local restic repos, local-path rclone remotes; never the live DB, hub or NAS. |

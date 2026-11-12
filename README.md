@@ -1,50 +1,47 @@
 # HavnVard
 
-**Storage Assurance.** Whole-disk file inventory, deduplication, and
-file-status classification system for spark-20cf + attached NAS
-(nas-ts453a). v2.0.0 (adds HavnVard Backup, see below).
+**Know that every file you care about is backed up, prove the backups restore, and find any file in any backup.**
+HavnVard is a self-hosted storage-assurance toolkit for a home or small-office fleet: a few Linux machines, a NAS and
+a cloud account. Version 3.0.0.
 
-## Status
+> **Absolute rule: HavnVard never deletes, moves or overwrites a scanned file.** Every "duplicate", "stale" or
+> "not backed up" result is a report for you to read. Deleting anything is always your decision, made by hand.
 
-Active, `thoth.census` system_key `havnvard`, primary path
-`/srv/diskaudit`. Owner: parker.
+## What it does (most valuable first)
 
-## What this does
+| # | Function | What you get |
+|---|---|---|
+| 1 | **"Am I actually backed up?"** | Every file on every machine is classified as backed up or not; `not-backed-up` lists what is missing by folder and file type. Most backup tools only tell you the job ran. |
+| 2 | **Encrypted backup of every machine to a hub you own** | restic repositories on an append-only rest-server: ransomware on a laptop cannot erase its backups. One command enrols a device. |
+| 3 | **Proof that restores work** | `restore-drill` restores random files and compares SHA-256 fingerprints ("80/80 match"). Finding nothing to compare is a fail, not a pass. |
+| 4 | **Find any file in any backup** | `where bob.txt` names the backup holding each version (`20261111_SERVER-1_000042`). The catalog is stored inside every backup, so it survives losing the hub. |
+| 5 | **Safe duplicate finder across machines** | Matches by content (SHA-256), never by name; produces a list and never deletes. |
+| 6 | **Offsite and second-copy** | Add-only upload of the already-encrypted repositories to any rclone remote, plus a mirror on a NAS. |
+| 7 | **Bit-rot detection** | Scheduled re-hashing and multi-copy comparison (`infra126/`), so silent corruption is found while a good copy exists. |
+| 8 | **Health and alerts** | Stale backups, failed jobs, free space, offsite lag; JSON output; alerts through any command you choose. |
+| 9 | **Whole-disk inventory** | Every file on Linux machines and QNAP-style NAS shares in one PostgreSQL schema. |
+| 10 | **Web pages** | Browse duplicates, cleanup candidates and backup coverage; export CSV/JSON. |
 
-HavnVard crawls every file across multiple hosts into `ultra_crm.diskaudit`
-schema, finds real (SHA-256, cryptographic) duplicates across hosts, checks
-whether "critical" files are actually backed up somewhere else, and
-classifies files as active/load-bearing/stale/possibly-obsolete/orphaned —
-without ever auto-deleting anything. See the full design doc
-(`/home/parker/.claude/plans/witty-swinging-shore.md`) and runbooks under
-`/home/parker/runbooks/20260717-diskaudit-*` and `/20260718-diskaudit-*` for
-architecture, decisions, and verification history.
+## Two parts, two install paths
 
-**Cross-host content verification** (`crosshost_verify.py`, added
-2026-07-25, runbook `/home/parker/runbooks/20260725-havnvard-crosshost-integrity/`):
-`dedup.py` drives `rdfind`, which needs local filesystem access — the NAS is
-not mounted on Spark, so NAS files were never deduped or cross-checked
-against spark-20cf/trigkey. `crosshost_verify.py` closes that gap without
-needing a mount: it prefilters `diskaudit.files` to sizes appearing on >=2
-hosts (>=1MB), hashes just that candidate set (SHA-256, over SSH for
-nas-ts453a/trigkey, locally for spark-20cf, inode-aware so hardlinked rows
-are hashed once, not once per path), then cryptographically proves — or
-disproves — that a given spark/trigkey file is genuinely byte-identical to a
-copy on the NAS. Answers the two questions PAF actually cares about: "is my
-data genuinely intact on the NAS?" and "what could I safely clean up on
-Spark?" — the latter as candidates only, never automatically.
+* **HavnVard Backup (`backup/`)** — Python 3.11+ standard library and restic. No database needed. Start with
+  "Install HavnVard Backup" below. Functions 2, 3, 4, 6 and 8.
+* **Inventory, dedup and verification (top-level scripts, `infra126/`, `webapp/`)** — needs PostgreSQL (schema
+  `diskaudit`, see `migrations/`) and a site file. Functions 1, 5, 7, 9 and 10.
 
-**NAS within-host dedup (`nas_trigkey_dedup.py`, 1.4.0, Plane INFRA-519 / INFRA-520):**
-finds files with byte-identical content on one host (nas-ts453a, trigkey) for an operator
-quarantine script that moves files. A digest is reused only while it is *fresh* (the stat it was
-computed against still matches the inventory); every ssh/scp step is checked and every batch must
-account for exactly the paths it was sent, otherwise the run fails and publishes nothing; groups are
-recomputed from fresh digests inside one transaction and stored as an immutable per-run snapshot
-(`dedup_group_snapshots` / `dedup_group_members`). Supports `--path <dir>` (scoped run, minutes
-instead of a day), `--exclude <dir>`, `--limit N` (hash only, publishes nothing) and `--export <run_id>`.
-Design, requirements and test plan:
-`/home/parker/runbooks/20261109-havnvard-nas-dedup/20261109_ARCHITECTURE.md`; operation: RUNBOOK.md
-section "NAS within-host dedup".
+## Site file (inventory tools)
+
+Everything that differs between installations lives in one TOML file: `/etc/havnvard/site.toml`,
+`~/.config/havnvard/site.toml`, or the path in `$HAVNVARD_SITE`. Copy `config/site.example.toml` and edit it.
+It names your hosts (the local machine, the NAS, remote "agent" machines), the database env file, the NAS and the
+optional alert/report integrations. **It never holds a password:** it names the files that hold them.
+
+## Known limits in 3.0.0
+
+* The SQL migrations are the project's real history and still name the original author's hosts in a few views and
+  seed rows; a fresh install should edit those host names before applying them (tracked for 3.1: a host-roles table).
+* Database tests run only against a scratch database you name in `HAVNVARD_TEST_DSN` (see `tests/README.md`).
+* Windows and phone clients are not built.
 
 ## Install HavnVard Backup
 
@@ -82,7 +79,7 @@ python -m backup enroll my-laptop --paths ~/Documents ~/Pictures --excludes gene
 `enroll` creates `~/.config/havnvard/restic.pass` and `rest.pass` (random, mode 600, never overwritten if present), the
 excludes file, and the backup timer in `./out/`. It prints one line to append to the hub's `.htpasswd` (a hash, not the
 password). Then `python -m backup client-run --init` makes the first backup. `--limit-upload` caps upload in KiB/s (0 = none).
-`--quiet-hours 08-18` means no backup starts in those local hours. Excludes profiles: `generic`, `spark`, `pafpad`, or your own file.
+`--quiet-hours 08-18` means no backup starts in those local hours. Excludes profiles: `generic`, `spark`, `desktop-1`, or your own file.
 
 ### 3. Hub-side passwords (so the hub can prune and copy)
 Append-only devices cannot delete or prune. For the hub to do that, copy each device's `restic.pass` to the hub as
@@ -109,14 +106,14 @@ step is printed. `nas-copy` mirrors the already-encrypted repo files (no passwor
 ### 6. Watch it and prove it
 ```bash
 python -m backup health          # snapshot age (> 26 h), last job, hub and NAS free space, offsite; non-zero on any problem
-python -m backup prune           # hub only; default keep 7 daily, 4 weekly (no monthly; PAF 20261111); --dry-run first
+python -m backup prune           # hub only; default keep 7 daily, 4 weekly (no monthly; the operator 20261111); --dry-run first
 python -m backup restore-drill my-laptop   # restores 20 random files, full SHA-256 compare, prints X/Y matched
 python -m backup coverage-sync my-laptop    # mark files BACKED_UP_UNVERIFIED (never VERIFIED: a listing is not a hash check) when the latest snapshot holds the same path+size+mtime
-python -m backup not-backed-up --host trigkey --by folder --limit 25   # biggest NOT backed-up folders (or --by type)
+python -m backup not-backed-up --host agent-1 --by folder --limit 25   # biggest NOT backed-up folders (or --by type)
 python -m backup check-timers   # list havnvard-restic-* timers whose script or backup source no longer exists
 ```
 
-A hub without `alertlib` (trigkey): on Spark run `python -m backup health-relay --ssh trigkey --python PATH --repo-dir DIR`
+A hub without `alertlib` (agent-1): on Spark run `python -m backup health-relay --ssh agent-1 --python PATH --repo-dir DIR`
 (or render an hourly timer with `--render-units ./out`). It runs `health --json --no-alert` on the hub and raises or
 resolves the alert locally; a failed ssh or unreadable output is itself an alert.
 
@@ -140,20 +137,20 @@ example with Syncthing, Immich or a cable copy) and include that folder in `--pa
 |---|---|
 | `scan.py` | Whole-disk metadata crawler (path/size/perms/owner/timestamps). Run locally per host; `--host`/`--root` flags let it tag rows for a different host name if crawling a mount. |
 | `scan_guard.py` | **1.4.3 (INFRA-522):** per-(host, root) Postgres advisory scan lock (a second scan of the same root is refused, exit 3) and per-scan `files_staging` cleanup, used by scan.py and load_nas_inventory.py. Needs migration `20261109_diskaudit_files_staging_scan_id_v1.sql`. |
-| `verify_tree.py` | **1.5.0 (INFRA-538):** full-byte proof before any copy is deleted. SHA-256 of every byte on BOTH sides in the same run (NAS side hashed on the NAS), exact file-list match, and a built-in canary before any result is trusted (1.6.0, PAF 20261110: 5 identical copies of an 8.5 MB book text + 1 copy with one `m`→`M` in the last partial 4 MiB chunk, at a position that changes every run, must read as exactly that one file different; 6 identical copies must all read equal). Exit 0 VERIFIED / 3 not / 4 canary failed. Records `diskaudit.tree_verifications` + `integrity_checks` (`basis='fresh'`); `mark-deleted --run-id` links each deletion. Called by spark-backup-db.sh / spark-backup-daily.sh before deleting a local backup dir. Needs migration `20261110_diskaudit_tree_verify_v1.sql`. |
+| `verify_tree.py` | **1.5.0 (INFRA-538):** full-byte proof before any copy is deleted. SHA-256 of every byte on BOTH sides in the same run (NAS side hashed on the NAS), exact file-list match, and a built-in canary before any result is trusted (1.6.0, the operator 20261110: 5 identical copies of an 8.5 MB book text + 1 copy with one `m`→`M` in the last partial 4 MiB chunk, at a position that changes every run, must read as exactly that one file different; 6 identical copies must all read equal). Exit 0 VERIFIED / 3 not / 4 canary failed. Records `diskaudit.tree_verifications` + `integrity_checks` (`basis='fresh'`); `mark-deleted --run-id` links each deletion. Called by spark-backup-db.sh / spark-backup-daily.sh before deleting a local backup dir. Needs migration `20261110_diskaudit_tree_verify_v1.sql`. |
 | `heartbeat.py` | Shared heartbeat/progress-tracking helpers used by scan.py, dedup.py, load_nas_inventory.py during long-running jobs. |
 | `bucketing.py` | LPT (longest-processing-time) bin-packing for parallel dedup worker assignment; also handles `ARG_MAX`-safe chunking of same-size candidate groups. |
 | `dedup.py` | rdfind integration + parallel worker orchestration for duplicate detection. |
 | `monitor.py` | Polls for stale/failed scan and dedup runs every 5 min, alerts to TG PRESI group. Idempotent. |
 | `nas_native_crawl.sh` | BusyBox-only (no Python/package manager needed) crawl script, scp'd to and run directly on the NAS. Writes results to a flat file on the NAS's own real disk (never `/tmp` — small tmpfs shared with live NAS processes). |
-| `load_nas_inventory.py` | Orchestrates one NAS share: runs `nas_native_crawl.sh` over SSH, ships results back, loads into the same schema as scan.py, tagged `host=nas-ts453a`. `--share <name>` per invocation. |
+| `load_nas_inventory.py` | Orchestrates one NAS share: runs `nas_native_crawl.sh` over SSH, ships results back, loads into the same schema as scan.py, tagged `host=nas-1`. `--share <name>` per invocation. |
 | `run_all_nas_shares.sh` | Loops `load_nas_inventory.py` across every known NAS share; continues past a per-share failure instead of aborting the whole run. |
 | `refresh_load_bearing_paths.py` | Builds the "load-bearing override" registry (cron/systemd/thoth.census cross-reference) that protects cold-but-live files from being misclassified as abandoned. Bounded scope, full per-run audit trail (`diskaudit.load_bearing_refresh_runs`). |
 | `refresh_classification_mv.py` | Refreshes the `diskaudit.mv_file_status` materialized view (the classification layer: active/load-bearing/stale/possibly-obsolete/orphaned). |
 | `weekly_prescab_review.py` | Assembles current diskaudit state and dispatches to PRESCAB (vp-operations, logic_governance mode) for a weekly trend review. Logged to `jobs.cabinet_runs`. |
 | `crosshost_verify.py` | Cross-host SHA-256 content verification (no NAS mount needed). Subcommands: `candidates` (report the size-based candidate set, no hashing), `hash --host <h>` (hash one host's candidates; resumable, inode-aware, heartbeat-tracked), `match` (join hashes across hosts, populate `duplicate_group_id` + `diskaudit.integrity_checks`), `report` (render markdown reports via `report.py`). |
-| `hash_batch.sh` | POSIX/BusyBox-compatible remote hashing script, scp'd to and run on nas-ts453a/trigkey by `crosshost_verify.py hash`; deleted from both sides after results are loaded. Read-only; includes a passwordless-`sudo` READ fallback (sha256sum only) for root-owned files, a no-op where sudo doesn't exist (NAS). |
-| `nas_trigkey_dedup.py` | Within-host dedup for nas-ts453a/trigkey (1.4.0 rewrite): plan -> size-aware hash batches -> one-transaction publish. See the paragraph above and RUNBOOK. |
+| `hash_batch.sh` | POSIX/BusyBox-compatible remote hashing script, scp'd to and run on nas-1/agent-1 by `crosshost_verify.py hash`; deleted from both sides after results are loaded. Read-only; includes a passwordless-`sudo` READ fallback (sha256sum only) for root-owned files, a no-op where sudo doesn't exist (NAS). |
+| `nas_trigkey_dedup.py` | Within-host dedup for nas-1/agent-1 (1.4.0 rewrite): plan -> size-aware hash batches -> one-transaction publish. See the paragraph above and RUNBOOK. |
 | `nas_dedup_core.py` | Pure functions for `nas_trigkey_dedup.py` (freshness, scope pattern, batch planner, result verifier, keeper rule, progress note); no DB/SSH, unit-tested alone. |
 | `hash_stat_batch.sh` | Remote script for `nas_trigkey_dedup.py`: SHA-256 plus stat before/after, stat-only lines for hardlink siblings, `#DONE` trailer. Read-only; `hash_batch.sh` stays untouched for `crosshost_verify.py`. |
 | `report.py` | Renders `crosshost_verify.py`'s DB data (dedup groups, NAS integrity verdicts, cleanup candidates) to markdown under `reports/` (gitignored). Recommendations only — never an instruction, never deletes/moves anything. |
@@ -176,27 +173,27 @@ Systemd timers (all on Spark):
 
 Manual invocation:
 ```
-sudo /srv/diskaudit/.venv/bin/python scan.py            # full Spark scan
-sudo /srv/diskaudit/run_all_nas_shares.sh                # full NAS crawl
+sudo /opt/havnvard/.venv/bin/python scan.py            # full Spark scan
+sudo /opt/havnvard/run_all_nas_shares.sh                # full NAS crawl
 ```
 
 ## Database
 
-Schema `diskaudit` in `ultra_crm` (Postgres). Core table `diskaudit.files`
+Schema `diskaudit` in `havnvard` (Postgres). Core table `diskaudit.files`
 (`(host, path)` primary key). Key views: `v_duplicate_groups`,
 `v_file_status`, `v_backup_coverage`, `v_nas_orphans`.
 
 ## Dashboard
 
-Grafana: `https://spark-20cf.tail5f354b.ts.net:9452/d/diskaudit/diskaudit`
+Grafana: `https://server-1.example.ts.net:9452/d/diskaudit/diskaudit`
 
 ## Requirements
 
 - Python 3.12.12 (in `.venv`)
-- System binaries: `rdfind` (apt; the dedup engine, must not be replaced), `sshpass` + `ssh` + `rsync` (NAS transfer channel to nas-ts453a), passwordless `sudo -n crontab -l -u <user>` for each user in `CRONTAB_USERS` (used by `refresh_load_bearing_paths.py` for a crontab-discovery classification signal). `crosshost_verify.py` reuses the same `sshpass`/`ssh` channel, plus `sha256sum` on every target host (present on both BusyBox and GNU coreutils) and passwordless `sudo -n` on trigkey for a small number of root-owned-file reads.
+- System binaries: `rdfind` (apt; the dedup engine, must not be replaced), `sshpass` + `ssh` + `rsync` (NAS transfer channel to nas-1), passwordless `sudo -n crontab -l -u <user>` for each user in `CRONTAB_USERS` (used by `refresh_load_bearing_paths.py` for a crontab-discovery classification signal). `crosshost_verify.py` reuses the same `sshpass`/`ssh` channel, plus `sha256sum` on every target host (present on both BusyBox and GNU coreutils) and passwordless `sudo -n` on agent-1 for a small number of root-owned-file reads.
 - Test-only: `pytest>=8.0` (`requirements-dev.txt`, `tests/`) — automated suite for `crosshost_verify.py` and the 1.4.0 NAS dedup, including the codebase-wide delete/move guard. Run: `.venv/bin/pytest tests/ -v` (the NAS-dedup DB tests build and drop a throwaway `diskaudit_t_*` schema; no production row is written).
-- NAS side (nas-ts453a, not a local dependency but must be documented): BusyBox v1.24.1 multi-call binary providing `find`/`stat`/`xargs` (no GNU-only flags like `-printf` or `xargs -d`/`-a`), invoked via bash 3.2.57 in sh-compat mode (NOT BusyBox ash). No Python or package manager on the NAS.
-- Database: PostgreSQL, schema `diskaudit` in database `ultra_crm` at `127.0.0.1:5432`. Credentials source-of-truth: `/srv/forge/.secrets/prod/diskaudit.env` `POSTGRES_URL`.
+- NAS side (nas-1, not a local dependency but must be documented): BusyBox v1.24.1 multi-call binary providing `find`/`stat`/`xargs` (no GNU-only flags like `-printf` or `xargs -d`/`-a`), invoked via bash 3.2.57 in sh-compat mode (NOT BusyBox ash). No Python or package manager on the NAS.
+- Database: PostgreSQL, schema `diskaudit` in database `havnvard` at `127.0.0.1:5432`. Credentials source-of-truth: `/etc/havnvard/havnvard.env` `POSTGRES_URL`.
 - Systemd: `diskaudit-*` units (`.service`+`.timer` pairs) for scheduling: scan, nas-crawl, nas-dedup, monitor, classification-refresh, load-bearing-refresh, prescab-review.
 - Planned future addition: `restic` (install latest ARM64 GitHub release binary directly, NOT the apt package which is a stale 0.16.4 predating the 0.18.0 chunk-shuffling fix) — for an upcoming backup-migration phase, not yet installed.
 
@@ -206,7 +203,7 @@ Never auto-deletes or auto-moves files. Every status/label is advisory —
 actual delete/move decisions are made by the operator, informed by this
 system's reports.
 
-**Delete-basis rule (PAF 20261109, INFRA-538):** no copy may be deleted unless 100% of its
+**Delete-basis rule (the operator 20261109, INFRA-538):** no copy may be deleted unless 100% of its
 bytes were proven equal to the kept copy in the same run: `verify_tree.py` (rows with
 `basis='fresh'`) or the delete script's own in-run rehash. Size, mtime, a partial hash or a
 digest read back from `diskaudit.files` (`basis='stored'`, crosshost `match`) never count.

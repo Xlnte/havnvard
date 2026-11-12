@@ -11,7 +11,7 @@ client) so it appears in the central inventory alongside Spark and the NAS.
 
 | Role | Where | What it does |
 |------|-------|--------------|
-| **Server** (one) | Spark `spark-20cf` | Central Postgres (`ultra_crm` DB, `diskaudit` schema), dedup, daily report to PRESI, Grafana dashboard. Also inventories itself + SSH-crawls the NAS. |
+| **Server** (one) | Spark `server-1` | Central Postgres (`havnvard` DB, `diskaudit` schema), dedup, daily report to PRESI, Grafana dashboard. Also inventories itself + SSH-crawls the NAS. |
 | **Client / agent** (0+) | any Linux box | Runs `scan.py` locally on a timer, writes its file inventory **directly to the central DB over Tailscale**, tagged by a unique `--host` name. Nothing else. |
 
 - Each machine is one row-set in `diskaudit.files` keyed by its `host` tag. The report/dedup/Grafana
@@ -21,7 +21,7 @@ client) so it appears in the central inventory alongside Spark and the NAS.
 
 ## 2. Files a client needs (that's all)
 
-From `/srv/ultraops/diskaudit/` on the server:
+From `/opt/havnvard/` on the server:
 - `scan.py` — the scanner (self-contained: stdlib + `psycopg`)
 - `heartbeat.py` — imported by `scan.py`
 - `scan_guard.py` — imported by `scan.py` (1.4.3: one scan per host+root lock, per-scan staging cleanup)
@@ -46,7 +46,7 @@ fine given the Tailnet-is-trust posture.
 listen_addresses = '0.0.0.0'
 
 # pg_hba.conf  — append (tailnet CIDR only; scram password auth is the gate)
-host  ultra_crm  diskaudit_agent  100.64.0.0/10  scram-sha-256
+host  havnvard  diskaudit_agent  100.64.0.0/10  scram-sha-256
 ```
 Then **restart** (changing `listen_addresses` needs a restart, not just reload):
 `sudo systemctl restart postgresql`. Verify: `ss -tlnp | grep 5432` shows `0.0.0.0:5432`.
@@ -78,7 +78,7 @@ sudo apt-get update && sudo apt-get install -y python3-venv python3-pip rsync
 
 # 4.2 — pull the agent files from the server (over Tailscale)
 sudo mkdir -p /opt/diskaudit-agent && cd /opt/diskaudit-agent
-sudo rsync -av parker@spark-20cf.tail5f354b.ts.net:/srv/ultraops/diskaudit/{scan.py,heartbeat.py,scan_guard.py,requirements.txt} .
+sudo rsync -av havnvard@server-1.example.ts.net:/opt/havnvard/{scan.py,heartbeat.py,scan_guard.py,requirements.txt} .
 
 # 4.3 — venv + deps
 sudo python3 -m venv .venv
@@ -87,7 +87,7 @@ sudo .venv/bin/pip install -r requirements.txt
 # 4.4 — secret env (chmod 600, root-owned; NOT in git)
 #   pick a UNIQUE host tag for THIS machine (lowercase, no spaces), e.g. ubuntu-desk-01
 sudo tee /etc/diskaudit-agent.env >/dev/null <<'EOF'
-POSTGRES_URL=postgresql://diskaudit_agent:<PASSWORD>@100.85.112.59:5432/ultra_crm
+POSTGRES_URL=postgresql://diskaudit_agent:<PASSWORD>@192.0.2.10:5432/havnvard
 EOF
 sudo chmod 600 /etc/diskaudit-agent.env
 
@@ -105,7 +105,7 @@ sudo bash -c 'set -a; . /etc/diskaudit-agent.env; set +a; \
   --exclude /snap --exclude /var/lib/docker --exclude /mnt --exclude /media'
 ```
 
-### 4B — No-root install (user-space, no pip/venv/apt; used 20261109 on air-2017, acer-2020, pafpad-linux)
+### 4B — No-root install (user-space, no pip/venv/apt; used 20261109 on laptop-2, laptop-3, desktop-1)
 
 For a machine where you are an ordinary user, have no root, and `pip`/`ensurepip` may be missing. Everything lives in
 `~/diskaudit-agent/`; nothing is installed system-wide and no secret is written to disk.
@@ -113,7 +113,7 @@ For a machine where you are an ordinary user, have no root, and `pip`/`ensurepip
 ```bash
 # On SPARK: fetch wheels for the CLIENT's Python (3.12 shown; use 3.14 etc. to match `python3 --version` there)
 mkdir -p /tmp/wheels && cd /tmp/wheels
-/srv/diskaudit/.venv/bin/pip download --only-binary=:all: --platform manylinux2014_x86_64 \
+/opt/havnvard/.venv/bin/pip download --only-binary=:all: --platform manylinux2014_x86_64 \
   --python-version 312 --dest . psycopg psycopg-binary typing_extensions
 #   (typing_extensions is needed on 3.12; newer Pythons do not need it)
 
@@ -121,7 +121,7 @@ mkdir -p /tmp/wheels && cd /tmp/wheels
 ssh <CLIENT> 'mkdir -p ~/diskaudit-agent/lib ~/diskaudit-agent/logs'
 scp /tmp/wheels/*.whl <CLIENT>:~/diskaudit-agent/
 ssh <CLIENT> 'cd ~/diskaudit-agent && for w in *.whl; do python3 -m zipfile -e "$w" lib/; done'
-scp /srv/diskaudit/{scan.py,heartbeat.py,scan_guard.py} <CLIENT>:~/diskaudit-agent/
+scp /opt/havnvard/{scan.py,heartbeat.py,scan_guard.py} <CLIENT>:~/diskaudit-agent/
 ```
 
 Run with `lib/` on the import path and the DSN injected through the environment. The password is **never stored on the
@@ -131,7 +131,7 @@ is on the Password Shelf).
 ```bash
 # From SPARK; reads the password from wherever you keep it and sends it on stdin only
 ssh <CLIENT> 'read -r PW; cd ~/diskaudit-agent && \
-  POSTGRES_URL="postgresql://diskaudit_agent:${PW}@100.85.112.59:5432/ultra_crm" \
+  POSTGRES_URL="postgresql://diskaudit_agent:${PW}@192.0.2.10:5432/havnvard" \
   PYTHONPATH=$HOME/diskaudit-agent/lib \
   nohup python3 scan.py --host <CLIENTNAME> --root / --exclude /snap --exclude /var/lib/docker \
         --exclude /mnt --exclude /media > logs/scan.log 2>&1 &' <<< "$PW_FROM_SHELF"
@@ -194,7 +194,7 @@ SELECT host, status, finished_at FROM diskaudit.scan_runs
 WHERE host = '<CLIENTNAME>' ORDER BY started_at DESC LIMIT 3;
 ```
 Then the new host appears automatically in the daily PRESI report and the Grafana dashboard:
-`https://spark-20cf.tail5f354b.ts.net:9452/d/diskaudit/diskaudit`
+`https://server-1.example.ts.net:9452/d/diskaudit/diskaudit`
 
 ## 6. Notes / gotchas
 
@@ -207,7 +207,7 @@ Then the new host appears automatically in the daily PRESI report and the Grafan
   unless you specifically want those counted. Add `--exclude` for any network mount you don't own.
 - **Dedup across hosts** is computed on the server (the dedup pass hashes files and groups them by
   content across all hosts) — a client only inventories; it does not dedup.
-- **Client needs Tailscale up** to reach `100.85.112.59:5432`. If the tailnet is down the scan fails
+- **Client needs Tailscale up** to reach `192.0.2.10:5432`. If the tailnet is down the scan fails
   cleanly and retries next timer.
 - To remove a client: disable its timer, then on the server
   `DELETE FROM diskaudit.files WHERE host='<CLIENTNAME>'` (and `scan_runs`).
