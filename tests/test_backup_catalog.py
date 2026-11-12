@@ -233,3 +233,19 @@ def test_where_nested_streams_do_not_overwrite_each_other():
                                      "20261102_SPARK_000005", "20261102_SPARK_000006"])]
     held = sorted(tuple(h["held_by"]) for h in catalog.where("".join(log).splitlines(True), "/srv/x/f"))
     assert held == [("20261101_SPARK_000001",), ("20261101_SPARK_000002", "20261102_SPARK_000006")]
+
+
+@needs_restic
+def test_health_archive_repo_has_no_age_limit(hub):
+    data, root, pdir = hub
+    make_repo(root / "arch", pdir / "arch.pass", data)
+    for f in (root / "arch" / "snapshots").iterdir():
+        os.utime(f, (1, 1))                                               # very old snapshot
+    cfg = config.load()
+    cfg["health"] = {"archive_repos": ["arch"]}
+    config.save(cfg)
+    res = {n: ok for n, ok, _ in health.collect()}
+    assert res["archive arch"] is True and "snapshot age arch" not in res
+    cfg["health"] = {}
+    config.save(cfg)
+    assert {n: ok for n, ok, _ in health.collect()}["snapshot age arch"] is False

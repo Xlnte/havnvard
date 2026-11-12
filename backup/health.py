@@ -48,10 +48,13 @@ def collect(now: float | None = None) -> list[tuple[str, bool, str]]:
                 res.append(("hub repos", False, f"no restic repositories found under {root}"))
             from .catalog import catalog_snapshot_ids
             skip = frozenset(catalog_snapshot_ids())
+            archives = set(h.get("archive_repos", []))   # 2.2.5: one-time archives (e.g. ultrageo-2023): no age limit
             for r in repos:
                 age = _newest_snapshot_age_h(r, now, skip)
                 if age is None:
                     res.append((f"snapshot age {r.name}", False, "no snapshots in the repository"))
+                elif r.name in archives:
+                    res.append((f"archive {r.name}", True, f"one-time archive, newest snapshot {age / 24:.0f} days old"))
                 else:
                     res.append((f"snapshot age {r.name}", age <= stale_h, f"{age:.1f} h (limit {stale_h:g} h)"))
             free = shutil.disk_usage(root).free / GB
