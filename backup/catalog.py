@@ -1,0 +1,375 @@
+"""Backup names and the file catalog (HavnVard 2.2.0, PAF 20261111).
+
+Every data snapshot on the hub gets a name `YYYYMMDD_DEVICE_NNNNNN` (date of the snapshot, device in capitals,
+a number that counts up across all devices and never resets). The name is added as a restic tag.
+
+The catalog is one append-only text file of events, one line per file version:
+    NAME <TAB> ADDED|GONE <TAB> DEVICE <TAB> PATH <TAB> SIZE <TAB> MTIME(UTC, seconds)
+ADDED = this version is first in backup NAME; GONE = backup NAME is the first one without it. Lines are only ever
+appended, so restic stores just the new tail each time and a full copy in every repository costs almost nothing.
+After each run the whole catalog is backed up into every hub repository it has a password for, as
+`<catalog dir>/YYYYMMDD_CATALOG_NNNNNN_catalog.tsv`, tagged `havnvard-catalog`. Those snapshots are not data
+backups: health, restore-drill and coverage-sync skip them (CATALOG_TAG).
+
+Runs on the hub (local repository paths, hub-side passwords, so append-only rest-server does not apply).
+Crash safety: state.json is the commit point. It records the catalog length; a longer file on start means an
+uncommitted tail, which is cut back. Tags applied after a commit are listed in state first, so a crash before
+tagging is retried on the next run.
+"""
+from __future__ import annotations
+
+import datetime as dt
+import fcntl
+import json
+import os
+import re
+import subprocess
+from pathlib import Path
+
+from . import config
+from .config import BackupError
+from .util import hub_password_dir, restic_bin, run
+
+CATALOG_TAG = "havnvard-catalog"
+HEADER = "# HavnVard catalog: NAME\tEVENT\tDEVICE\tPATH\tSIZE\tMTIME_UTC\n"
+NAME_RE = re.compile(r"^\d{8}_[A-Z0-9-]+_\d{6}$")
+
+
+# ---------- pure helpers (tested without restic) ----------
+
+def device_label(repo: str) -> str:
+    """Repository name -> DEVICE part of a backup name: capitals, '_' and spaces become '-'."""
+    lab = re.sub(r"[^A-Z0-9-]", "-", repo.upper()).strip("-")
+    if not lab:
+        raise BackupError(f"cannot make a device label from repository name {repo!r}")
+    return lab
+
+
+def make_name(when: dt.datetime, device: str, number: int) -> str:
+    if not 0 < number < 1_000_000:
+        raise BackupError(f"backup number {number} is outside 1..999999")
+    return f"{when.astimezone().strftime('%Y%m%d')}_{device}_{number:06d}"
+
+
+def parse_time(s: str) -> dt.datetime:
+    s = re.sub(r"(\.\d{6})\d+", r"\1", s).replace("Z", "+00:00")
+    return dt.datetime.fromisoformat(s)
+
+
+def data_snapshots(snaps: list[dict]) -> list[dict]:
+    """Data snapshots only (catalog snapshots dropped), oldest first."""
+    out = [s for s in snaps if CATALOG_TAG not in (s.get("tags") or [])]
+    return sorted(out, key=lambda s: parse_time(s["time"]))
+
+
+def diff(prev: dict[str, tuple[int, int]], cur: dict[str, tuple[int, int]]) -> tuple[list, list]:
+    """(added, gone) as sorted lists of (path, size, mtime). A changed size or mtime is GONE old + ADDED new."""
+    added = sorted((p, *v) for p, v in cur.items() if prev.get(p) != v)
+    gone = sorted((p, *v) for p, v in prev.items() if cur.get(p) != v)
+    return added, gone
+
+
+def _clean(p: str) -> str:
+    return p.replace("\t", " ").replace("\n", " ")
+
+
+def event_lines(name: str, device: str, added: list, gone: list) -> str:
+    out = [f"{name}\tGONE\t{device}\t{_clean(p)}\t{s}\t{m}\n" for p, s, m in gone]
+    out += [f"{name}\tADDED\t{device}\t{_clean(p)}\t{s}\t{m}\n" for p, s, m in added]
+    return "".join(out)
+
+
+def where(lines, pattern: str, device: str | None = None) -> list[dict]:
+    """Replay the catalog for paths containing `pattern` (case-insensitive). One result per file version:
+    first backup that has it, and the first backup without it ('' = still in the newest backup)."""
+    pat = pattern.lower()
+    found: dict[tuple, dict] = {}
+    for ln in lines:
+        if ln.startswith("#") or pat not in ln.lower():
+            continue
+        parts = ln.rstrip("\n").split("\t")
+        if len(parts) != 6:
+            continue
+        name, ev, dev, path, size, mtime = parts
+        if pat not in path.lower() or (device and dev != device.upper()):
+            continue
+        key = (dev, path, size, mtime)
+        if ev == "ADDED":
+            found[key] = {"device": dev, "path": path, "size": int(size), "mtime": int(mtime),
+                          "first": name, "gone": ""}
+        elif ev == "GONE" and key in found:
+            found[key]["gone"] = name
+    return sorted(found.values(), key=lambda r: (r["gone"] != "", r["device"], r["path"], r["mtime"]))
+
+
+# ---------- state ----------
+
+def cat_dir() -> Path:
+    return config.state_dir() / "catalog"
+
+
+def catalog_path() -> Path:
+    return cat_dir() / "catalog.tsv"
+
+
+def _load_state() -> dict:
+    p = cat_dir() / "state.json"
+    if not p.exists():
+        return {"counter": 0, "catalog_bytes": 0, "devices": {}, "untagged": [], "catalog_snapshots": [],
+                "catalog_bytes_backed_up": 0}
+    try:
+        return json.loads(p.read_text())
+    except (OSError, ValueError) as e:
+        raise BackupError(f"cannot read catalog state {p}: {e}") from e
+
+
+def _save_state(st: dict) -> None:
+    p = cat_dir() / "state.json"
+    tmp = p.with_suffix(".tmp")
+    with open(tmp, "w") as f:
+        json.dump(st, f)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, p)
+
+
+def catalog_snapshot_ids() -> set[str]:
+    """Full ids of the catalog snapshots this hub wrote (health skips these files in <repo>/snapshots/)."""
+    p = cat_dir() / "state.json"
+    if not p.exists():
+        return set()
+    try:
+        return set(json.loads(p.read_text()).get("catalog_snapshots", []))
+    except (OSError, ValueError):
+        return set()
+
+
+def _live_path(dev: str, ref: str) -> Path:
+    return cat_dir() / "live" / f"{dev}.{ref}.tsv"
+
+
+def _read_live(p: Path) -> dict[str, tuple[int, int]]:
+    out = {}
+    with open(p, encoding="utf-8", errors="surrogateescape") as f:
+        for ln in f:
+            path, s, m = ln.rstrip("\n").rsplit("\t", 2)
+            out[path] = (int(s), int(m))
+    return out
+
+
+def _write_live(p: Path, files: dict[str, tuple[int, int]]) -> None:
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, "w", encoding="utf-8", errors="surrogateescape") as f:
+        for path in sorted(files):
+            s, m = files[path]
+            f.write(f"{_clean(path)}\t{s}\t{m}\n")
+        f.flush()
+        os.fsync(f.fileno())
+
+
+# ---------- restic ----------
+
+def _env(repo_root: Path, repo: str) -> dict | None:
+    pw = hub_password_dir() / f"{repo}.pass"
+    if not pw.is_file():
+        return None
+    return {"RESTIC_REPOSITORY": str(repo_root / repo), "RESTIC_PASSWORD_FILE": str(pw)}
+
+
+def snapshots(restic: str, env: dict) -> list[dict]:
+    r = run([restic, "snapshots", "--json", "--no-lock"], env=env, timeout=1800)
+    if r.returncode != 0:
+        raise BackupError(f"restic snapshots failed rc={r.returncode}: {r.stderr.strip()[-300:]}")
+    return json.loads(r.stdout or "[]")
+
+
+def latest_data_snapshot(restic: str, env: dict) -> dict | None:
+    """Newest snapshot that is a real backup (catalog snapshots skipped). Used by drill and coverage-sync."""
+    snaps = data_snapshots(snapshots(restic, env))
+    return snaps[-1] if snaps else None
+
+
+def listing(restic: str, env: dict, snap_id: str) -> dict[str, tuple[int, int]]:
+    from .coverage import parse_ls_json  # reuse: one restic `ls --json` parser
+    e = {**os.environ, **env}
+    p = subprocess.Popen([restic, "ls", "--json", "--no-lock", snap_id], env=e,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="surrogateescape")
+    assert p.stdout is not None and p.stderr is not None
+    _, files = parse_ls_json(p.stdout)
+    err = p.stderr.read()
+    if p.wait() != 0:
+        raise BackupError(f"restic ls {snap_id[:8]} failed (rc {p.returncode}): {err.strip()[-300:]}")
+    return files
+
+
+# ---------- the run ----------
+
+def _repos(repo_root: Path) -> list[str]:
+    return sorted(p.name for p in repo_root.iterdir() if p.is_dir() and (p / "config").is_file())
+
+
+def _tag(restic: str, env: dict, snap_id: str, name: str, when: str) -> None:
+    """Add the name as a tag. restic rewrites the snapshot file (new id, file mtime = now), so the new file's
+    mtime is set back to the snapshot's own time: health reads snapshot age from file mtimes."""
+    tagged = [s for s in snapshots(restic, env) if name in (s.get("tags") or [])]
+    if not tagged:
+        r = run([restic, "tag", "--retry-lock", "30m", "--add", name, snap_id], env=env, timeout=3600)
+        if r.returncode != 0:
+            raise BackupError(f"restic tag {name} on {snap_id[:8]} failed rc={r.returncode}: {r.stderr.strip()[-300:]}")
+        tagged = [s for s in snapshots(restic, env) if name in (s.get("tags") or [])]
+    if len(tagged) != 1:
+        raise BackupError(f"after tagging, {len(tagged)} snapshots carry {name} (expected 1)")
+    t = parse_time(when).timestamp()
+    f = Path(env["RESTIC_REPOSITORY"]) / "snapshots" / tagged[0]["id"]
+    if f.is_file():
+        os.utime(f, (t, t))
+
+
+def catalog_run(first_run_latest_only: bool = True) -> int:
+    """Name new data snapshots, extend the catalog, back the catalog up into every repository.
+    Exit 0 all done; 1 something was skipped (missing password, a failed tag or catalog backup); 2 could not run."""
+    hub = config.load().get("hub_local")
+    if not hub:
+        raise BackupError("not a hub: no [hub_local] in the config")
+    repo_root = Path(hub["repo_root"])
+    cdir = cat_dir()
+    (cdir / "live").mkdir(parents=True, exist_ok=True)
+    lock = open(cdir / "run.lock", "w")  # noqa: SIM115 -- held for the whole run (flock)
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as e:
+        raise BackupError("another catalog run is in progress") from e
+    restic, st, problems = restic_bin(), _load_state(), []
+    cat = catalog_path()
+    if not cat.exists():
+        cat.write_text(HEADER)
+        st["catalog_bytes"] = st["catalog_bytes"] or len(HEADER.encode())
+        _save_state(st)
+    size = cat.stat().st_size
+    if size > st["catalog_bytes"]:            # an uncommitted tail from a crashed run
+        with open(cat, "r+b") as f:
+            f.truncate(st["catalog_bytes"])
+    elif size < st["catalog_bytes"]:
+        raise BackupError(f"{cat} is shorter than the committed length {st['catalog_bytes']}: refusing to continue")
+
+    envs = {r: _env(repo_root, r) for r in _repos(repo_root)}
+    for repo in [r for r, e in envs.items() if e is None]:
+        problems.append(f"{repo}: no hub-side password at {hub_password_dir() / (repo + '.pass')}")
+
+    for item in list(st["untagged"]):                     # retry tags a crash left behind
+        snap_id, name, repo, when = item
+        env = envs.get(repo)
+        if env is None:
+            problems.append(f"{repo}: tag retry {name}: no password")
+            continue
+        try:
+            _tag(restic, env, snap_id, name, when)
+            st["untagged"].remove(item)
+            _save_state(st)
+        except BackupError as e:
+            problems.append(f"{repo}: tag retry {name}: {e}")
+
+    named = 0
+    for repo, env in envs.items():
+        if env is None:
+            continue
+        dev = device_label(repo)
+        dst = st["devices"].get(repo, {})
+        try:
+            snaps = data_snapshots(snapshots(restic, env))
+        except BackupError as e:
+            problems.append(f"{repo}: {e}")
+            continue
+        last = parse_time(dst["last_time"]) if dst.get("last_time") else None
+        todo = [s for s in snaps if last is None or parse_time(s["time"]) > last]
+        if last is None and first_run_latest_only:
+            todo = todo[-1:]   # older snapshots age out under prune; naming them would only burn numbers
+        prev = _read_live(_live_path(repo, dst["live"])) if dst.get("live") else {}
+        for s in todo:
+            try:
+                cur = listing(restic, env, s["id"])
+            except BackupError as e:
+                problems.append(f"{repo}: {e}")
+                break
+            st["counter"] += 1
+            name = make_name(parse_time(s["time"]), dev, st["counter"])
+            added, gone = diff(prev, cur)
+            ref = f"{st['counter']:06d}"
+            _write_live(_live_path(repo, ref), cur)
+            with open(cat, "a", encoding="utf-8", errors="surrogateescape") as f:
+                f.write(event_lines(name, dev, added, gone))
+                f.flush()
+                os.fsync(f.fileno())
+            old_live = dst.get("live")
+            dst = {"last_time": s["time"], "last_name": name, "live": ref}
+            st["devices"][repo] = dst
+            st["catalog_bytes"] = cat.stat().st_size
+            item = [s["id"], name, repo, s["time"]]
+            st["untagged"].append(item)
+            _save_state(st)                                   # commit point
+            if old_live and _live_path(repo, old_live).is_file():
+                os.remove(_live_path(repo, old_live))
+            prev = cur
+            named += 1
+            print(f"catalog: {name} = {repo} snapshot {s['id'][:8]} (+{len(added)} / -{len(gone)})")
+            try:
+                _tag(restic, env, s["id"], name, s["time"])
+                st["untagged"].remove(item)
+                _save_state(st)
+            except BackupError as e:
+                problems.append(f"{repo}: {e}")
+
+    if st["catalog_bytes"] != st.get("catalog_bytes_backed_up"):
+        st["counter"] += 1
+        cname = make_name(dt.datetime.now(dt.timezone.utc), "CATALOG", st["counter"])
+        _save_state(st)
+        stage = cdir / "stage"
+        stage.mkdir(exist_ok=True)
+        for old in [p for p in stage.iterdir() if p.name.endswith("_catalog.tsv")]:
+            os.remove(old)
+        copy = stage / f"{cname}_catalog.tsv"
+        with open(cat, "rb") as src, open(copy, "wb") as out:
+            out.write(src.read(st["catalog_bytes"]))
+        ok_all = True
+        for repo, renv in envs.items():
+            if renv is None:
+                ok_all = False
+                continue
+            r = run([restic, "backup", "--json", "--retry-lock", "30m", "--host", repo, "--tag", CATALOG_TAG,
+                     "--tag", cname, str(stage)], env=renv, timeout=7200)
+            sid = None
+            for ln in r.stdout.splitlines():
+                try:
+                    o = json.loads(ln)
+                except ValueError:
+                    continue
+                if o.get("message_type") == "summary":
+                    sid = o.get("snapshot_id")
+            if r.returncode != 0 or not sid:
+                ok_all = False
+                problems.append(f"{repo}: catalog backup failed rc={r.returncode}: {r.stderr.strip()[-200:]}")
+                continue
+            st["catalog_snapshots"].append(sid)
+            _save_state(st)
+        if ok_all:
+            st["catalog_bytes_backed_up"] = st["catalog_bytes"]
+            _save_state(st)
+        print(f"catalog: {cname} backed up into {len(envs) - sum(e is None for e in envs.values())}/{len(envs)} repositories")
+    print(f"catalog: {named} backup(s) named, catalog {st['catalog_bytes'] / 1e6:.1f} MB, {len(problems)} problem(s)")
+    for p in problems:
+        print(f"  PROBLEM {p}")
+    return config.PROBLEM_EXIT if problems else 0
+
+
+def run_where(pattern: str, device: str | None = None, catalog: str | None = None) -> int:
+    p = Path(catalog) if catalog else catalog_path()
+    if not p.is_file():
+        raise BackupError(f"no catalog at {p}: run `catalog run` on the hub, or pass --catalog FILE")
+    with open(p, encoding="utf-8", errors="surrogateescape") as f:
+        hits = where(f, pattern, device)
+    for h in hits:
+        state = f"still in backups from {h['first']} on" if not h["gone"] else f"in {h['first']} up to (not in) {h['gone']}"
+        when = dt.datetime.fromtimestamp(h["mtime"], dt.timezone.utc).strftime("%Y-%m-%d")
+        print(f"{h['device']}\t{h['path']}\t{h['size']} bytes\t{when}\t{state}")
+    print(f"where {pattern!r}: {len(hits)} file version(s) found" if hits else f"where {pattern!r}: not found in any backup")
+    return 0 if hits else config.PROBLEM_EXIT

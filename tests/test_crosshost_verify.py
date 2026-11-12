@@ -414,6 +414,8 @@ _ALLOWED_FORBIDDEN_SITES = {
     # atomic write of the tool's OWN generated HTML report (tmp file -> OUT);
     # neither path is a scanned path.
     ("gen_cleanup_page.py", "os.replace(tmp, OUT)"),
+    # backup/catalog.py (2.2.0): atomic write of the catalog's OWN state.json in ~/.local/state/havnvard/catalog/.
+    ("catalog.py", "os.replace(tmp, p)"),
 }
 _REPLACE_PATTERN_SRC = r"os\.replace\("
 
@@ -439,6 +441,11 @@ _ALLOWED_DELETE_SITES = {
     # <NAS scratch>/verify_tree_canary_<pid>_<ts>/ (prefix-guarded in _remove_canary_dir),
     # then `rmdir` of that dir. Never a scanned path; no recursive delete.
     ("verify_tree.py", 'target.ssh(f"rm -f {files}; rmdir {shlex.quote(nas_dir)}")'),
+    # backup/catalog.py (2.2.0): only files the catalog job itself wrote in ~/.local/state/havnvard/catalog/:
+    # the previous per-device live listing (live/<repo>.<NNNNNN>.tsv, superseded once state.json commits the new one)
+    # and the previous staged catalog copy (stage/*_catalog.tsv). Never a backed-up or scanned path.
+    ("catalog.py", "os.remove(_live_path(repo, old_live))"),
+    ("catalog.py", "os.remove(old)"),
 }
 
 _DELETE_CALL_PATTERN = re.compile(r"os\.remove\(|os\.unlink\(|\brm\s+-f\b")

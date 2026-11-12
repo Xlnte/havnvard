@@ -89,6 +89,13 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--stale-lock-hours", type=float, default=6.0)
     pr.add_argument("--dry-run", action="store_true")
 
+    ca = sub.add_parser("catalog", help="hub: name new backups YYYYMMDD_DEVICE_NNNNNN and back the file catalog up into every repo")
+    ca.add_argument("catalog_cmd", choices=["run"])
+    ca.add_argument("--all-history", action="store_true", help="first run: name every existing snapshot, not only the newest")
+    wh = sub.add_parser("where", help="which backup holds a file: search the catalog by (part of) its path")
+    wh.add_argument("pattern")
+    wh.add_argument("--device")
+    wh.add_argument("--catalog", help="catalog file (default: this hub's own)")
     rd = sub.add_parser("restore-drill", help="restore a random sample and compare SHA-256")
     rd.add_argument("device")
     rd.add_argument("--sample", type=int, default=20)
@@ -98,7 +105,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _dispatch(a: argparse.Namespace) -> int:
-    from . import coverage, drill, enroll, health, hub, nas, nobackup, offsite, prune, relay, timers
+    from . import catalog, coverage, drill, enroll, health, hub, nas, nobackup, offsite, prune, relay, timers
     if a.cmd == "hub":
         if a.hub_cmd == "install":
             print("\n".join(hub.hub_install(a.repo_root, a.port, a.listen, Path(a.out), a.rest_server)))
@@ -135,6 +142,10 @@ def _dispatch(a: argparse.Namespace) -> int:
         return coverage.coverage_sync(a.device, a.dry_run)
     if a.cmd == "not-backed-up":
         return nobackup.not_backed_up(a.host, a.by, a.limit)
+    if a.cmd == "catalog":
+        return catalog.catalog_run(first_run_latest_only=not a.all_history)
+    if a.cmd == "where":
+        return catalog.run_where(a.pattern, a.device, a.catalog)
     if a.cmd == "check-timers":
         return timers.run_check()
     if a.cmd == "prune":

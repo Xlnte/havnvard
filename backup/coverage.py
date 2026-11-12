@@ -64,13 +64,18 @@ def match_listing(candidates: Iterable[tuple[str, int | None, int | None]],
 
 
 def list_latest(device: str) -> tuple[str | None, dict[str, tuple[int, int]]]:
-    env = {**os.environ, **drill._env_for(device)}
-    p = subprocess.Popen([restic_bin(), "ls", "--json", "latest"], env=env,
+    from .catalog import latest_data_snapshot   # 2.2.0: never the catalog snapshot
+    dev_env = drill._env_for(device)
+    snap0 = latest_data_snapshot(restic_bin(), dev_env)
+    if not snap0:
+        raise BackupError(f"{device}: repository has no data snapshots")
+    env = {**os.environ, **dev_env}
+    p = subprocess.Popen([restic_bin(), "ls", "--json", snap0["id"]], env=env,
                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     snap, files = parse_ls_json(p.stdout)
     err = p.stderr.read()
     if p.wait() != 0:
-        raise BackupError(f"restic ls latest failed (rc {p.returncode}): {err.strip()[-300:]}")
+        raise BackupError(f"restic ls {snap0['id'][:8]} failed (rc {p.returncode}): {err.strip()[-300:]}")
     if not files:
         raise BackupError(f"latest snapshot of {device} lists no files; refusing to mark anything")
     return snap, files

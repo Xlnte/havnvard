@@ -85,13 +85,10 @@ def drill(device: str, sample: int = 20, seed: int | None = None, scratch: str |
         raise BackupError("--sample must be >= 1")
     _canary()
     env, restic = _env_for(device), restic_bin()
-    r = run([restic, "snapshots", "--latest", "1", "--json"], env=env, timeout=600)
-    if r.returncode != 0:
-        raise BackupError(f"restic snapshots failed rc={r.returncode}: {r.stderr.strip()[-300:]}")
-    snaps = json.loads(r.stdout or "[]")
-    if not snaps:
-        raise BackupError(f"{device}: repository has no snapshots, nothing to restore")
-    snap = max(snaps, key=lambda s: s["time"])
+    from .catalog import latest_data_snapshot   # 2.2.0: catalog snapshots are not backups of the device
+    snap = latest_data_snapshot(restic, env)
+    if not snap:
+        raise BackupError(f"{device}: repository has no data snapshots, nothing to restore")
     files, eligible, skipped = sample_files(restic, env, snap["id"], _parse_time(snap["time"]), sample,
                                             random.Random(seed))
     if not files:

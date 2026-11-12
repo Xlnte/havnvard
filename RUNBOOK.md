@@ -401,7 +401,7 @@ each as a `scan_errors` row `UNSAFE_NAME_LF` (the entry and its subtree are not 
 
 **Version 2.0.0** (`module.yaml`, README, this RUNBOOK, `thoth.census.version` for `havnvard` must agree).
 
-## HavnVard Backup (`python -m backup`, 2.1.0)
+## HavnVard Backup (`python -m backup`, 2.2.0)
 
 Spec: `/home/parker/runbooks/20261110-havnvard-restic/20261110_SPEC.md`. Install steps: README "Install HavnVard Backup".
 Config `~/.config/havnvard/backup.toml`; secrets `restic.pass`, `rest.pass`, `hub-passwords/*.pass` (all 600, never in git);
@@ -415,6 +415,8 @@ state `~/.local/state/havnvard/` (last job, offsite logs/flag/tries/hold files, 
 | Flagged offsite file | listed in `offsite-NAME.flagged`; compare offsite vs hub copy, then clear the line and its `.tries` line | restic can read the repo only if the file is correct |
 | Hub without alertlib | on Spark: `python -m backup health-relay --ssh HOST --python PY --repo-dir DIR` | exit 0 healthy, 1 hub problem (alerted), 2 relay failed (alerted); render the hourly timer with `--render-units DIR` |
 | Coverage link | `python -m backup coverage-sync DEVICE [--dry-run]` after `backup_coverage.py classify` | needs `POSTGRES_URL`; apply migration `20261111_diskaudit_restic_coverage_v1.sql` first (by hand) |
+| Backup names + catalog | hub: `python -m backup catalog run` (timer `havnvard-hub-catalog`, hourly at :40) | names each new data snapshot `YYYYMMDD_DEVICE_NNNNNN` (restic tag; one counter for all devices, never resets), appends ADDED/GONE lines to `~/.local/state/havnvard/catalog/catalog.tsv`, then backs the whole catalog up into every repo as `YYYYMMDD_CATALOG_NNNNNN_catalog.tsv` tagged `havnvard-catalog`. Needs `hub-passwords/<repo>.pass` for each repo (exit 1 lists any missing). First run names only each repo's newest snapshot (`--all-history` for every one). `state.json` is the commit point; a crash leaves nothing half-written |
+| Which backup holds a file | `python -m backup where bob.txt [--device SPARK] [--catalog FILE]` | 0 found, 1 not in any backup. Without the hub: `restic dump <catalog snapshot> <path>` from any repo (hub, NAS, Internxt), then `grep` |
 | Not backed up | `python -m backup not-backed-up [--host H] [--by type\|folder] [--limit N]` | |
 | Prune | `python -m backup prune --dry-run` then without | runs on the hub only |
 | Prove a device | `python -m backup restore-drill DEVICE` | all files must match |
@@ -433,7 +435,7 @@ Archiving an app must also stop its backups (GHY-209/210 were the same miss twic
 4. Leave the app's existing restic repo in place until PAF says to delete it.
 
 Rollback: stop and disable the user units (`systemctl --user disable --now havnvard-backup.timer ...`); repos on the hub are untouched.
-Tests: `pytest tests/test_backup_core.py tests/test_backup_restic.py tests/test_backup_round2.py` (tmp dirs, local restic repos and local-path rclone remotes only).
+Tests: `pytest tests/test_backup_core.py tests/test_backup_restic.py tests/test_backup_round2.py tests/test_backup_catalog.py` (tmp dirs, local restic repos and local-path rclone remotes only).
 
 ## Common failures + recovery
 

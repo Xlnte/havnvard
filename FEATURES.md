@@ -572,4 +572,6 @@ BACKED_UP_VERIFIED from snapshots, the "not backed up" report, bit-rot re-hash s
 | `coverage-sync DEVICE` | Latest restic snapshot listing vs `diskaudit.backup_coverage`: same path+size+mtime -> BACKED_UP_UNVERIFIED (a listing is not a hash check; VERIFIED needs SHA-256) | 2.1.0; needs migration `20261111_diskaudit_restic_coverage_v1.sql`; run after `backup_coverage.py classify`; listing match, not a SHA-256 compare |
 | `not-backed-up` | NOT_BACKED_UP totals per host and top folders or file types by bytes (hardlink-deduplicated) | 2.1.0 |
 | `check-timers` | Lists havnvard-restic-* timers whose ExecStart script, WorkingDirectory or BACKUP_SRC is gone | 2.1.0; read-only |
+| `catalog run` | Hub: names new data snapshots `YYYYMMDD_DEVICE_NNNNNN` (restic tag, global counter), appends ADDED/GONE file-version lines to the catalog, backs the full catalog up into every repo (tag `havnvard-catalog`); health, drill and coverage-sync skip catalog snapshots | 2.2.0 (PAF 20261111); append-only so restic stores only the new tail |
+| `where PATTERN` | Which backup holds a file: first backup with each version, and the first without it | 2.2.0; exit 1 = not in any backup |
 | `restore-drill DEVICE` | Restores a random sample, full SHA-256 compare, prints X/Y; self-test canary first | Nothing comparable is NOT a pass |

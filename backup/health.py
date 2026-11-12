@@ -21,11 +21,13 @@ GB = 1024 ** 3
 ALERT_KEY = "havnvard-backup-health"
 
 
-def _newest_snapshot_age_h(repo: Path, now: float) -> float | None:
+def _newest_snapshot_age_h(repo: Path, now: float, skip: frozenset = frozenset()) -> float | None:
+    """`skip` = catalog snapshot ids (2.2.0): those are written by the hub every run and say nothing about
+    whether the device itself backed up."""
     sdir = repo / "snapshots"
     if not sdir.is_dir():
         return None
-    mt = [e.stat().st_mtime for e in os.scandir(sdir) if e.is_file()]
+    mt = [e.stat().st_mtime for e in os.scandir(sdir) if e.is_file() and e.name not in skip]
     return (now - max(mt)) / 3600 if mt else None
 
 
@@ -44,8 +46,10 @@ def collect(now: float | None = None) -> list[tuple[str, bool, str]]:
             repos = sorted(p for p in root.iterdir() if p.is_dir() and (p / "config").is_file())
             if not repos:
                 res.append(("hub repos", False, f"no restic repositories found under {root}"))
+            from .catalog import catalog_snapshot_ids
+            skip = frozenset(catalog_snapshot_ids())
             for r in repos:
-                age = _newest_snapshot_age_h(r, now)
+                age = _newest_snapshot_age_h(r, now, skip)
                 if age is None:
                     res.append((f"snapshot age {r.name}", False, "no snapshots in the repository"))
                 else:

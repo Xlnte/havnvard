@@ -36,6 +36,8 @@ def hub_install(repo_root: str, port: int, listen: str, out_dir: Path, rest_serv
                            "hub diskguard", "OnBootSec=30s\nOnUnitActiveSec=1min\nAccuracySec=5s", timeout="2min")
     written += render_task(out_dir, "havnvard-hub-health", "HavnVard backup health", "health",
                            "OnCalendar=hourly\nRandomizedDelaySec=5m", success_exit="0", timeout="30min")
+    written += render_task(out_dir, "havnvard-hub-catalog", "HavnVard backup names + file catalog", "catalog run",
+                           "OnCalendar=*-*-* *:40:00\nRandomizedDelaySec=5m", success_exit="0", timeout="6h")
     written += render_task(out_dir, "havnvard-hub-prune", "HavnVard hub prune", "prune",
                            "OnCalendar=Sun *-*-* 03:00", timeout="12h")
     config.update("hub_local", {"repo_root": str(root), "port": port, "listen": listen})
@@ -45,7 +47,7 @@ def hub_install(repo_root: str, port: int, listen: str, out_dir: Path, rest_serv
         f"cp {out_dir}/*.service {out_dir}/*.timer {ud}/",
         "systemctl --user daemon-reload",
         "systemctl --user enable --now restic-hub.service havnvard-hub-diskguard.timer "
-        "havnvard-hub-health.timer havnvard-hub-prune.timer",
+        "havnvard-hub-health.timer havnvard-hub-catalog.timer havnvard-hub-prune.timer",
         "loginctl enable-linger $USER   # keep the user units running after logout (needs sudo on some systems)",
     ]
     if listen in ("127.0.0.1", "localhost"):
