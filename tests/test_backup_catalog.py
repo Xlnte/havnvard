@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from backup import catalog, config, drill, health  # noqa: E402
+from backup import catalog, config, coverage, drill, health  # noqa: E402
 from backup.config import BackupError  # noqa: E402
 from conftest_backup_helpers import make_repo, needs_restic, restic  # noqa: E402
 
@@ -35,8 +35,13 @@ def test_diff_and_where_replay():
            catalog.event_lines("20261101_SPARK_000001", "SPARK", sorted((p, *v) for p, v in prev.items()), []),
            catalog.event_lines("20261102_SPARK_000002", "SPARK", added, gone)]
     hits = catalog.where("".join(log).splitlines(True), "BOB.TXT")
-    assert [(h["size"], h["first"], h["gone"]) for h in hits] == [
-        (6, "20261102_SPARK_000002", ""), (5, "20261101_SPARK_000001", "20261102_SPARK_000002")]
+    assert sorted((h["size"], h["first"], h["gone"]) for h in hits) == [
+        (5, "20261101_SPARK_000001", "20261102_SPARK_000002"), (6, "20261102_SPARK_000002", "")]
+    assert all(h["held_by"] is None for h in hits)                       # no #ALIVE line yet: unknown, not "pruned"
+    # prune removed backup 1: the old version is held by nothing, the new one by backup 2 (review 2.2.0 #3)
+    log.append(catalog.alive_line(dt.datetime(2026, 11, 3, tzinfo=dt.timezone.utc), ["20261102_SPARK_000002"]))
+    hits = {h["size"]: h["held_by"] for h in catalog.where("".join(log).splitlines(True), "bob.txt")}
+    assert hits == {6: ["20261102_SPARK_000002"], 5: []}
     assert catalog.where(log, "nothing-here") == []
 
 
@@ -80,6 +85,12 @@ def test_catalog_run_names_tags_and_backs_up_catalog(hub, capsys):
     assert health._newest_snapshot_age_h(root / "dev_1", mt + 3600, frozenset(catalog.catalog_snapshot_ids())) == pytest.approx(1, abs=0.01)
     # drill and coverage pick the data snapshot, never the catalog one
     assert drill.drill("dev_1", sample=2, seed=1, scratch=str(data.parent)) == 0
+    sid, files = coverage.list_latest("dev_1")
+    assert not any(sid and cid.startswith(sid) for cid in catalog.catalog_snapshot_ids())
+    assert any(p.endswith("/bob.txt") for p in files)
+    # catalog snapshot file time is pinned to the newest data snapshot, so health never depends on state.json
+    cfile = root / "dev_1" / "snapshots" / cat_snaps[0]["id"]
+    assert cfile.stat().st_mtime <= mt + 1
     # nothing new: no new names, no new catalog copy
     assert catalog.catalog_run() == 0
     assert json.loads((catalog.cat_dir() / "state.json").read_text())["counter"] == 2
@@ -89,7 +100,7 @@ def test_catalog_run_names_tags_and_backs_up_catalog(hub, capsys):
     assert catalog.catalog_run() == 0
     assert catalog.run_where("bob.txt") == 0
     out = capsys.readouterr().out
-    assert "still in backups from" in out and "up to (not in)" in out
+    assert "newest of" in out and "pruned" not in out
     assert catalog.run_where("never-backed-up.txt") == config.PROBLEM_EXIT
 
 
@@ -105,3 +116,40 @@ def test_uncommitted_tail_is_cut_and_missing_password_is_loud(hub):
     assert cat.read_bytes() == good
     make_repo(root / "nopass", pdir.parent / "elsewhere.pass", data)       # repo the hub has no password for
     assert catalog.catalog_run() == config.PROBLEM_EXIT
+
+
+@needs_restic
+def test_lost_state_refuses_then_recover_keeps_catalog_and_numbers(hub):
+    data, root, pdir = hub
+    assert catalog.catalog_run() == 0
+    cat = catalog.catalog_path()
+    before = cat.read_bytes()
+    os.remove(catalog.cat_dir() / "state.json")                         # test tmp dir only
+    with pytest.raises(BackupError, match="--recover"):
+        catalog.catalog_run()
+    assert cat.read_bytes() == before                                    # nothing cut
+    (data / "new.txt").write_text("x\n")
+    restic(root / "dev_1", pdir / "dev_1.pass", "backup", str(data))
+    assert catalog.catalog_run(recover=True) == 0
+    assert cat.read_bytes().startswith(before)
+    tags = [t for s in _snaps(root, pdir) for t in (s.get("tags") or []) if catalog.NAME_RE.match(t)]
+    assert len(tags) == len(set(n.rsplit("_", 1)[1] for n in tags))     # no number used twice
+
+
+@needs_restic
+def test_dead_retry_entry_is_reported_once_and_dropped(hub):
+    data, root, pdir = hub
+    assert catalog.catalog_run() == 0
+    st = json.loads((catalog.cat_dir() / "state.json").read_text())
+    st["untagged"].append(["0" * 64, "20261111_DEV-1_000777", "dev_1", "2026-11-11T00:00:00Z"])
+    catalog._save_state(st)
+    assert catalog.catalog_run() == config.PROBLEM_EXIT                  # reported
+    assert json.loads((catalog.cat_dir() / "state.json").read_text())["untagged"] == []
+    assert catalog.catalog_run() == 0                                    # and not again
+
+
+def test_corrupt_state_is_loud_for_health():
+    catalog.cat_dir().mkdir(parents=True, exist_ok=True)
+    (catalog.cat_dir() / "state.json").write_text("{not json")
+    with pytest.raises(BackupError):
+        catalog.catalog_snapshot_ids()

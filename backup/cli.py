@@ -92,6 +92,7 @@ def build_parser() -> argparse.ArgumentParser:
     ca = sub.add_parser("catalog", help="hub: name new backups YYYYMMDD_DEVICE_NNNNNN and back the file catalog up into every repo")
     ca.add_argument("catalog_cmd", choices=["run"])
     ca.add_argument("--all-history", action="store_true", help="first run: name every existing snapshot, not only the newest")
+    ca.add_argument("--recover", action="store_true", help="state.json lost: keep the catalog, resume numbering above every used number")
     wh = sub.add_parser("where", help="which backup holds a file: search the catalog by (part of) its path")
     wh.add_argument("pattern")
     wh.add_argument("--device")
@@ -143,7 +144,7 @@ def _dispatch(a: argparse.Namespace) -> int:
     if a.cmd == "not-backed-up":
         return nobackup.not_backed_up(a.host, a.by, a.limit)
     if a.cmd == "catalog":
-        return catalog.catalog_run(first_run_latest_only=not a.all_history)
+        return catalog.catalog_run(first_run_latest_only=not a.all_history, recover=a.recover)
     if a.cmd == "where":
         return catalog.run_where(a.pattern, a.device, a.catalog)
     if a.cmd == "check-timers":
