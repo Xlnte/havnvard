@@ -4,6 +4,9 @@
 and function and seeds the mutable/immutable file rules. Skip §1 and §4 (they are for upgrading the original
 deployment, and migration 001 seeds that deployment's host names), add your hosts' verification schedule as shown
 in the README "Database" section, then continue at §5.
+On a new site expect (number of hosts × 4) verification-schedule rows. `scripts/validate_live.py` still checks
+for exactly 12 (the original three-host deployment), so its SLA-row check fails on other host counts until that is
+fixed (Plane ticket filed with 3.1.0).
 
 ## 1. Do not install over an unknown prototype
 
