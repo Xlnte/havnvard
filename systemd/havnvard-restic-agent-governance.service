@@ -1,0 +1,13 @@
+[Unit]
+Description=HavnVard restic backup — agent-governance (daily snapshot)
+Documentation=file:///home/parker/runbooks/20260718-havnvard-restic-migration/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/srv/ultraops/backup/restic-agent-governance.sh
+TimeoutStartSec=30m
+StandardOutput=journal
+StandardError=journal

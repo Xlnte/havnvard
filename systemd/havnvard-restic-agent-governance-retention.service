@@ -1,0 +1,13 @@
+[Unit]
+Description=HavnVard restic forget+prune — agent-governance (weekly retention)
+Documentation=file:///home/parker/runbooks/20260718-havnvard-restic-migration/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/srv/ultraops/backup/restic-agent-governance-retention.sh
+TimeoutStartSec=1h
+StandardOutput=journal
+StandardError=journal

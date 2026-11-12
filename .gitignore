@@ -1,0 +1,27 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Runtime / scratch (never scaffolded empty, never committed)
+logs/
+nas_inbox/
+data/
+exports/
+tmp/
+reports/
+
+# Secrets — real values NEVER live in this repo. They live at
+# /etc/forge/tokens/*.pass and *.env, outside any git working tree.
+.env
+.env.*
+!.env.example
+.secrets/
+*.pass
+
+# Backup files left by editing sessions
+*.bak-*
+*.bak
+
+# Local scratch / IDE
+.DS_Store

@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>HavnVard File Verification</title>
+<style>:root{color-scheme:light dark;font-family:Arial,sans-serif}body{margin:24px}table{width:100%;border-collapse:collapse;margin:12px 0 28px}th,td{padding:7px 9px;border-bottom:1px solid #7775;text-align:left;overflow-wrap:anywhere}th{position:sticky;top:0;background:Canvas}</style></head>
+<body><p><a href="/havnvard/verification-status">Back to verification status</a></p>
+<h1>{{ file.host }}: {{ file.path }}</h1>
+<table><tbody>{% for key,value in file.items() %}<tr><th>{{ key }}</th><td>{{ value }}</td></tr>{% endfor %}</tbody></table>
+<h2>Observations</h2><table><thead><tr><th>Observed</th><th>Run</th><th>State</th><th>Baseline</th><th>Observed hash</th><th>Size</th><th>mtime ns</th><th>inode</th></tr></thead><tbody>{% for r in observations %}<tr><td>{{ r.observed_at }}</td><td>{{ r.run_id }}</td><td>{{ r.result_state }}</td><td>{{ r.baseline_hash }}</td><td>{{ r.observed_hash }}</td><td>{{ r.observed_size }}</td><td>{{ r.observed_mtime_ns }}</td><td>{{ r.observed_inode }}</td></tr>{% endfor %}</tbody></table>
+<h2>Divergences</h2><table><thead><tr><th>Created</th><th>Tier</th><th>Old</th><th>New</th><th>Score</th><th>Type</th><th>Decision</th><th>Odd sources</th><th>Verdict</th></tr></thead><tbody>{% for r in divergences %}<tr><td>{{ r.created_at }}</td><td>{{ r.tier }}</td><td>{{ r.old_hash }}</td><td>{{ r.new_hash }}</td><td>{{ r.mutable_score }}</td><td>{{ r.divergence_type }}</td><td>{{ r.decision_state }}</td><td>{{ r.odd_sources }}</td><td>{{ r.operator_verdict }}</td></tr>{% endfor %}</tbody></table>
+</body></html>

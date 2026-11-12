@@ -1,0 +1,10 @@
+[Unit]
+Description=HavnVard restic backup — agent-controller — daily 01:45
+Documentation=file:///home/parker/runbooks/20260718-havnvard-restic-migration/README.md
+
+[Timer]
+OnCalendar=*-*-* 01:45:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

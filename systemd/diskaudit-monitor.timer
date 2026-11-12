@@ -1,0 +1,10 @@
+[Unit]
+Description=diskaudit — run stale/failed monitor every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=false
+
+[Install]
+WantedBy=timers.target

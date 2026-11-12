@@ -1,0 +1,6 @@
+# forge-chrome vendored copy -- managed by forge_core.scripts.sync_chrome.
+# Do not hand-edit the pair; re-run `sync_chrome update <static dir>` instead.
+FORGE_CHROME_VERSION=1.0.0
+SOURCE_SHA=584321490f2a7f893773cd40b88cde02ff17d5f4291b4238d5739155c944a2d5
+DATE=20260828
+SOURCE=/srv/forge_core/forge_core/static/forge-chrome

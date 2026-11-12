@@ -1,0 +1,10 @@
+[Unit]
+Description=HavnVard restic backup — claude-code-inbox — daily 01:15
+Documentation=file:///home/parker/runbooks/20260718-havnvard-restic-migration/README.md
+
+[Timer]
+OnCalendar=*-*-* 01:15:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

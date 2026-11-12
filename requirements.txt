@@ -1,0 +1,8 @@
+# Python dependencies only. System-level binaries (rdfind, sshpass, ssh,
+# rsync, restic, etc. — see README.md "Requirements") are OS packages, not
+# pip-installable, and are not listed here.
+psycopg[binary]>=3.2
+
+# vp-dispatcher (PRESCAB, :9103) SDK — JOBS-119 migration off hand-rolled
+# urllib callers in havnvard_report.py / weekly_prescab_review.py.
+prescab_client @ git+https://github.com/ParkerFairfield/prescab-client.git@main

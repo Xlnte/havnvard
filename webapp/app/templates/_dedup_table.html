@@ -1,0 +1,97 @@
+{% if kpi.groups == 0 %}
+<div class="empty-state">No duplicate groups match these filters.</div>
+{% else %}
+<div class="kpi-row">
+  <div class="kpi"><div class="n">{{ human_count(kpi.groups) }}</div><div class="l">duplicate groups</div></div>
+  <div class="kpi"><div class="n">{{ human_bytes(kpi.reclaim) }}</div><div class="l">reclaimable (hardlink-aware)</div></div>
+  <div class="kpi"><div class="n">{{ human_count(kpi.files) }}</div><div class="l">member files</div></div>
+  <div class="kpi"><div class="n">{{ human_count(kpi.hash_proven_groups) }}</div><div class="l">hash-proven groups</div></div>
+</div>
+<div class="caveat">
+  <b>Hardlink-aware:</b> "reclaimable" = (distinct inodes − 1) × size, per group, never a row-count sum.
+  A group where <b>distinct inodes = 1</b> is a pure hardlink set (badge below) — every path already
+  points at the same bytes on disk, so deleting any one path frees <b>zero</b> bytes. Same-inode groups
+  are also evidence level 4 below — hardlink certainty, never "proven duplicate".
+</div>
+
+<details class="caveat" open>
+  <summary><b>Classification breakdown</b> (under every OTHER current filter — click a bucket to isolate it, or use "exclude OS/system + application" above)</summary>
+  <table class="small">
+    <thead><tr><th>Classification</th><th class="num">Groups</th><th class="num">Reclaimable</th></tr></thead>
+    <tbody>
+    {% for c in kpi.by_classification %}
+      <tr>
+        <td><span class="badge cls-{{ c.key }}" title="{{ c.desc }}">{{ c.label }}</span></td>
+        <td class="num">{{ human_count(c.groups) }}</td>
+        <td class="num">{{ human_bytes(c.reclaim) }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</details>
+
+<details class="caveat">
+  <summary><b>Evidence-strength ladder</b> (strongest → weakest; level 1 is modeled but not yet available — no byte-compare tool is wired up)</summary>
+  <table class="small">
+    <thead><tr><th>Level</th><th>What it means</th><th class="num">Groups</th><th class="num">Reclaimable</th></tr></thead>
+    <tbody>
+    {% for e in kpi.by_evidence_level %}
+      <tr {% if not e.available %}class="muted"{% endif %}>
+        <td><span class="badge ev-{{ e.key }}" title="{{ e.desc }}">{{ e.level }}. {{ e.label }}{% if not e.available %} (not yet available){% endif %}</span></td>
+        <td class="small">{{ e.desc }}</td>
+        <td class="num">{{ human_count(e.groups) }}</td>
+        <td class="num">{{ human_bytes(e.reclaim) }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <div class="small muted">Provenance (who computed the evidence) is a separate axis from strength — filter it independently above. "Mixed" means a group's member files disagree on who computed their evidence.</div>
+</details>
+
+{% endif %}
+<table>
+  <thead><tr>
+    <th>Host</th>
+    <th>Group</th>
+    <th class="num"><a href="{{ sort_links.file_count.url }}">Files <span class="sortarrow">{{ sort_links.file_count.icon }}</span></a></th>
+    <th class="num"><a href="{{ sort_links.distinct_inodes.url }}">Distinct inodes <span class="sortarrow">{{ sort_links.distinct_inodes.icon }}</span></a></th>
+    <th class="num"><a href="{{ sort_links.size.url }}">Size/copy <span class="sortarrow">{{ sort_links.size.icon }}</span></a></th>
+    <th class="num"><a href="{{ sort_links.reclaimable.url }}">Reclaimable <span class="sortarrow">{{ sort_links.reclaimable.icon }}</span></a></th>
+    <th>Classification</th>
+    <th><a href="{{ sort_links.evidence.url }}">Evidence <span class="sortarrow">{{ sort_links.evidence.icon }}</span></a></th>
+    <th>Sample path (oldest mtime)</th>
+  </tr></thead>
+  <tbody>
+  {% for r in rows %}
+    <tr>
+      <td>{{ r.host }}</td>
+      <td class="mono small" title="Drill down into all {{ r.file_count }} copies &amp; the KEEP/CANDIDATE recommendation &#10;{{ r.duplicate_group_id }}">
+        <a href="/havnvard/group/{{ r.duplicate_group_id }}?host={{ r.host }}">{{ r.group_id_short }}</a>
+      </td>
+      <td class="num">{{ human_count(r.file_count) }}</td>
+      <td class="num">{{ human_count(r.distinct_inode_count) }}</td>
+      <td class="num">{{ r.size_h }}</td>
+      <td class="num">{{ r.reclaim_h }}
+        {% if r.is_hardlink_only %}<br><span class="badge hardlink">hardlink set — 0 reclaimable</span>{% endif %}
+      </td>
+      <td>
+        {% set cm = classification_map.get(r.classification) %}
+        <span class="badge cls-{{ r.classification }}" title="{{ cm[1] if cm else '' }}">{{ cm[0] if cm else r.classification }}</span>
+      </td>
+      <td>
+        <span class="badge ev-{{ r.evidence_level_label }}" title="{{ r.evidence_level_label }} — level {{ r.evidence_level }} of 7 (1=strongest)">{{ r.evidence_level }}. {{ r.evidence_level_label.replace('_', ' ') }}</span><br>
+        <span class="badge provenance" title="Who computed this evidence">{{ r.provenance_label }}</span>
+      </td>
+      <td class="mono">{{ r.sample_path }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+<div class="pager">
+  <a href="{{ prev_url }}" {% if f.page <= 1 %}style="pointer-events:none;color:#999;"{% endif %}
+     hx-get="{{ prev_url }}" hx-target="#dedup-results" hx-push-url="true">&laquo; prev</a>
+  <span>page {{ f.page }} / {{ page_count }} &middot; {{ human_count(total) }} groups matched</span>
+  <a href="{{ next_url }}" {% if f.page >= page_count %}style="pointer-events:none;color:#999;"{% endif %}
+     hx-get="{{ next_url }}" hx-target="#dedup-results" hx-push-url="true">next &raquo;</a>
+  <span class="small">&middot; <a href="{{ export_csv }}">export CSV</a> &middot; <a href="{{ export_json }}">export JSON</a></span>
+</div>

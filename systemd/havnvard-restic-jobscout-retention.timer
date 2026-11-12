@@ -1,0 +1,10 @@
+[Unit]
+Description=HavnVard restic retention — jobscout — weekly Sun 10:15
+Documentation=file:///home/parker/runbooks/20260718-havnvard-restic-migration/README.md
+
+[Timer]
+OnCalendar=Sun *-*-* 10:15:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

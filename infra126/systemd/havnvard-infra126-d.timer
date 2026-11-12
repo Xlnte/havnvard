@@ -1,0 +1,13 @@
+[Unit]
+Description=Hourly event-driven mutable-baseline stabilization queue
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=1h
+RandomizedDelaySec=300
+AccuracySec=1min
+Persistent=true
+Unit=havnvard-infra126-d.service
+
+[Install]
+WantedBy=timers.target

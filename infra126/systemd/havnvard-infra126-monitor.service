@@ -1,0 +1,14 @@
+[Unit]
+Description=HavnVard INFRA-126 stale-run, SLA, and corruption monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=parker
+WorkingDirectory=/srv/ultraops/diskaudit/infra126
+EnvironmentFile=/etc/havnvard/infra126.env
+ExecStart=/srv/ultraops/diskaudit/infra126/.venv/bin/havnvard-bitrot monitor
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=havnvard-infra126-monitor

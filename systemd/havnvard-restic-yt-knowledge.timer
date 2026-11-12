@@ -1,0 +1,10 @@
+[Unit]
+Description=HavnVard restic backup — yt-knowledge — daily 02:25
+Documentation=file:///home/parker/runbooks/20260718-havnvard-restic-migration/README.md
+
+[Timer]
+OnCalendar=*-*-* 02:25:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

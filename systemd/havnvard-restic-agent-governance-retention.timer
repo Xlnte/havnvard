@@ -1,0 +1,10 @@
+[Unit]
+Description=HavnVard restic forget+prune — agent-governance — weekly Sun 06:05
+Documentation=file:///home/parker/runbooks/20260718-havnvard-restic-migration/README.md
+
+[Timer]
+OnCalendar=Sun *-*-* 06:05:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

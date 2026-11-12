@@ -1,0 +1,21 @@
+[Unit]
+Description=HavnVard — NAS within-host SHA-256 dedup (nas-ts453a, weekly; bkup_spark excluded until PAF decides)
+Documentation=file:///home/parker/runbooks/20261109-havnvard-nas-dedup/20261109_ARCHITECTURE.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=parker
+WorkingDirectory=/srv/diskaudit
+ExecStart=/srv/diskaudit/.venv/bin/python3 /srv/diskaudit/nas_trigkey_dedup.py --host nas-ts453a --exclude /share/CACHEDEV1_DATA/bkup_spark
+Nice=15
+IOSchedulingClass=idle
+KillSignal=SIGTERM
+TimeoutStopSec=180
+TimeoutStartSec=6d
+# exit 4 = "refused: a whole-host run is already active" (HV-REQ-25/35) -- not a unit failure;
+# the refusal line is in the journal and the next week's run proceeds.
+SuccessExitStatus=4
+StandardOutput=journal
+StandardError=journal

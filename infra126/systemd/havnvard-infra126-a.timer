@@ -1,0 +1,12 @@
+[Unit]
+Description=Weekly HavnVard Tier A fresh-baseline verification
+
+[Timer]
+OnCalendar=Wed *-*-* 23:00:00 UTC
+Persistent=true
+RandomizedDelaySec=1800
+AccuracySec=1min
+Unit=havnvard-infra126-a.service
+
+[Install]
+WantedBy=timers.target

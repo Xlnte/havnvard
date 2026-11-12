@@ -1,0 +1,12 @@
+[Unit]
+Description=Quarterly HavnVard Tier C cold-data verification
+
+[Timer]
+OnCalendar=*-01,04,07,10-08 02:00:00 UTC
+Persistent=true
+RandomizedDelaySec=3600
+AccuracySec=1min
+Unit=havnvard-infra126-c.service
+
+[Install]
+WantedBy=timers.target

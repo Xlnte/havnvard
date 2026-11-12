@@ -1,0 +1,9 @@
+[Unit]
+Description=diskaudit load-bearing path refresh schedule, changed 2026-07-19 (was weekly Sun 06:00) to daily, feeding classification-refresh same cycle. Runs after diskaudit-scan.timer (daily 08:00, ~11-13min typical runtime).
+
+[Timer]
+OnCalendar=*-*-* 08:20:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
