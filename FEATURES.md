@@ -34,7 +34,7 @@ delete/move decision is yours (the operator's) alone, made by reading these repo
 | Load-bearing override (protect cold-but-live infra files) | **WORKING** | `python refresh_load_bearing_paths.py` |
 | Backup-coverage check (critical_patterns-scoped) | **WORKING** | query `diskaudit.v_backup_coverage` |
 | TRUE backup-coverage classifier (complete file universe) | **WORKING** (new, 2026-07-25) | `python backup_coverage.py classify --host server-1 \| agent-1` |
-| NAS-orphan detection | **WORKING** | query `diskaudit.v_nas_orphans` |
+| NAS-orphan detection | **WORKING** | query `diskaudit.v_nas_orphans` (original deployment only: the view names one NAS host, so `schema/baseline.sql` leaves it out) |
 | Stale/failed run monitor + TG alert | **WORKING** | `python monitor.py` (runs every 5 min via timer) |
 | Daily metadata report to TG PRESI | **WORKING** | `python havnvard_report.py` |
 | Weekly PRESCAB operational review | **WORKING** | `python weekly_prescab_review.py` |

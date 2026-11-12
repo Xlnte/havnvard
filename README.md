@@ -27,7 +27,7 @@ a cloud account. Version 3.0.0.
 * **HavnVard Backup (`backup/`)** — Python 3.11+ standard library and restic. No database needed. Start with
   "Install HavnVard Backup" below. Functions 2, 3, 4, 6 and 8.
 * **Inventory, dedup and verification (top-level scripts, `infra126/`, `webapp/`)** — needs PostgreSQL (schema
-  `diskaudit`, see `migrations/`) and a site file. Functions 1, 5, 7, 9 and 10.
+  `diskaudit`, built in one step from `schema/baseline.sql`, see "Database") and a site file. Functions 1, 5, 7, 9 and 10.
 
 ## Site file (inventory tools)
 
@@ -36,10 +36,10 @@ Everything that differs between installations lives in one TOML file: `/etc/havn
 It names your hosts (the local machine, the NAS, remote "agent" machines), the database env file, the NAS and the
 optional alert/report integrations. **It never holds a password:** it names the files that hold them.
 
-## Known limits in 3.0.0
+## Known limits in 3.1.0
 
-* The SQL migrations are the project's real history and still name the original author's hosts in a few views and
-  seed rows; a fresh install should edit those host names before applying them (tracked for 3.1: a host-roles table).
+* `migrations/` is the change history of the original deployment, not an install path; new sites use
+  `schema/baseline.sql` (see "Database").
 * Database tests run only against a scratch database you name in `HAVNVARD_TEST_DSN` (see `tests/README.md`).
 * Windows and phone clients are not built.
 
@@ -181,9 +181,23 @@ sudo /opt/havnvard/run_all_nas_shares.sh                # full NAS crawl
 
 ## Database
 
-Schema `diskaudit` in `havnvard` (Postgres). Core table `diskaudit.files`
-(`(host, path)` primary key). Key views: `v_duplicate_groups`,
-`v_file_status`, `v_backup_coverage`, `v_nas_orphans`.
+Schema `diskaudit` (PostgreSQL 15+). Core table `diskaudit.files` (`(host, path)` primary key). Key views:
+`v_duplicate_groups`, `v_file_status`, `v_backup_coverage`.
+
+**New install:** create an empty database, put its URL in the env file your site file names (`POSTGRES_URL=...`),
+then build the whole schema in one step:
+
+```bash
+psql "$POSTGRES_URL" -v ON_ERROR_STOP=1 -f schema/baseline.sql
+```
+
+`schema/baseline.sql` is the current schema plus generic starting rules (`schema/seed.sql`: OS, cache and temp paths
+excluded from backup coverage; QNAP system folders). It names no hosts: every scan writes its own host name. Add your
+own rules with plain `INSERT`s afterwards.
+
+`migrations/` is the change history of the original deployment (see `migrations/README.md`); a new site does not run
+it. Maintainers regenerate the baseline after a schema change with `scripts/make_baseline_schema.py`, which refuses to
+write a file that still names a private host.
 
 ## Dashboard
 

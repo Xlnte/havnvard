@@ -457,7 +457,8 @@ Tests: `pytest tests/test_backup_core.py tests/test_backup_restic.py tests/test_
    script against a bounded scope first (e.g. `scan.py --dry-run --root
    /home/user`), verify output, then let the systemd timer pick it up (or
    `sudo systemctl start <unit>` manually) rather than editing on `main`.
-3. Schema changes go through `migrations/` (numbered, dated SQL files) —
+3. Schema changes go through `migrations/` (numbered, dated SQL files), then regenerate `schema/baseline.sql`
+   with `scripts/make_baseline_schema.py` from the migrated database (INFRA-557) —
    never hand-edit `diskaudit.*` objects outside a migration file.
 4. Never run a script as an experiment against the FULL 13M-row `files` table
    without `--dry-run` first if the script supports it.

@@ -4,7 +4,7 @@ Run: `.venv/bin/pytest tests/ -v` (and `cd infra126 && pytest tests`).
 
 * Every test reads `tests/site.test.toml` (hosts `server-1`, `nas-1`, `agent-1`), never your real site file.
 * **Database tests are skipped unless `HAVNVARD_TEST_DSN` names a scratch PostgreSQL database** with the `diskaudit`
-  schema applied (`migrations/` in order). `POSTGRES_URL` is overridden for the whole test session, so code under
+  schema built from `schema/baseline.sql` (one `psql -f`). `POSTGRES_URL` is overridden for the whole test session, so code under
   test can never reach a production database. Never point `HAVNVARD_TEST_DSN` at production: the crosshost tests
   commit `_test_` rows and sweep them at session end.
 transactions, the NAS-dedup tests do not touch production at all).
