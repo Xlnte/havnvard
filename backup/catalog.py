@@ -1,4 +1,4 @@
-"""Backup names and the file catalog (HavnVard 2.2.0, PAF 20261111).
+"""Backup names and the file catalog (HavnVard 2.2.0).
 
 Every data snapshot on the hub gets a name `YYYYMMDD_DEVICE_NNNNNN` (date of the snapshot, device in capitals,
 a number that counts up across all devices and never resets). The name is added as a restic tag.
@@ -394,7 +394,7 @@ def catalog_run(first_run_latest_only: bool = True, recover: bool = False) -> in
         if env is None or repo not in snap_cache:
             continue
         dev = device_label(repo)
-        # One stream per (host, paths): a repo may hold many (Spark: one per app). Diffing across streams would
+        # One stream per (host, paths): a repo may hold many (e.g. one per app on a server). Diffing across streams would
         # log every file as GONE and ADDED (review finding 9), so state and diffs are per stream.
         streams: dict[str, list[dict]] = {}
         for s in data_snapshots(snap_cache[repo]):

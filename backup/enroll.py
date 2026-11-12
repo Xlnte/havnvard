@@ -29,16 +29,19 @@ def in_quiet(quiet: str, hour: int) -> bool:
     return (a <= hour < b) if a < b else (hour >= a or hour < b)
 
 
+PROFILES = ("generic", "ml-workstation", "desktop-sync")   # files in backup/excludes/
+
+
 def excludes_text(profile: str) -> str:
     p = Path(profile)
-    if profile in ("generic", "spark", "pafpad"):
+    if profile in PROFILES:
         src = PKG / "excludes" / f"{profile}.txt"
     elif p.is_file():
         src = p
     else:
-        raise BackupError(f"unknown excludes profile {profile!r}: use generic, spark, pafpad or a file path")
+        raise BackupError(f"unknown excludes profile {profile!r}: use {', '.join(PROFILES)} or a file path")
     home = str(Path.home())
-    text = src.read_text().replace("/home/parker", home)
+    text = src.read_text().replace("{HOME}", home)
     return text.rstrip() + f"\n{config.config_dir()}\n"   # never back the secrets up into the repo they guard
 
 

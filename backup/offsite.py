@@ -134,7 +134,7 @@ class _Run:
                 with open(self.flag_path, "a") as f:
                     f.write(k + "\n")
                 self.log(f"FLAGGED {k}: offsite ({ds}) larger than verified hub ({hs}) after {MAX_TRIES} resends; "
-                         "no more resends, PAF to review")
+                         "no more resends, operator to review")
             return 0
         if self.delete_offsite(repo, rel):    # count a resend only when the bad copy is really gone (FN-6)
             with open(self.tries_path, "a") as f:
@@ -221,7 +221,7 @@ def _run_target(nm: str, remote: str, hub: Path, max_seconds: int, bwlimit: str)
             break
         nf = len(o.flagged(r))
         total_flagged += nf
-        o.log(f"OK-FLAGGED {r} ({nf} flagged file(s) not offsite; PAF to review)" if nf else f"OK  {r}")
+        o.log(f"OK-FLAGGED {r} ({nf} flagged file(s) not offsite; operator to review)" if nf else f"OK  {r}")
     o.log(f"=== offsite {nm} end rc={rc} flagged={total_flagged} ran {int(time.monotonic() - o.start)}s ===")
     sp = st / f"offsite-{nm}.status.json"
     try:

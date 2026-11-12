@@ -31,7 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     en = sub.add_parser("enroll", help="enrol this device")
     en.add_argument("device")
     en.add_argument("--paths", nargs="+", required=True)
-    en.add_argument("--excludes", default="generic", help="generic, spark, pafpad or a file path")
+    en.add_argument("--excludes", default="generic", help="generic, ml-workstation, desktop-sync or a file path")
     en.add_argument("--limit-upload", type=int, metavar="KIB", help="upload cap KiB/s (default 4096, 0 = none)")
     en.add_argument("--quiet-hours", metavar="HH-HH", help="no backups in these local hours, e.g. 08-18")
     en.add_argument("--schedule", default="hourly", help="systemd OnCalendar value")
@@ -65,7 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
     h.add_argument("--no-alert", action="store_true")
     h.add_argument("--json", action="store_true", help="print one JSON object (ok, exit_code, checks) instead of text")
 
-    hr = sub.add_parser("health-relay", help="on Spark: run `health --json` on a hub over ssh, alert locally via alertlib")
+    hr = sub.add_parser("health-relay", help="on a machine that can alert: run `health --json` on a hub over ssh and alert locally")
     hr.add_argument("--ssh", required=True, metavar="HOST")
     hr.add_argument("--python", default="python3", help="python on the hub")
     hr.add_argument("--repo-dir", default="havnvard", help="HavnVard checkout on the hub (relative to its home or absolute)")

@@ -19,7 +19,7 @@ NAME = r"^\d{8}_[A-Z0-9-]+_\d{6}$"
 
 def test_names_and_labels():
     t = dt.datetime(2026, 11, 11, 15, 0, tzinfo=dt.timezone.utc)
-    assert catalog.make_name(t, "SPARK", 42) == t.astimezone().strftime("%Y%m%d") + "_SPARK_000042"
+    assert catalog.make_name(t, "SPARK", 42) == t.astimezone().strftime("%Y%m%d") + "_SERVER-1_000042"
     assert catalog.device_label("air_2017") == "AIR-2017"
     with pytest.raises(BackupError):
         catalog.make_name(t, "X", 0)
@@ -32,20 +32,20 @@ def test_diff_and_where_replay():
     assert added == [("/a/bob.txt", 6, 200), ("/a/new.txt", 2, 2)]
     assert gone == [("/a/bob.txt", 5, 100), ("/a/old.txt", 1, 1)]
     log = [catalog.HEADER,
-           catalog.event_lines("20261101_SPARK_000001", "SPARK", sorted((p, *v) for p, v in prev.items()), []),
-           catalog.event_lines("20261102_SPARK_000002", "SPARK", added, gone)]
+           catalog.event_lines("20261101_SERVER-1_000001", "SPARK", sorted((p, *v) for p, v in prev.items()), []),
+           catalog.event_lines("20261102_SERVER-1_000002", "SPARK", added, gone)]
     hits = catalog.where("".join(log).splitlines(True), "BOB.TXT")
     assert sorted((h["size"], h["first"], h["gone"]) for h in hits) == [
-        (5, "20261101_SPARK_000001", "20261102_SPARK_000002"), (6, "20261102_SPARK_000002", "")]
+        (5, "20261101_SERVER-1_000001", "20261102_SERVER-1_000002"), (6, "20261102_SERVER-1_000002", "")]
     assert all(h["held_by"] is None for h in hits)                       # no #ALIVE line yet: unknown, not "pruned"
     # prune removed backup 1: the old version is held by nothing, the new one by backup 2 (review 2.2.0 #3)
-    log.append(catalog.alive_line(dt.datetime(2026, 11, 3, tzinfo=dt.timezone.utc), 2, ["20261102_SPARK_000002"]))
+    log.append(catalog.alive_line(dt.datetime(2026, 11, 3, tzinfo=dt.timezone.utc), 2, ["20261102_SERVER-1_000002"]))
     hits = {h["size"]: h["held_by"] for h in catalog.where("".join(log).splitlines(True), "bob.txt")}
-    assert hits == {6: ["20261102_SPARK_000002"], 5: []}
+    assert hits == {6: ["20261102_SERVER-1_000002"], 5: []}
     # a version first named AFTER the last #ALIVE line is "not checked", never "pruned" (round 2, R1)
-    log.append(catalog.event_lines("20261104_SPARK_000003", "SPARK", [("/a/bob.txt", 7, 300)], [("/a/bob.txt", 6, 200)]))
+    log.append(catalog.event_lines("20261104_SERVER-1_000003", "SPARK", [("/a/bob.txt", 7, 300)], [("/a/bob.txt", 6, 200)]))
     hits = {h["size"]: h["held_by"] for h in catalog.where("".join(log).splitlines(True), "bob.txt")}
-    assert hits[7] is None and hits[6] == ["20261102_SPARK_000002"]
+    assert hits[7] is None and hits[6] == ["20261102_SERVER-1_000002"]
     # device match is exact, not a substring (R8)
     log.append(catalog.alive_line(dt.datetime(2026, 11, 5, tzinfo=dt.timezone.utc), 3, ["20261104_SPARK-2_000003"]))
     assert {h["size"]: h["held_by"] for h in catalog.where("".join(log).splitlines(True), "bob.txt")}[7] == []
@@ -210,14 +210,14 @@ def test_where_paths_change_starts_a_new_stream_old_version_not_held_by_it():
     """Review S1 repro A: app paths change -> new stream; v1 (old stream) is never held by new-stream backups."""
     t = dt.datetime(2026, 11, 20, tzinfo=dt.timezone.utc)
     log = [catalog.HEADER,
-           _nm("20261101_SPARK_000001", "spark-20cf", "/srv/a"),
-           catalog.event_lines("20261101_SPARK_000001", "SPARK", [("/srv/a/f", 1, 1)], []),
-           _nm("20261110_SPARK_000003", "spark-20cf", "/srv/a", "/srv/b"),
-           catalog.event_lines("20261110_SPARK_000003", "SPARK", [("/srv/a/f", 2, 2)], []),
-           _nm("20261111_SPARK_000004", "spark-20cf", "/srv/a", "/srv/b"),
-           catalog.alive_line(t, 4, ["20261110_SPARK_000003", "20261111_SPARK_000004"])]
+           _nm("20261101_SERVER-1_000001", "server-1", "/srv/a"),
+           catalog.event_lines("20261101_SERVER-1_000001", "SPARK", [("/srv/a/f", 1, 1)], []),
+           _nm("20261110_SERVER-1_000003", "server-1", "/srv/a", "/srv/b"),
+           catalog.event_lines("20261110_SERVER-1_000003", "SPARK", [("/srv/a/f", 2, 2)], []),
+           _nm("20261111_SERVER-1_000004", "server-1", "/srv/a", "/srv/b"),
+           catalog.alive_line(t, 4, ["20261110_SERVER-1_000003", "20261111_SERVER-1_000004"])]
     held = {h["size"]: h["held_by"] for h in catalog.where("".join(log).splitlines(True), "/srv/a/f")}
-    assert held == {1: [], 2: ["20261110_SPARK_000003", "20261111_SPARK_000004"]}
+    assert held == {1: [], 2: ["20261110_SERVER-1_000003", "20261111_SERVER-1_000004"]}
 
 
 def test_where_nested_streams_do_not_overwrite_each_other():
@@ -225,14 +225,14 @@ def test_where_nested_streams_do_not_overwrite_each_other():
     t = dt.datetime(2026, 11, 20, tzinfo=dt.timezone.utc)
     f = [("/srv/x/f", 9, 9)]
     log = [catalog.HEADER,
-           _nm("20261101_SPARK_000001", "h", "/srv"), catalog.event_lines("20261101_SPARK_000001", "SPARK", f, []),
-           _nm("20261101_SPARK_000002", "h", "/srv/x"), catalog.event_lines("20261101_SPARK_000002", "SPARK", f, []),
-           _nm("20261102_SPARK_000005", "h", "/srv"), catalog.event_lines("20261102_SPARK_000005", "SPARK", [], f),
-           _nm("20261102_SPARK_000006", "h", "/srv/x"),
-           catalog.alive_line(t, 6, ["20261101_SPARK_000001", "20261101_SPARK_000002",
-                                     "20261102_SPARK_000005", "20261102_SPARK_000006"])]
+           _nm("20261101_SERVER-1_000001", "h", "/srv"), catalog.event_lines("20261101_SERVER-1_000001", "SPARK", f, []),
+           _nm("20261101_SERVER-1_000002", "h", "/srv/x"), catalog.event_lines("20261101_SERVER-1_000002", "SPARK", f, []),
+           _nm("20261102_SERVER-1_000005", "h", "/srv"), catalog.event_lines("20261102_SERVER-1_000005", "SPARK", [], f),
+           _nm("20261102_SERVER-1_000006", "h", "/srv/x"),
+           catalog.alive_line(t, 6, ["20261101_SERVER-1_000001", "20261101_SERVER-1_000002",
+                                     "20261102_SERVER-1_000005", "20261102_SERVER-1_000006"])]
     held = sorted(tuple(h["held_by"]) for h in catalog.where("".join(log).splitlines(True), "/srv/x/f"))
-    assert held == [("20261101_SPARK_000001",), ("20261101_SPARK_000002", "20261102_SPARK_000006")]
+    assert held == [("20261101_SERVER-1_000001",), ("20261101_SERVER-1_000002", "20261102_SERVER-1_000006")]
 
 
 @needs_restic

@@ -125,7 +125,7 @@ def sync_coverage(conn, host: str, snapshot_id: str | None, listing: dict[str, t
 def connect():
     dsn = os.environ.get("POSTGRES_URL")
     if not dsn:
-        raise BackupError("POSTGRES_URL is not set (source: /srv/forge/.secrets/prod/metrics.env)")
+        raise BackupError("POSTGRES_URL is not set (the HavnVard inventory database; see README \"Inventory database\")")
     try:
         import psycopg as pg          # the repo's driver
     except ImportError:

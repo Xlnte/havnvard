@@ -1,10 +1,10 @@
-/home/parker/.cache
-/home/parker/snap
-/home/parker/.npm
-/home/parker/.nvm
-/home/parker/.unsloth
-/home/parker/.local/share/Trash
-/home/parker/.config/restic
+{HOME}/.cache
+{HOME}/snap
+{HOME}/.npm
+{HOME}/.nvm
+{HOME}/.unsloth
+{HOME}/.local/share/Trash
+{HOME}/.config/restic
 **/node_modules
 **/.venv
 **/__pycache__

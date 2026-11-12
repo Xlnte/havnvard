@@ -2,7 +2,7 @@
 
 Exit 0 healthy, 1 a check found a problem, 2 the check itself could not run (never a silent pass).
 Snapshot age is read from the newest file in <repo>/snapshots/ (written when a snapshot completes), which
-needs no repository password. Alerts go through alertlib.
+needs no repository password. Alerts go through backup/alerts.py (alertlib or an alert command).
 """
 from __future__ import annotations
 

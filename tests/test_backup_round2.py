@@ -68,7 +68,7 @@ def test_sync_coverage_updates_only_matches_and_commits():
     _, listing = coverage.parse_ls_json(LS)
     t = listing["/d/a"][1]
     conn = FakeConn([("/d/a", 10, t), ("/d/zzz", 1, t)])
-    assert coverage.sync_coverage(conn, "spark-20cf", "abc123", listing) == 1
+    assert coverage.sync_coverage(conn, "server-1", "abc123", listing) == 1
     upd = [x for x in conn.log if x[0] == "executemany"][0]
     assert [p[4] for p in upd[2]] == ["/d/a"] and "BACKED_UP_UNVERIFIED" in upd[1] and "'BACKED_UP_VERIFIED'" not in upd[1] and conn.log[-1] == ("commit",)
 
@@ -82,8 +82,8 @@ def test_sync_coverage_dry_run_writes_nothing():
 
 # ---- not-backed-up -------------------------------------------------------------------------------------------
 def test_not_backed_up_query_text_and_params():
-    (_, tsql, tp), (_, gsql, gp) = nobackup.build_queries("trigkey", "type", 7)
-    assert tp == ("trigkey", "trigkey") and gp == ("trigkey", "trigkey", 7)
+    (_, tsql, tp), (_, gsql, gp) = nobackup.build_queries("hub-1", "type", 7)
+    assert tp == ("hub-1", "hub-1") and gp == ("hub-1", "hub-1", 7)
     assert "NOT_BACKED_UP" in tsql and "DISTINCT ON (host, inode)" in gsql and "LIMIT %s" in gsql and "lower(substring" in gsql
     assert nobackup.build_queries(None, "folder", 5)[1][2] == (5,)
     for bad in (("x", 5), ("type", 0)):
@@ -92,7 +92,7 @@ def test_not_backed_up_query_text_and_params():
 
 
 def test_not_backed_up_format():
-    txt = nobackup.format_report([("trigkey", 3, 2_500_000_000)], [("/home/p/vids", 2, 2_000_000_000)], "folder", "trigkey")
+    txt = nobackup.format_report([("hub-1", 3, 2_500_000_000)], [("/home/p/vids", 2, 2_000_000_000)], "folder", "hub-1")
     assert "2.50" in txt and "/home/p/vids" in txt and "folder" in txt
     assert "No NOT_BACKED_UP rows" in nobackup.format_report([], [], "type", None)
 
@@ -140,9 +140,9 @@ def test_relay_remote_command_is_quoted():
 
 
 def test_relay_units_render(tmp_path):
-    ps = relay.render_units(tmp_path, "trigkey", "/usr/bin/python3", "/home/p/havnvard")
+    ps = relay.render_units(tmp_path, "hub-1", "/usr/bin/python3", "/home/p/havnvard")
     svc = (tmp_path / "havnvard-health-relay.service").read_text()
-    assert "health-relay --ssh trigkey" in svc and "SuccessExitStatus=1" in svc and len(ps) == 2
+    assert "health-relay --ssh hub-1" in svc and "SuccessExitStatus=1" in svc and len(ps) == 2
     assert "OnCalendar=hourly" in (tmp_path / "havnvard-health-relay.timer").read_text()
 
 

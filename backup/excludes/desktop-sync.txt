@@ -1,0 +1,14 @@
+{HOME}/OneDrive/.tmp.drivedownload
+{HOME}/OneDrive/.tmp.driveupload
+{HOME}/Internxt Drive
+# a hub store that lives in your home folder:
+{HOME}/restic-hub
+{HOME}/.cache
+{HOME}/snap
+{HOME}/.npm
+{HOME}/.local/share/Trash
+{HOME}/.config/restic
+{HOME}/.config/restic-hub
+**/node_modules
+**/.venv
+**/__pycache__

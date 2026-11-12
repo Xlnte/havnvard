@@ -184,3 +184,43 @@ def test_alert_failure_is_visible(monkeypatch):
     monkeypatch.setitem(sys.modules, "alertlib", None)
     ok, why = alerts.fire("k", "t")
     assert not ok and "alertlib" in why
+
+
+def _alert_env(monkeypatch, tmp_path, command):
+    monkeypatch.undo()                       # drop the fake fire/resolve; re-isolate config and state
+    monkeypatch.setenv("HAVNVARD_CONFIG_DIR", str(tmp_path / "acfg"))
+    monkeypatch.setenv("HAVNVARD_STATE_DIR", str(tmp_path / "astate"))
+    monkeypatch.setenv("HAVNVARD_ALERTLIB_PATH", "/nonexistent")
+    monkeypatch.setitem(sys.modules, "alertlib", None)
+    if command is not None:
+        config.save({"alerts": {"command": command}})
+
+
+def test_alert_command_used_when_no_alertlib(monkeypatch, tmp_path):
+    out = tmp_path / "got.txt"
+    _alert_env(monkeypatch, tmp_path, ["sh", "-c", f'printf "%s|%s" "$HAVNVARD_ALERT_KEY" "$HAVNVARD_ALERT_TEXT" >> {out}'])
+    ok, why = alerts.fire("hv-key", "hub stale", cooldown_sec=3600)
+    assert ok and "alert command" in why
+    assert out.read_text() == "hv-key|hub stale"
+    ok2, why2 = alerts.fire("hv-key", "hub stale", cooldown_sec=3600)   # inside the cooldown: not sent again
+    assert ok2 and "cooldown" in why2 and out.read_text() == "hv-key|hub stale"
+    alerts.resolve("hv-key")                                            # resolve clears it: next problem alerts
+    assert alerts.fire("hv-key", "again", cooldown_sec=3600)[0] and out.read_text().endswith("hv-key|again")
+
+
+def test_alert_command_failure_is_visible(monkeypatch, tmp_path):
+    _alert_env(monkeypatch, tmp_path, ["sh", "-c", "echo nope >&2; exit 3"])
+    ok, why = alerts.fire("k", "t")
+    assert not ok and "exit 3" in why and "nope" in why
+
+
+def test_alert_without_alertlib_or_command_is_visible(monkeypatch, tmp_path):
+    _alert_env(monkeypatch, tmp_path, None)
+    ok, why = alerts.fire("k", "t")
+    assert not ok and "no [alerts] command" in why
+
+
+def test_excludes_profiles_use_home_placeholder():
+    for prof in enroll.PROFILES:
+        text = enroll.excludes_text(prof)
+        assert "{HOME}" not in text and str(__import__("pathlib").Path.home()) in text

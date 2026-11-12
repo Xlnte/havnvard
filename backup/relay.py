@@ -1,5 +1,5 @@
-"""`health-relay`: for a hub without alertlib (trigkey). Runs on Spark, runs `health --json --no-alert` on the
-hub over ssh, and raises/resolves the alert locally through alertlib. A failed ssh, a remote error or output
+"""`health-relay`: for a hub that cannot alert by itself. Runs on a machine that can, runs `health --json --no-alert` on the
+hub over ssh, and raises/resolves the alert locally through backup/alerts.py. A failed ssh, a remote error or output
 that is not the expected JSON is itself an alert: the relay never passes silently (review F4)."""
 from __future__ import annotations
 
