@@ -1,0 +1,5 @@
+# Optional: only for havnvard_report.py's review step and weekly_prescab_review.py,
+# which send a summary to a PRESCAB-compatible advisory service. Skip this file
+# unless you run one. Set PRESCAB_CLIENT_SPEC to your own install source, e.g.
+#   pip install "$PRESCAB_CLIENT_SPEC"
+# The original private package is not published.

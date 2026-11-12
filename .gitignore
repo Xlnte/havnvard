@@ -28,3 +28,8 @@ reports/
 
 # Rendered systemd units from `python -m backup ... --out`
 out/
+
+# build output (public release 20261112)
+dist/
+*.egg-info/
+build/

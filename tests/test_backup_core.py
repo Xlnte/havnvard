@@ -224,3 +224,12 @@ def test_excludes_profiles_use_home_placeholder():
     for prof in enroll.PROFILES:
         text = enroll.excludes_text(prof)
         assert "{HOME}" not in text and str(__import__("pathlib").Path.home()) in text
+
+
+def test_package_version_matches_module_yaml():
+    import re as _re
+    from backup import __version__
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, "module.yaml"), encoding="utf-8") as f:
+        m = _re.search(r"^version:\s*([0-9.]+)\s*$", f.read(), _re.M)
+    assert m and m.group(1) == __version__
