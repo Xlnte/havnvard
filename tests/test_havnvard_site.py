@@ -74,3 +74,14 @@ def test_require_dsn_refuses_builtin_fallback(site_file, monkeypatch):
     assert hs.get_dsn() == hs.DEFAULT_FALLBACK_URL
     with pytest.raises(hs.SiteConfigError, match="no database configured"):
         hs.require_dsn()
+
+
+@pytest.mark.parametrize("text,key", [
+    ('[load_bearing]\ncrontab_users="parker"\n', "crontab_users"),
+    ('[scan]\nextra_excludes="/mnt/x"\n', "extra_excludes"),
+    ('[report]\napp_prefixes=[["/a"]]\n', "app_prefixes"),
+])
+def test_mistyped_lists_outside_hosts_are_refused(site_file, text, key):
+    site_file(text)
+    with pytest.raises(hs.SiteConfigError, match=key):
+        hs.site()

@@ -90,6 +90,17 @@ def _validate(data: dict, path) -> None:
     for name, a in (data.get("agents") or {}).items():
         if not isinstance(a, dict):
             bad(f"[agents.{name}]", "a table")
+    def str_list(sec, key):
+        v = (data.get(sec) or {}).get(key)
+        if v is not None and not (isinstance(v, list) and all(isinstance(x, str) and x.strip() for x in v)):
+            bad(f"[{sec}] {key}", "a list of strings")
+    for sec, key in (("scan", "extra_excludes"), ("load_bearing", "crontab_users"), ("report", "slow_shares"),
+                     ("nas", "dedup_excludes"), ("legacy_restic", "file_list_names")):
+        str_list(sec, key)       # review N2: a string here would split into one-letter entries
+    ap = (data.get("report") or {}).get("app_prefixes")
+    if ap is not None and not (isinstance(ap, list) and all(isinstance(x, list) and len(x) == 2
+                                                             and all(isinstance(y, str) for y in x) for x in ap)):
+        bad("[report] app_prefixes", "a list of [prefix, label] pairs")
     db = data.get("database") or {}
     for k in ("env_file", "fallback_url"):
         if k in db and not isinstance(db[k], str):

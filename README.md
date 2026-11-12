@@ -79,7 +79,9 @@ python -m backup enroll my-laptop --paths ~/Documents ~/Pictures --excludes gene
 `enroll` creates `~/.config/havnvard/restic.pass` and `rest.pass` (random, mode 600, never overwritten if present), the
 excludes file, and the backup timer in `./out/`. It prints one line to append to the hub's `.htpasswd` (a hash, not the
 password). Then `python -m backup client-run --init` makes the first backup. `--limit-upload` caps upload in KiB/s (0 = none).
-`--quiet-hours 08-18` means no backup starts in those local hours. Excludes profiles: `generic`, `spark`, `desktop-1`, or your own file.
+`--quiet-hours 08-18` means no backup starts in those local hours. Excludes profiles: `generic`, `ml-workstation`, `desktop-sync`, or your own file.
+Alerts: `[alerts] command = ["your-notifier"]` in `~/.config/havnvard/backup.toml` (any program; key and text arrive in
+`HAVNVARD_ALERT_KEY`/`HAVNVARD_ALERT_TEXT`), or `[alerts] alertlib_path = "/path/to/alertlib"` if you run alertlib.
 
 ### 3. Hub-side passwords (so the hub can prune and copy)
 Append-only devices cannot delete or prune. For the hub to do that, copy each device's `restic.pass` to the hub as

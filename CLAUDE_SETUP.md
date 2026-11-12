@@ -32,7 +32,7 @@ Show the user the printed commands and run them with their yes. Check: `systemct
 ## 4. Enrol this device
 ```
 python -m backup hub set <hub-host>[:port]
-python -m backup enroll <device-name> --paths <folders...> [--excludes generic|spark|desktop-1] [--limit-upload KIB] [--quiet-hours HH-HH]
+python -m backup enroll <device-name> --paths <folders...> [--excludes generic|ml-workstation|desktop-sync] [--limit-upload KIB] [--quiet-hours HH-HH]
 ```
 `enroll` prints a `name:{SHA}...` line: append it to the hub's `.htpasswd` (`~/.config/havnvard/hub.htpasswd` on the hub), then
 `systemctl --user kill -s HUP restic-hub.service` there. Then tell the user, in plain words: **"Save

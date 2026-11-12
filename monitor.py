@@ -413,4 +413,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except _site.SiteConfigError as e:   # review N3: one clear line, non-zero exit (the unit shows failed)
+        print(f"[monitor] ERROR: site configuration: {e}", file=sys.stderr)
+        sys.exit(2)
