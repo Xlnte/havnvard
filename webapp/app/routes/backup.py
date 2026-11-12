@@ -1,4 +1,4 @@
-"""View C — BACKUP: files on Spark + agent-1 NOT safely on the NAS (candidates
+"""View C — BACKUP: files on the server + agent-1 NOT safely on the NAS (candidates
 to copy).
 
 Primary source: diskaudit.backup_coverage (host, path, classification,

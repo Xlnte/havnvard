@@ -1,4 +1,4 @@
-"""View B — CLEANUP: files on Spark + agent-1 that have duplicates elsewhere
+"""View B — CLEANUP: files on the server + agent-1 that have duplicates elsewhere
 in the same host's duplicate_group_id (candidates to remove -- never removed
 by this app).
 

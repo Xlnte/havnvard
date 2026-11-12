@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """diskaudit v2 — heartbeat/stage tracking helper, shared by scan.py, dedup.py,
-crosshost_verify.py, and the restic backup wrapper scripts (restic-claude-inbox*.sh,
+crosshost_verify.py, and the restic backup wrapper scripts (restic-app-c*.sh,
 via a small CLI/psycopg call -- see monitor.py's docstring for the
 run_type='restic_backup' convention).
 

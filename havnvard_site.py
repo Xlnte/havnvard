@@ -64,10 +64,36 @@ def site() -> dict:
             except (OSError, tomllib.TOMLDecodeError) as e:
                 raise SiteConfigError(f"cannot read HavnVard site file {p}: {e}") from e
             data.setdefault("_path", str(p))
+            _validate(data, p)
             return data
     if os.environ.get("HAVNVARD_SITE"):
         raise SiteConfigError(f"HAVNVARD_SITE points at a missing file: {os.environ['HAVNVARD_SITE']}")
     return {}
+
+
+def _validate(data: dict, path) -> None:
+    """Fail loudly on a mistyped site file: a string where a list belongs would otherwise turn into one-letter host
+    names and make every host-filtered query return nothing, which looks like success (review F1)."""
+    def bad(key, want):
+        raise SiteConfigError(f"site file {path}: {key} must be {want}")
+    for name, v in data.items():
+        if name != "_path" and not isinstance(v, dict):
+            bad(f"[{name}]", "a table")
+    hosts = data.get("hosts") or {}
+    for k in ("local", "nas"):
+        if k in hosts and not (isinstance(hosts[k], str) and hosts[k].strip()):
+            bad(f"[hosts] {k}", "a non-empty string")
+    for k in ("sources", "all"):
+        if k in hosts and not (isinstance(hosts[k], list) and hosts[k]
+                               and all(isinstance(x, str) and x.strip() for x in hosts[k])):
+            bad(f"[hosts] {k}", "a non-empty list of strings")
+    for name, a in (data.get("agents") or {}).items():
+        if not isinstance(a, dict):
+            bad(f"[agents.{name}]", "a table")
+    db = data.get("database") or {}
+    for k in ("env_file", "fallback_url"):
+        if k in db and not isinstance(db[k], str):
+            bad(f"[database] {k}", "a string")
 
 
 def section(name: str) -> dict:
@@ -82,7 +108,9 @@ def env_file() -> str | None:
 
 
 def read_env_value(path: str | None, key: str) -> str | None:
-    """KEY=value from a dotenv-style file; None if the file or key is missing (callers decide what that means)."""
+    """KEY=value from a dotenv-style file. None when no file is configured or the key is absent. A file that IS
+    configured but cannot be read raises SiteConfigError (review F2): falling back silently would hide the real cause
+    (wrong owner, missing file) behind "not set" or a different database. The message never includes file contents."""
     if not path:
         return None
     try:
@@ -90,8 +118,8 @@ def read_env_value(path: str | None, key: str) -> str | None:
             for line in f:
                 if line.startswith(key + "="):
                     return line.split("=", 1)[1].strip().strip('"').strip("'")
-    except OSError:
-        return None
+    except OSError as e:
+        raise SiteConfigError(f"cannot read env file {path}: {type(e).__name__}: {e.strerror or e}") from e
     return None
 
 

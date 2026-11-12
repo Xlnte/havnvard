@@ -20,7 +20,10 @@ from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from forge_core.router import chrome_router
+try:   # optional shared chrome (forge_core); the UI works without it (3.0.0)
+    from forge_core.router import chrome_router
+except ImportError:
+    chrome_router = None
 
 from .db import close_pool, init_pool
 from .routes import backup, cleanup, dedup, group_detail, health
@@ -46,7 +49,8 @@ app.include_router(cleanup.router)
 app.include_router(group_detail.router)
 app.include_router(backup.router)
 app.include_router(health.router)
-app.include_router(chrome_router)  # GET /chrome/modules.json — forge_core nav data (INFRA-51)
+if chrome_router is not None:
+    app.include_router(chrome_router)  # GET /chrome/modules.json — forge_core nav data (INFRA-51)
 
 
 @app.get("/")

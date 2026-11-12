@@ -45,6 +45,8 @@ def tg_chat() -> int | None:
 
 # Optional deep link to a dashboard, shown at the end of the report ([ui] dashboard_url).
 DASHBOARD_URL = _site.ui("dashboard_url")
+# Display name of this machine in the daily report ([report] local_label; default its host name).
+LOCAL_LABEL = _site.section("report").get("local_label") or _site.local_host()
 
 
 # ---- snapshot table (created on first run) -------------------------------
@@ -144,7 +146,7 @@ def collect_metrics(conn) -> dict:
 def collect_capacity() -> dict:
     """Real filesystem utilization (used vs total provisioned) — the cabinet's #1 ask.
 
-    Spark `/` and the NAS volume mounted at /mnt/nas-diskaudit; both read via statvfs.
+    the server `/` and the NAS volume mounted at /mnt/nas-diskaudit; both read via statvfs.
     Returns {} entries as None if a mount is unavailable (graceful)."""
     out = {}
     for name, path in (("spark", "/"), ("nas", "/mnt/nas-diskaudit")):
@@ -231,14 +233,14 @@ def render(m: dict, delta: dict) -> str:
         f"📅 {date.today():%Y%m%d} · daily",
         "",
         f"♻️ RECLAIMABLE  {human_bytes(m['reclaimable_bytes'])}{recl_delta}"
-        f"   ({_hc(m['dup_files'])} dupes / {_hc(m['dup_groups'])} groups, Spark)",
+        f"   ({_hc(m['dup_files'])} dupes / {_hc(m['dup_groups'])} groups, {LOCAL_LABEL})",
         "",
         "💾 CAPACITY  (used / provisioned)",
-        _cap_line("🖥️ Spark", cap.get("spark")),
+        _cap_line(f"🖥️ {LOCAL_LABEL}", cap.get("spark")),
         _cap_line("🛜 NAS  ", cap.get("nas")),
         "",
         f"📊 {_hc(m['total_files'])} files indexed · 2 hosts",
-        f"  🖥️ Spark {_hc(sp['files'])} · {human_bytes(sp['bytes'])}  ⟳ {_fresh_flag(m['freshness'].get(_site.local_host()))}",
+        f"  🖥️ {LOCAL_LABEL} {_hc(sp['files'])} · {human_bytes(sp['bytes'])}  ⟳ {_fresh_flag(m['freshness'].get(_site.local_host()))}",
         f"  🛜 NAS   {_hc(na['files'])} · {human_bytes(na['bytes'])}  ⟳ {_fresh_flag(m['freshness'].get(_site.nas_host()))}",
         "",
         "📁 Top NAS shares",
@@ -314,7 +316,11 @@ def run_prescab_analysis(report_text: str) -> str | None:
     fallback_to_cabinet=False — a failed/empty single-VP call must NOT silently
     escalate to a ~10-20x-more-expensive /cabinet call.
     """
-    from prescab_client import dispatch as _prescab_dispatch  # noqa: PLC0415
+    try:
+        from prescab_client import dispatch as _prescab_dispatch  # noqa: PLC0415
+    except ImportError as e:   # optional integration (requirements-optional.txt): skip, never kill the report (F3)
+        print(f"[analyze] prescab_client not installed (optional); skipping analysis: {e}", file=sys.stderr)
+        return None
     agent = os.environ.get("HAVNVARD_ANALYSIS_AGENT", "vp-operations")
     task = (
         "DAILY OPERATIONAL ANALYSIS — HavnVard storage inventory (metadata only).\n"

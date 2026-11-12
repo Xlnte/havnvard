@@ -233,3 +233,15 @@ def test_package_version_matches_module_yaml():
     with open(os.path.join(root, "module.yaml"), encoding="utf-8") as f:
         m = _re.search(r"^version:\s*([0-9.]+)\s*$", f.read(), _re.M)
     assert m and m.group(1) == __version__
+
+
+def test_alertlib_path_from_backup_toml(monkeypatch, tmp_path):
+    _alert_env(monkeypatch, tmp_path, None)
+    monkeypatch.delenv("HAVNVARD_ALERTLIB_PATH")
+    monkeypatch.delitem(sys.modules, "alertlib")
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    (lib / "alertlib.py").write_text("def fire(k, t, c, s):\n    return True\n")
+    config.save({"alerts": {"alertlib_path": str(lib)}})
+    ok, why = alerts.fire("k", "t")
+    assert ok and why == "sent"

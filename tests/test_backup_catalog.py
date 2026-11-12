@@ -20,7 +20,7 @@ NAME = r"^\d{8}_[A-Z0-9-]+_\d{6}$"
 def test_names_and_labels():
     t = dt.datetime(2026, 11, 11, 15, 0, tzinfo=dt.timezone.utc)
     assert catalog.make_name(t, "SERVER", 42) == t.astimezone().strftime("%Y%m%d") + "_SERVER_000042"
-    assert catalog.device_label("air_2017") == "AIR-2017"
+    assert catalog.device_label("laptop_2") == "LAPTOP-2"
     with pytest.raises(BackupError):
         catalog.make_name(t, "X", 0)
 

@@ -10,7 +10,7 @@
 Every feature below — including ones with names like "duplicate detection,"
 "orphan," "stale," "backup coverage," or "reclaimable space" — produces
 **labels, reports, and classifications only**. Nothing in this system ever
-runs `rm`/`unlink`/`mv`/any delete API against a scanned file, on Spark, the
+runs `rm`/`unlink`/`mv`/any delete API against a scanned file, on the server, the
 NAS, or any client. Wherever a feature's name could be misread as "this cleans
 things up automatically," this doc says so explicitly: it doesn't. Every
 delete/move decision is yours (the operator's) alone, made by reading these reports.
@@ -21,7 +21,7 @@ delete/move decision is yours (the operator's) alone, made by reading these repo
 
 | Feature | Status | Command |
 |---|---|---|
-| Whole-disk inventory scan (Spark) | **WORKING** | `sudo /opt/havnvard/.venv/bin/python scan.py` |
+| Whole-disk inventory scan (the server) | **WORKING** | `sudo /opt/havnvard/.venv/bin/python scan.py` |
 | Whole-disk inventory scan (NAS) | **WORKING** | `sudo /opt/havnvard/run_all_nas_shares.sh` |
 | Client-host onboarding + scan | **WORKING** | see `CLIENT_INSTALL.md`; live example: `agent-1` (380,102 files) |
 | Duplicate detection (dedup.py / rdfind) | **WORKING** | `python dedup.py --host server-1` |
@@ -46,7 +46,7 @@ delete/move decision is yours (the operator's) alone, made by reading these repo
 
 ---
 
-## 1. Whole-disk inventory scan (Spark) — WORKING
+## 1. Whole-disk inventory scan (the server) — WORKING
 
 **What it does:** Crawls the root filesystem (single ext4 device, `-xdev`
 style — does not cross into other mounts), recording path, size, permissions,
@@ -80,7 +80,7 @@ $ PGPASSWORD=... psql -U havnvard -h 127.0.0.1 -d havnvard -c \
 **Expected output:** rows in `diskaudit.files` (upserted, keyed `(host,
 path)`), a `diskaudit.scan_runs` row transitioning `running → completed`, and
 (if any files errored during stat) rows in `diskaudit.scan_errors`. Scheduled
-daily 08:00 via `diskaudit-scan.timer` on Spark.
+daily 08:00 via `diskaudit-scan.timer` on the server.
 
 **Never deletes/moves anything** — read-only `stat()`/`statx()` against the
 filesystem.
@@ -91,7 +91,7 @@ filesystem.
 mounting the NAS (NFS/SSHFS) plateaued at ~20 files/sec, this instead SCPs a
 BusyBox-compatible shell script (`nas_native_crawl.sh`) to the NAS and runs it
 **natively there** over SSH — validated at ~29,300 files/sec (~1,450x faster).
-Results ship back to Spark as a flat file and load into the same
+Results ship back to the server as a flat file and load into the same
 `diskaudit.files` table, tagged `host=nas-1`.
 
 **Why you'd use it:** Same reason as #1, for the NAS side of the inventory.
@@ -178,9 +178,9 @@ python nas_trigkey_dedup.py --host agent-1
 ## 4. Cross-host content-hash verification — PARTIAL (in flight, 2026-07-25)
 
 **What it does:** New capability being built on this branch, not yet merged.
-Answers two operator questions directly: "is my Spark/agent-1 data genuinely,
+Answers two operator questions directly: "is my the server/agent-1 data genuinely,
 cryptographically intact on the NAS?" and "what could I safely delete from
-Spark once I trust that?" Works around the fact NAS files were never run
+the server once I trust that?" Works around the fact NAS files were never run
 through `dedup.py`/rdfind (no local filesystem access to the NAS) by
 filtering `diskaudit.files` to sizes that appear on ≥2 hosts and are ≥1MB —
 collapsing ~8.6M candidate rows to a tractable set before hashing anything.
@@ -305,10 +305,10 @@ hash-upgrade pass for `backup_coverage`'s own matched pairs is a known V+1
 gap (see runbook `/home/user/runbooks/20260725-havnvard-backup-coverage/RUNBOOK.md`).
 
 **Ground-truth note:** the NAS's `bkup_spark` share was checked live and
-found NOT to be a literal path-for-path mirror of Spark (contains per-app
+found NOT to be a literal path-for-path mirror of the server (contains per-app
 tar.gz snapshots + restic repos + DB dump trees) — `classify`'s matching
 logic was designed around this confirmed reality, not the "mirrors known
-Spark paths" assumption a prior brief stated.
+the server paths" assumption a prior brief stated.
 
 ## 8. NAS-orphan detection — WORKING
 
@@ -386,9 +386,9 @@ PRESCAB.
 ## 12. Restic backup engine (Phase 2) — WORKING
 
 **What it does:** Daily `restic backup` + weekly `forget`/`prune` for **10
-other Spark app directories** (agent-controller, agent-governance,
-claude-inbox, helm-files, linkedin-agent, openclaw, paf-agent-system, uohr,
-yt-ingestion, yt-knowledge) — a genuinely separate capability from the
+other the server app directories** (app-a, app-b,
+app-c, config-files, app-d, app-e, app-f, app-g,
+app-h, app-i) — a genuinely separate capability from the
 disk-inventory scan itself, living under this app's systemd namespace and
 sharing its `backup_runs`/monitor infrastructure. **This is documented
 elsewhere in this repo (`module.yaml`, `README.md`) as "planned, not yet
@@ -401,9 +401,9 @@ disk-inventory scan.
 
 **Command:**
 ```bash
-sudo systemctl start havnvard-restic-openclaw.service            # one-off backup now
-sudo systemctl start havnvard-restic-openclaw-retention.service  # one-off forget+prune now
-journalctl -u havnvard-restic-openclaw.service -n 50              # check result
+sudo systemctl start havnvard-restic-app-e.service            # one-off backup now
+sudo systemctl start havnvard-restic-app-e-retention.service  # one-off forget+prune now
+journalctl -u havnvard-restic-app-e.service -n 50              # check result
 ```
 
 **Worked example:** `diskaudit.backup_runs` has 72 logged runs as of
@@ -474,7 +474,7 @@ inodes. Export: CSV/JSON, capped at 50,000 rows (ORDER BY + LIMIT, current
 filter/sort — never an unbounded dump).
 
 ### B) CLEANUP — `/havnvard/cleanup`
-Per-file rows on Spark + agent-1 that belong to a duplicate group on that
+Per-file rows on the server + agent-1 that belong to a duplicate group on that
 host (candidates to remove — never removed by this app). Joined to the same
 `mv_dedup_groups_by_host` for its group's reclaim figure and evidence badge,
 so KPI totals are always computed once per **group**, never once per file
@@ -485,7 +485,7 @@ sets" toggle. Filters: host, path substring, min size, evidence type,
 hardlink-only toggle. Export: CSV/JSON, 50,000-row cap.
 
 ### C) BACKUP — `/havnvard/backup`
-Files on Spark + agent-1 not confirmed safely present on the NAS. **Primary
+Files on the server + agent-1 not confirmed safely present on the NAS. **Primary
 source:** `diskaudit.backup_coverage` (host, path, `classification` IN
 `NOT_BACKED_UP`/`BACKED_UP_UNVERIFIED`/`EXCLUDED`/`BACKED_UP_VERIFIED`,
 `match_method`) — landed live, mid-build, from a concurrent migration; by the
@@ -568,7 +568,7 @@ BACKED_UP_VERIFIED from snapshots, the "not backed up" report, bit-rot re-hash s
 | `health` | Snapshot age > 26 h, last job, hub and NAS free space (< 500 GB), offsite recency and flagged files, via alertlib | Exit 1 problem, 2 could not check |
 | `prune` | Hub-side forget + prune (default 7 daily, 4 weekly (no monthly; the operator 20261111)); stale locks cleared only if older than N hours | Exit 1 if any repo failed |
 | `health --json` | Same checks as one JSON object `{ok, exit_code, checks[]}`; exit 2 with `{error}` if it cannot run | 2.1.0 |
-| `health-relay --ssh HOST` | On Spark: runs the hub's `health --json --no-alert` over ssh, alerts via local alertlib; ssh failure or bad output = alert | 2.1.0; `--render-units DIR` writes the hourly timer |
+| `health-relay --ssh HOST` | On the server: runs the hub's `health --json --no-alert` over ssh, alerts via local alertlib; ssh failure or bad output = alert | 2.1.0; `--render-units DIR` writes the hourly timer |
 | `coverage-sync DEVICE` | Latest restic snapshot listing vs `diskaudit.backup_coverage`: same path+size+mtime -> BACKED_UP_UNVERIFIED (a listing is not a hash check; VERIFIED needs SHA-256) | 2.1.0; needs migration `20261111_diskaudit_restic_coverage_v1.sql`; run after `backup_coverage.py classify`; listing match, not a SHA-256 compare |
 | `not-backed-up` | NOT_BACKED_UP totals per host and top folders or file types by bytes (hardlink-deduplicated) | 2.1.0 |
 | `check-timers` | Lists havnvard-restic-* timers whose ExecStart script, WorkingDirectory or BACKUP_SRC is gone | 2.1.0; read-only |

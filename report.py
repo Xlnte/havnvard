@@ -195,7 +195,7 @@ def render_dedup_report(conn, out_dir: str) -> tuple[str, dict]:
     lines.append("")
     lines.append(
         "Context (independently verified 2026-07-25 against live diskaudit.files -- "
-        "see runbook): server-1 alone carries ~2,020,483 hardlinked file rows out of "
+        "see runbook): one server alone carried ~2,020,483 hardlinked file rows out of "
         "~5,424,882 total regular files. A naive byte-sum over all rows sharing a size/hash "
         "massively overstates reclaimable space by counting each hardlinked path as if it "
         "were an independent copy. The figures above are already hardlink-corrected."
@@ -272,7 +272,7 @@ def render_nas_integrity_report(conn, out_dir: str) -> tuple[str, dict]:
     lines.append(f"Generated: {datetime.now(timezone.utc).isoformat()}")
     lines.append("")
     lines.append(
-        "**Answers: \"is my Spark/agent-1 data genuinely intact on the NAS?\"** "
+        f"**Answers: \"is my {', '.join(_site.source_hosts())} data genuinely intact on the NAS?\"** "
         "Every row here is cryptographic (SHA-256) evidence, not a filename/size heuristic. "
         "A `match` verdict proves the source and NAS copies were bit-identical **at the "
         "moment both were hashed** -- it does NOT guarantee against later bit rot, a "
@@ -309,7 +309,7 @@ def render_nas_integrity_report(conn, out_dir: str) -> tuple[str, dict]:
         lines.append("_None found._")
     lines.append("")
 
-    lines.append("## Missing on NAS (no matching content hash found on nas-1) -- capped at 200 by size")
+    lines.append(f"## Missing on NAS (no matching content hash found on {_site.nas_host()}) -- capped at 200 by size")
     lines.append("")
     lines.append(
         "Caveat: checked only against the NAS candidate set hashed so far "
@@ -381,8 +381,8 @@ def render_cleanup_candidates(conn, out_dir: str) -> tuple[str, dict]:
     lines.append("")
     lines.append(
         "**RECOMMENDATIONS ONLY -- not instructions.** Every row below is a file on "
-        "server-1 or agent-1 whose content has been cryptographically verified "
-        "(SHA-256 match) to also exist on nas-1 as of the `checked_at` timestamp. "
+        f"{' or '.join(_site.source_hosts())} whose content has been cryptographically verified "
+        f"(SHA-256 match) to also exist on {_site.nas_host()} as of the `checked_at` timestamp. "
         "That makes it a *candidate* the operator may choose to review for local cleanup -- "
         "HavnVard never deletes, moves, renames, or overwrites any of these files itself, "
         "and this list carries no authority to do so. Treat `checked_at` as a point-in-time "

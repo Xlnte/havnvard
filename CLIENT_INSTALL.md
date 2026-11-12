@@ -1,7 +1,7 @@
 # HavnVard — Client (Agent) Install Guide
 
 **Purpose:** install the HavnVard file-inventory **agent** on a new machine (e.g. an Ubuntu
-client) so it appears in the central inventory alongside Spark and the NAS.
+client) so it appears in the central inventory alongside the server and the NAS.
 **Audience:** whoever installs a new client (a fresh Sonnet CC session can execute this end-to-end).
 **Last updated:** 20261109 (1.4.2: section 4B, no-root install).
 
@@ -11,7 +11,7 @@ client) so it appears in the central inventory alongside Spark and the NAS.
 
 | Role | Where | What it does |
 |------|-------|--------------|
-| **Server** (one) | Spark `server-1` | Central Postgres (`havnvard` DB, `diskaudit` schema), dedup, daily report to PRESI, Grafana dashboard. Also inventories itself + SSH-crawls the NAS. |
+| **Server** (one) | the server `server-1` | Central Postgres (`havnvard` DB, `diskaudit` schema), dedup, daily report to PRESI, Grafana dashboard. Also inventories itself + SSH-crawls the NAS. |
 | **Client / agent** (0+) | any Linux box | Runs `scan.py` locally on a timer, writes its file inventory **directly to the central DB over Tailscale**, tagged by a unique `--host` name. Nothing else. |
 
 - Each machine is one row-set in `diskaudit.files` keyed by its `host` tag. The report/dedup/Grafana
@@ -111,7 +111,7 @@ For a machine where you are an ordinary user, have no root, and `pip`/`ensurepip
 `~/diskaudit-agent/`; nothing is installed system-wide and no secret is written to disk.
 
 ```bash
-# On SPARK: fetch wheels for the CLIENT's Python (3.12 shown; use 3.14 etc. to match `python3 --version` there)
+# On the server: fetch wheels for the CLIENT's Python (3.12 shown; use 3.14 etc. to match `python3 --version` there)
 mkdir -p /tmp/wheels && cd /tmp/wheels
 /opt/havnvard/.venv/bin/pip download --only-binary=:all: --platform manylinux2014_x86_64 \
   --python-version 312 --dest . psycopg psycopg-binary typing_extensions
@@ -125,11 +125,11 @@ scp /opt/havnvard/{scan.py,heartbeat.py,scan_guard.py} <CLIENT>:~/diskaudit-agen
 ```
 
 Run with `lib/` on the import path and the DSN injected through the environment. The password is **never stored on the
-client**: pipe it from Spark over ssh stdin into the process environment (`<PASSWORD>` below is a placeholder; the real value
+client**: pipe it from the server over ssh stdin into the process environment (`<PASSWORD>` below is a placeholder; the real value
 is on the Password Shelf).
 
 ```bash
-# From SPARK; reads the password from wherever you keep it and sends it on stdin only
+# From the server; reads the password from wherever you keep it and sends it on stdin only
 ssh <CLIENT> 'read -r PW; cd ~/diskaudit-agent && \
   POSTGRES_URL="postgresql://diskaudit_agent:${PW}@192.0.2.10:5432/havnvard" \
   PYTHONPATH=$HOME/diskaudit-agent/lib \
@@ -142,7 +142,7 @@ ssh <CLIENT> 'read -r PW; cd ~/diskaudit-agent && \
 - As a non-root user the scan records only what that user can read; unreadable directories are `scan_errors` rows.
 - 1.4.2 and later merge safely into a host with no prior rows. On 1.4.1 or older, set `PGOPTIONS='-c enable_nestloop=off'`
   for a first scan of a new host (otherwise the merge can spin for hours).
-- Check progress from Spark: `SELECT scan_id, status, files_scanned FROM diskaudit.scan_runs WHERE host='<CLIENTNAME>' ORDER BY scan_id DESC LIMIT 1;`
+- Check progress from the server: `SELECT scan_id, status, files_scanned FROM diskaudit.scan_runs WHERE host='<CLIENTNAME>' ORDER BY scan_id DESC LIMIT 1;`
 
 ### 4.7 — systemd timer (recurring, daily)
 ```bash

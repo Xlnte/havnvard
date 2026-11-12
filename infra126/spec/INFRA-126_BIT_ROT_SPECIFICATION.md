@@ -350,7 +350,7 @@ Package-level acceptance requires:
 Live acceptance requires:
 
 - reviewed migrations on the actual database;
-- successful bounded Spark/NAS/agent-1 runs;
+- successful bounded the server/NAS/agent-1 runs;
 - exact remote recovery test;
 - TG and Plane delivery tests;
 - Grafana and UI rendering;

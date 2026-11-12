@@ -4,7 +4,7 @@ Scheduled periodic re-hashing and divergence detection for HavnVard/diskaudit.
 
 ## Delivery status
 
-This archive is a **complete implementation package for code review and controlled deployment**, not proof that the live Spark/NAS/agent-1 environment has been changed or validated.
+This archive is a **complete implementation package for code review and controlled deployment**, not proof that the live the server/NAS/agent-1 environment has been changed or validated.
 
 Package validation performed in the build sandbox:
 
@@ -18,7 +18,7 @@ Live-machine gates remain explicit:
 
 - PostgreSQL migrations must be reviewed and run on `havnvard`.
 - Actual `diskaudit.files` column types and existing constraints must be confirmed.
-- Spark, NAS, and agent-1 hashing must be exercised against small test batches.
+- the server, NAS, and agent-1 hashing must be exercised against small test batches.
 - HELM WaitingRoom, TG PRESI, and Plane command adapters must be connected.
 - The HavnVard Flask blueprint and Grafana JSON must be integrated into the existing applications.
 - systemd timers must not be enabled until the manual acceptance run passes.
@@ -77,7 +77,7 @@ Initial hashes are **baseline-only**. They are not counted as successful re-veri
 2. Read `INSTALLATION.md`.
 3. Run `pytest -q`.
 4. Review the migrations against the live schema.
-5. Run a 10-item Spark acceptance batch.
+5. Run a 10-item the server acceptance batch.
 6. Run a 10-item NAS acceptance batch.
 7. Validate alerts, reporting, UI, and Grafana.
 8. Enable timers only after every live gate passes.

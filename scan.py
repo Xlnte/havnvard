@@ -136,7 +136,7 @@ DEFAULT_EXCLUDES = ("/proc", "/sys", "/dev", "/run", "/var/lib/docker", "/var/li
 # Same "docker/containerd overlay noise" problem as above, but as a PATH COMPONENT
 # match rather than a fixed absolute prefix -- found the hard way scanning a mounted
 # NAS share: a stored backup archive contained
-# ".../bkup_spark/spark-db/weekly/20260712/UltraOC/.local/share/docker/containerd/.../
+# ".../bkup_spark/spark-db/weekly/20260712/olduser/.local/share/docker/containerd/.../
 # snapshots/396/fs/..." -- a Docker/containerd overlay tree nested arbitrarily deep
 # inside someone else's backup, not at a predictable absolute path. Matching by
 # component (any path SEGMENT exactly equal to "docker" or "containerd") catches this

@@ -40,7 +40,7 @@ in front of them.
 
 | Component | Status | Runbook | Notes |
 |-----------|--------|---------|-------|
-| **Whole-disk inventory (Spark)** | ✅ LIVE | 20260717-diskaudit-v1 | 10.7M rows, daily scan via `diskaudit-scan.timer` |
+| **Whole-disk inventory (the server)** | ✅ LIVE | 20260717-diskaudit-v1 | 10.7M rows, daily scan via `diskaudit-scan.timer` |
 | **Whole-disk inventory (NAS)** | ✅ LIVE | 20260717-diskaudit-v2-dedup | 2.3M rows; native BusyBox crawl via SSH, ~29.3k files/sec |
 | **Client agent (agent-1)** | ✅ LIVE | CLIENT_INSTALL.md | 380k rows; systemd-installed; autonomous scan |
 | **Dedup detection (rdfind)** | ✅ LIVE | 20260717-diskaudit-v2-dedup | 689k groups found; 409.6 GB reclaimable identified |
@@ -100,9 +100,9 @@ Migrations applied (all additive/idempotent):
 
 **Key constraints:**
 - **NAS is not Linux:** BusyBox `sh`, no Python, no GNU tools. `find -printf` does not work. `/tmp` is 64MB tmpfs shared with live NAS system processes.
-- **Hardlinks:** 2M+ hardlinked files on Spark. Naive byte sums overstate by ~2×. All totals must be `DISTINCT (host, inode)`.
-- **Cross-filesystem:** Spark is **single ext4 device** (`-xdev`). NAS has **10 shares** (not all scanned yet).
-- **Throughput:** NAS-side `sha256sum` sustains ~50 MB/s. Local Spark NVMe is ~10× that. Schedule design must account for this asymmetry.
+- **Hardlinks:** 2M+ hardlinked files on the server. Naive byte sums overstate by ~2×. All totals must be `DISTINCT (host, inode)`.
+- **Cross-filesystem:** the server is **single ext4 device** (`-xdev`). NAS has **10 shares** (not all scanned yet).
+- **Throughput:** NAS-side `sha256sum` sustains ~50 MB/s. Local the server NVMe is ~10× that. Schedule design must account for this asymmetry.
 
 ### C. Current Hash Coverage
 
@@ -122,8 +122,8 @@ ORDER BY host;
  agent-1    |   158,285 |    380,102 | 2026-07-25      | 2026-07-25
 ```
 
-**Interpretation:** Only 0.37% of Spark, 0.04% of NAS, 41.6% of agent-1 have hashes. All hashes are from today
-(cross-host candidate set ~23k rows; candidate set ~0.3% of Spark, ~0.1% of agent-1). `first_hash == last_hash`
+**Interpretation:** Only 0.37% of the server, 0.04% of NAS, 41.6% of agent-1 have hashes. All hashes are from today
+(cross-host candidate set ~23k rows; candidate set ~0.3% of the server, ~0.1% of agent-1). `first_hash == last_hash`
 for every row. Bit-rot detection is **mathematically impossible** until a re-hash produces a **different result**.
 
 ---
@@ -149,7 +149,7 @@ for every row. Bit-rot detection is **mathematically impossible** until a re-has
 
 **Hash match proves identity, not integrity.**  
 If a file was corrupt when copied, both copies match and both are bad. Three-way verification requires:
-- Spark file hash: H₁
+- the server file hash: H₁
 - NAS backup hash: H₂
 - Third copy (restic snapshot) hash: H₃
 
@@ -219,7 +219,7 @@ All 3,110 were **legitimate live-state drift**, not damage. But:
     Do not duplicate protection. Restic manifests already provide `[verification_state]`.
 
 12. **Three-way trust is not available yet.**  
-    Only Spark + NAS + agent-1 exist. No third independent copy. Cannot yet prove "this copy is definitely bad."
+    Only the server + NAS + agent-1 exist. No third independent copy. Cannot yet prove "this copy is definitely bad."
     Until a third copy (or verified snapshot history from restic) exists, "mismatch" is inconclusive.
 
 ---
@@ -263,7 +263,7 @@ Design doc specifies selection thresholds (e.g., "files from 7-31 days old this 
 - Add `days_since_first_hash` and `days_since_last_hash` computed columns to the UI + Grafana.
 - Dashboard metric: **"% of files verified within last 30 days"** per host. Current: 0% (all hashes are today).
 - Per-file export (CSV) must include `hashed_at`, `first_hash`, `last_hash`, `hash_mismatch_count`.
-- TG PRESI daily report must include **"Verification SLA status"** (e.g., "Spark: 42% verified within 30d, 95% within 90d; NAS: 0.4% within 30d").
+- TG PRESI daily report must include **"Verification SLA status"** (e.g., "the server: 42% verified within 30d, 95% within 90d; NAS: 0.4% within 30d").
 
 **Acceptance Criterion:**  
 A new user opening the UI can immediately see: "When was this file last hash-verified?" and "Is it overdue for re-check?"
@@ -324,7 +324,7 @@ without SQL.
    - `operator_verdict = 'confirmed_corruption'` → Escalate to the operator inbox + Plane ticket HIGHEST
 
 **Acceptance Criterion:**  
-Run a test hash divergence (e.g., `echo zzz >> test.txt` on Spark, re-hash, detect mismatch, classify as legitimate).
+Run a test hash divergence (e.g., `echo zzz >> test.txt` on the server, re-hash, detect mismatch, classify as legitimate).
 Verify that `legitimate_drift` is logged but NOT alerted, and `unconfirmed_corruption` IS alerted to TG PRESI with full context.
 
 #### Requirement 4: Multi-Copy Decision Logic
@@ -332,21 +332,21 @@ Verify that `legitimate_drift` is logged but NOT alerted, and `unconfirmed_corru
 **When a file has copies on multiple hosts + one copy's hash differs, which is truth?**
 
 **Three-way comparison (if third copy exists via restic):**
-- Spark: H₁
+- the server: H₁
 - NAS: H₂
 - Restic snapshot (from date X): H₃
 
 Majority vote:
-- If H₁ == H₂ ≠ H₃ → Spark + NAS are in agreement; snapshot is stale. Flag snapshot for re-verification.
-- If H₁ ≠ H₂ == H₃ → NAS + snapshot agree; Spark is the divergence. Alert operator + add to `corruption_suspects`.
+- If H₁ == H₂ ≠ H₃ → the server + NAS are in agreement; snapshot is stale. Flag snapshot for re-verification.
+- If H₁ ≠ H₂ == H₃ → NAS + snapshot agree; the server is the divergence. Alert operator + add to `corruption_suspects`.
 - If H₁ ≠ H₂ ≠ H₃ → Three-way split. Cannot resolve; escalate to the operator.
 
 **Two-copy case (current):**
-- Spark ≠ NAS → Unresolvable; add to `corruption_suspects` with flag **"no third copy; operator must choose authoritative version"**.
+- the server ≠ NAS → Unresolvable; add to `corruption_suspects` with flag **"no third copy; operator must choose authoritative version"**.
 - Mutable-file heuristic only partially helps.
 
 **Acceptance Criterion:**  
-Given a synthetic three-copy mismatch (Spark/NAS/restic with hash values), the system correctly applies
+Given a synthetic three-copy mismatch (the server/NAS/restic with hash values), the system correctly applies
 majority-vote logic and sets the `operator_verdict` to the right state without requiring manual SQL.
 
 #### Requirement 5: Alerting & Escalation
@@ -423,9 +423,9 @@ When NAS SMART data becomes available (INFRA-116 unblocks this), correlate drive
 #### `[PROPOSED]` Automated Remediation (v+1, requires FERJA)
 
 Once a third copy exists (restic snapshot or offsite backup), and a mismatch is confirmed:
-- **Candidate recommendation:** "File is corrupt on Spark; NAS copy is valid (hash-proven); restore from NAS?"
+- **Candidate recommendation:** "File is corrupt on the server; NAS copy is valid (hash-proven); restore from NAS?"
 - **Operator approval:** the operator reads recommendation, explicitly types "approve: <snapshot-id> <path>" to authorize.
-- **Execution:** FERJA (separate component) reads approval, restores NAS → Spark, re-hashes to confirm.
+- **Execution:** FERJA (separate component) reads approval, restores NAS → the server, re-hashes to confirm.
 
 **Rationale:** Three-way majority vote + FERJA isolation = safe automated cleanup without risking accidental data loss.
 
@@ -471,7 +471,7 @@ NAS has 10 shares. Schedule them to never overlap + not collide with TechWatch (
 
 #### V+1D: Offsite Third Copy (INFRA-76 + INFRA-96)
 
-**Problem:** Only local copies (Spark + NAS). Ransomware/correlated failure kills all.  
+**Problem:** Only local copies (the server + NAS). Ransomware/correlated failure kills all.  
 **Solution:** Push encrypted NAS snapshots to cloud backup (S3 / Backblaze / etc.) weekly.  
 **Acceptance:** Third copy offline; hash-verify quarterly; majority-vote no longer inconclusive.
 
@@ -512,7 +512,7 @@ removed `clip` user home, etc.), not just "large and cold."
 2. **Assurance Age Transparency:**
    - [ ] Grafana dashboard shows **"% verified within last 30d"** per host. Current: 0%.
    - [ ] UI (dedup/cleanup/backup tabs) displays `hashed_at` + `days_since_hash` per file.
-   - [ ] Daily TG PRESI report includes **"Verification SLA"** line (e.g., "Spark 42% within 30d").
+   - [ ] Daily TG PRESI report includes **"Verification SLA"** line (e.g., "the server 42% within 30d").
 
 3. **Divergence Detection & Classification:**
    - [ ] Run synthetic test: `echo modified >> /tmp/test-file-immutable`, re-hash, verify mismatch logged.
@@ -521,7 +521,7 @@ removed `clip` user home, etc.), not just "large and cold."
    - [ ] Four tables exist: `hash_divergences`, `mutable_file_registry`, `corruption_suspects`, `hash_verification_sla`.
 
 4. **Multi-Copy Decision Logic:**
-   - [ ] Three-copy test case: Spark H₁, NAS H₂ ≠ H₁, restic H₃ = H₂ → System sets `operator_verdict='investigate_spark'`.
+   - [ ] Three-copy test case: the server H₁, NAS H₂ ≠ H₁, restic H₃ = H₂ → System sets `operator_verdict='investigate_spark'`.
    - [ ] Two-copy case: H₁ ≠ H₂ → Creates `corruption_suspects` row, no auto-resolution.
 
 5. **Alerting & Escalation:**
@@ -541,7 +541,7 @@ removed `clip` user home, etc.), not just "large and cold."
    - [ ] Verification SLA status line
    - [ ] Corruption suspects count (if any)
    - [ ] Files overdue for re-verification (by tier + by host)
-   - [ ] Example: `"Spark Tier-A 40% verified. Tier-B 8% verified (0 files since 2026-07-01; OVERDUE). NAS 0% (crawl in progress)."`
+   - [ ] Example: `"the server Tier-A 40% verified. Tier-B 8% verified (0 files since 2026-07-01; OVERDUE). NAS 0% (crawl in progress)."`
 
 2. **Grafana Dashboard (`:9452/d/diskaudit/diskaudit`):**
    - [ ] Panel: **"Verification age (days)"** stacked bar chart per host, bucketed 0-7d / 7-30d / 30-90d / 90+d.
@@ -588,7 +588,7 @@ removed `clip` user home, etc.), not just "large and cold."
 3. **Build Tier A (Fresh Baseline) selector** — query `hashed_at BETWEEN now()-7d AND now()`.
 4. **Implement single-tier re-hash job** (leverage existing `hash_batch.sh` + `crosshost_verify.py` patterns).
 5. **Implement divergence detection** — compare new hash against stored `content_sha256`; classify drift.
-6. **Implement multi-copy decision logic** — two-copy (Spark ↔ NAS) and three-copy (+ restic) cases.
+6. **Implement multi-copy decision logic** — two-copy (the server ↔ NAS) and three-copy (+ restic) cases.
 7. **Implement alerting** — TG PRESI for overdue/corruption/failed runs.
 8. **Implement Grafana panels** — 4 new panels (age distribution, SLA attainment, corruption suspects, divergence scatter).
 9. **Update daily PRESI report** — add SLA status line + corruption count.
@@ -611,7 +611,7 @@ removed `clip` user home, etc.), not just "large and cold."
 | **Re-hash job orphans remote process on NAS, accumulates over weeks, fills disk** | HIGH | Heartbeat-based process supervision + documented `ps w` recovery. Operator runs cleanup weekly. | Implementation |
 | **Mutable-file heuristic misclassifies a critical immutable file as "drift ok"** | MEDIUM | Whitelist/blacklist + operator review of divergences before auto-closing. | Design + testing |
 | **Tier A runs weekly but clashes with TechWatch, starving memory system** | MEDIUM | Stagger schedule (e.g., Tuesday nights) or implement low-priority yielding via HELM WaitingRoom. | Scheduling + HELM integration |
-| **All three copies diverge (Spark ≠ NAS ≠ restic); operator cannot resolve** | MEDIUM | Escalate to Plane HIGHEST + note timestamps/hashes. No auto-resolution in this case. | Design |
+| **All three copies diverge (the server ≠ NAS ≠ restic); operator cannot resolve** | MEDIUM | Escalate to Plane HIGHEST + note timestamps/hashes. No auto-resolution in this case. | Design |
 | **Silent test failure: "verification loop ran but found no divergences" (too narrow candidate set)** | MEDIUM | Validation: run against known-modified file; verify divergence detected within one test cycle. | Testing |
 | **Transient NAS timeout causes false "corruption suspected" alert; operator wastes time investigating** | LOW | Alert only after 3 consecutive failed re-hash attempts (idempotent); include "verify NAS reachable" in alert body. | Implementation |
 | **Database bloat from `hash_divergences` growing unbounded** | LOW | Retention policy: archive divergences >1 year old to separate table monthly. | Implementation |

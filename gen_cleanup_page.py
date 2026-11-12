@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the Spark/agent-1 duplicate-cleanup page (List B).
+"""Generate the duplicate-cleanup page for the source machines (List B).
 
 Served as a static page from /srv/apps/helm-status (an existing Caddy
 file_server root on :9456) so there is a URL immediately, without waiting on the
@@ -175,14 +175,14 @@ def main() -> None:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     p = ['<div class="wrap">']
     p.append("<h1>HavnVard — List B: duplicate cleanup candidates</h1>")
-    p.append(f'<div class="sub">Spark &amp; TrigKey · generated {now} · '
+    p.append(f'<div class="sub">{html.escape(" & ".join(_site.source_hosts()))} · generated {now} · '
              "report only, HavnVard never deletes anything</div>")
     p.append('<div class="bar"><button id="themeBtn">Light / Dark</button>'
              '<button id="csvBtn">Export CSV</button></div>')
 
     p.append('<div class="note"><b>Hardlinks are not duplicates.</b> Paths sharing an inode are '
              "one copy of the data on disk — deleting one frees <b>zero</b> bytes. Every figure "
-             "below counts distinct inodes, not paths. The difference is not academic: on Spark "
+             "below counts distinct inodes, not paths. The difference is not academic: on one server "
              "the naive count claims <b>456 GB</b> reclaimable when the truth is <b>121 GB</b>.</div>")
     p.append('<div class="note"><b>Every group keeps a canonical copy.</b> Rows marked KEEP are '
              "never deletion candidates. The canonical pick prefers a load-bearing path, then the "
@@ -214,7 +214,7 @@ def main() -> None:
                  f'<td class="num" style="opacity:.6">{human(r["naive_reclaimable"])}</td></tr>')
     p.append("</tbody></table></div>")
 
-    p.append(f"<h2>Top {TOP_N} groups by reclaimable space — Spark &amp; TrigKey</h2>")
+    p.append(f"<h2>Top {TOP_N} groups by reclaimable space — {html.escape(' & '.join(_site.source_hosts()))}</h2>")
     p.append('<div class="scroll"><table><thead><tr><th>host</th><th>path</th>'
              '<th class="num">size</th><th class="num">inode</th><th class="num">nlink</th>'
              '<th class="num">copies</th><th>action</th></tr></thead><tbody>')

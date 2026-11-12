@@ -177,7 +177,7 @@ An accepted mutable change does not count as verification. Only the later exact 
 
 ## 6. Local and Remote Hashing
 
-### Spark local hashing
+### the server local hashing
 
 1. Read device, inode, size, and nanosecond mtime.
 2. Stream the file through SHA-256 in bounded chunks.
@@ -193,7 +193,7 @@ An accepted mutable change does not count as verification. Only the later exact 
 3. Transfer a base64 path manifest and BusyBox-compatible worker.
 4. Start one exact remote PID.
 5. Record a per-run token, PID, heartbeat, logs, results, and completion marker.
-6. Poll from Spark and refresh the database heartbeat.
+6. Poll from the server and refresh the database heartbeat.
 7. On timeout, validate the token and terminate only the recorded PID.
 8. Preserve the exact recovery command for operator review.
 
@@ -354,7 +354,7 @@ Deployment remains staged:
 1. Review live schema and prototype tables.
 2. Apply migrations without enabling timers.
 3. Connect TG PRESI, Plane, and HELM WaitingRoom adapters.
-4. Run ten-item Spark, NAS, and agent-1 Tier A batches.
+4. Run ten-item the server, NAS, and agent-1 Tier A batches.
 5. Validate exact hash, divergence, failure, and alert behavior.
 6. Enable Tier A, D, E, and monitoring first.
 7. Enable Tier B and C only after maintenance-window review and observed Tier A/E stability.
@@ -437,12 +437,12 @@ The July 25 inventory and coverage figures in the source specification are histo
 Package-level validation proves that the code compiles, shell syntax parses, dashboard JSON parses, safety guards pass, and the isolated test suite passes. It does not prove:
 
 - production PostgreSQL compatibility;
-- live Spark/NAS/agent-1 throughput;
+- live the server/NAS/agent-1 throughput;
 - actual TG or Plane delivery;
 - HELM WaitingRoom command compatibility;
 - restic repository evidence;
 - live Grafana rendering;
-- systemd execution on Spark;
+- systemd execution on the server;
 - integration with the current HavnVard repository.
 
 Those are explicit live deployment gates in `docs/DEPLOYMENT_GATES.md` and `runbooks/RUNBOOK.md`.

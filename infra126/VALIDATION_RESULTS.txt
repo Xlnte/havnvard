@@ -42,7 +42,7 @@ Result: PASS
 
 NOT VALIDATED IN THIS SANDBOX
 - live havnvard PostgreSQL migrations or query plans
-- Spark/NAS/agent-1 file hashing or SSH
+- the server/NAS/agent-1 file hashing or SSH
 - TG PRESI delivery
 - Plane ticket creation
 - HELM WaitingRoom runtime commands

@@ -6,8 +6,8 @@
 
 **HavnVard/diskaudit NEVER deletes, moves, or overwrites any scanned file. It only
 produces labels, reports, and classifications.** Every delete/move decision stays
-with Parker (the operator) — the tool itself never auto-deletes or auto-moves anything,
-on Spark, on the NAS, or on any client. Every script in this repo (`scan.py`,
+with the operator — the tool itself never auto-deletes or auto-moves anything,
+on the server, on the NAS, or on any client. Every script in this repo (`scan.py`,
 `dedup.py`, `load_nas_inventory.py`, `crosshost_verify.py`, etc.) is read-only
 with respect to the files it scans; the only writes are into the `diskaudit`
 Postgres schema, this repo's own log/report output, and (for the restic
@@ -32,10 +32,10 @@ and file-by-file description (not duplicated here).
 - Hosts currently reporting into `diskaudit.files` (live, confirmed 2026-07-25):
   `server-1` (10,719,162 rows), `nas-1` (2,290,057 rows), `agent-1`
   (380,102 rows). Total: 13,389,321 rows.
-- Server = Spark (`server-1`): owns the Postgres schema, dedup engine, NAS
+- Server = the server (`server-1`): owns the Postgres schema, dedup engine, NAS
   SSH-crawl orchestration, monitor, PRESCAB weekly review, TG PRESI daily
   report, Grafana dashboard, and (new, Phase 2) the restic backup engine for
-  9 other Spark app directories.
+  9 other the server app directories.
 - Clients (e.g. `agent-1`) run `scan.py` locally on their own timer and write
   directly to the central Postgres over Tailscale (see `CLIENT_INSTALL.md`).
 
@@ -47,7 +47,7 @@ and file-by-file description (not duplicated here).
 | `nas_native_crawl.sh` + `load_nas_inventory.py` | NAS crawl (runs natively on NAS via SSH; ~1,450x faster than mounting) |
 | `run_all_nas_shares.sh` | Loops `load_nas_inventory.py` across all known NAS shares |
 | `dedup.py` (+ `bucketing.py`) | rdfind-based duplicate detection, writes `duplicate_group_id` |
-| `crosshost_verify.py` | **New, 2026-07-25, in active development on this branch** — cross-host SHA-256 content verification (candidates/hash/match/report subcommands); answers "is my Spark/agent-1 data really backed up on the NAS" without needing rdfind's local-filesystem access. Non-destructive; writes only `content_sha256`/`hashed_at`/`hash_source` on `diskaudit.files` plus its own `diskaudit.integrity_checks` / `diskaudit.crosshost_verify_runs` rows. Treat as **PARTIAL** until this branch merges — CLI surface may still change. |
+| `crosshost_verify.py` | **New, 2026-07-25, in active development on this branch** — cross-host SHA-256 content verification (candidates/hash/match/report subcommands); answers "is my the server/agent-1 data really backed up on the NAS" without needing rdfind's local-filesystem access. Non-destructive; writes only `content_sha256`/`hashed_at`/`hash_source` on `diskaudit.files` plus its own `diskaudit.integrity_checks` / `diskaudit.crosshost_verify_runs` rows. Treat as **PARTIAL** until this branch merges — CLI surface may still change. |
 | `hash_batch.sh` | Companion shell helper for `crosshost_verify.py` batch hashing (unmodified) |
 | `hash_stat_batch.sh` | Companion shell helper for `nas_trigkey_dedup.py` (1.4.0): digest + stat before/after, stat-only lines, `#DONE` trailer |
 | `backup_coverage.py` | **New, 2026-07-25** — TRUE backup-coverage classifier: every in-scope server-1/agent-1 file gets exactly one row in `diskaudit.backup_coverage` (`BACKED_UP_VERIFIED` / `BACKED_UP_UNVERIFIED` / `NOT_BACKED_UP` / `EXCLUDED`), vs. `v_backup_coverage`'s critical_patterns-only scope or `crosshost_verify.py`'s <1%-of-files size-candidate scope. Subcommands `classify` / `verify` (cheap promotion, no new hashing) / `report` (ranked markdown). Scope exclusions are data, not code — see `diskaudit.backup_scope_rules`. Runbook: `/home/user/runbooks/20260725-havnvard-backup-coverage/RUNBOOK.md`. |
@@ -66,8 +66,8 @@ and file-by-file description (not duplicated here).
 
 All `diskaudit-*` and `havnvard-*` systemd units are **root-owned system units**
 under `/etc/systemd/system/` (`User=root` in `[Service]`, `Type=oneshot`) — this
-is **not** a nemo user-unit app. Use plain `sudo systemctl`, never the
-`sudo -u nemo XDG_RUNTIME_DIR=... systemctl --user` pattern used for
+is **not** a svc user-unit app. Use plain `sudo systemctl`, never the
+`sudo -u svc XDG_RUNTIME_DIR=... systemctl --user` pattern used for
 OpenClaw/Helm.
 
 ```bash
@@ -75,7 +75,7 @@ OpenClaw/Helm.
 systemctl list-timers --all | grep -E 'diskaudit|havnvard'
 
 # Manual one-off run of any stage (all are oneshot services, safe to run ad hoc)
-sudo systemctl start diskaudit-scan.service              # full Spark scan
+sudo systemctl start diskaudit-scan.service              # full the server scan
 sudo systemctl start diskaudit-nas-crawl.service          # full NAS crawl (all shares)
 sudo systemctl start diskaudit-monitor.service            # stale/failed run check now
 sudo systemctl start diskaudit-load-bearing-refresh.service
@@ -121,7 +121,7 @@ systemctl list-timers --all | grep -E 'diskaudit|havnvard'
 
 # journal for a given unit
 journalctl -u diskaudit-scan.service --since "1 day ago"
-journalctl -u havnvard-restic-openclaw.service -n 100
+journalctl -u havnvard-restic-app-e.service -n 100
 ```
 
 Grafana dashboard: **`https://server-1.example.ts.net:9452/d/diskaudit/diskaudit`**
@@ -189,14 +189,14 @@ overwrites a scanned file. All writes are confined to the `diskaudit` Postgres
 schema, this repo's own logs/reports, and restic's own backup repos.**
 
 ### Storage paths
-- Spark root filesystem: single ext4 partition `/dev/nvme0n1p2` (3.6T, 64%
+- the server root filesystem: single ext4 partition `/dev/nvme0n1p2` (3.6T, 64%
   used as of 2026-07-25). `scan.py` walks this with `-xdev` semantics (skips
   other mounts, e.g. `/var/lib/docker` overlay internals excluded by design).
 - NAS: `nas-1` (QNAP), shares under `/share/CACHEDEV1_DATA/<share>`,
   crawled **natively over SSH** (BusyBox `find`/`stat`/`xargs`, no Python on
   the NAS) — never mounted locally. **`/mnt/nas-diskaudit` (referenced by
   `havnvard_report.py`'s `collect_capacity()` for NAS disk-utilization %) does
-  not exist on Spark** — confirmed via `mount`/`df` 2026-07-25. This means the
+  not exist on the server** — confirmed via `mount`/`df` 2026-07-25. This means the
   NAS capacity (used/total %) figure in the daily report/dashboard is **always
   unavailable** (the code degrades gracefully to `None`, so this doesn't error,
   but the NAS row is permanently blank in that specific panel — file/byte
@@ -245,7 +245,7 @@ usage by roughly 2x on heavily-hardlinked trees.**
   used in `havnvard_report.py` (`collect_metrics()`, the
   `select host, count(*), coalesce(sum(size_bytes),0) ... group by host`
   query) and the equivalent query in `weekly_prescab_review.py`. These are
-  the numbers that appear as "Spark: X files, Y bytes" / "NAS: ..." in the
+  the numbers that appear as "the server: X files, Y bytes" / "NAS: ..." in the
   daily TG PRESI report and (same query shape) the Grafana dashboard (2
   panels in `diskaudit.json` use `sum(size_bytes)` directly, none use
   `DISTINCT ON`). **These totals overstate real disk usage** on any tree with
@@ -274,7 +274,7 @@ Core diskaudit (all root-owned, all `active`/`waiting`):
 
 | Timer | Schedule | Notes |
 |---|---|---|
-| `diskaudit-scan.timer` | daily 08:00 | full Spark scan (changed 2026-07-18 from monthly) |
+| `diskaudit-scan.timer` | daily 08:00 | full the server scan (changed 2026-07-18 from monthly) |
 | `diskaudit-nas-crawl.timer` | every 4h | shifted 30min earlier 2026-07-19 to reduce overlap with TechWatch's 04:00–14:00 window (INFRA-110, not fully resolved) |
 | `diskaudit-monitor.timer` | every 5 min | stale/failed run alerting |
 | `diskaudit-load-bearing-refresh.timer` | daily 08:20 | changed 2026-07-19 from weekly |
@@ -284,9 +284,9 @@ Core diskaudit (all root-owned, all `active`/`waiting`):
 
 Restic backup engine (Phase 2 — **LIVE, not "planned" as older README/module.yaml
 text says** — see discrepancy note below), 10 targets, each with a daily
-backup timer + weekly retention timer (20 timer units total): agent-controller,
-agent-governance, claude-inbox, helm-files, linkedin-agent, openclaw,
-paf-agent-system, uohr, yt-ingestion, yt-knowledge. Scripts live in the
+backup timer + weekly retention timer (20 timer units total): app-a,
+app-b, app-c, config-files, app-d, app-e,
+app-f, app-g, app-h, app-i. Scripts live in the
 sibling repo `/srv/apps/backup/` (group `uo-ai`), invoked from
 `/etc/systemd/system/havnvard-restic-*.service` (root-owned units in this
 app's systemd namespace). `restic 0.19.1` confirmed installed at
@@ -413,11 +413,11 @@ state `~/.local/state/havnvard/` (last job, offsite logs/flag/tries/hold files, 
 | Hub stopped by disk guard | free space above 125 GB; the guard restarts it only if it stopped it | marker `~/.local/state/havnvard/hub-diskguard.stopped` contains `stopped`; emptying it makes the hub stay down on purpose |
 | Hold a repo back from offsite | write its name in `~/.local/state/havnvard/offsite-NAME.hold` | |
 | Flagged offsite file | listed in `offsite-NAME.flagged`; compare offsite vs hub copy, then clear the line and its `.tries` line | restic can read the repo only if the file is correct |
-| Hub without alertlib | on Spark: `python -m backup health-relay --ssh HOST --python PY --repo-dir DIR` | exit 0 healthy, 1 hub problem (alerted), 2 relay failed (alerted); render the hourly timer with `--render-units DIR` |
+| Hub without alertlib | on the server: `python -m backup health-relay --ssh HOST --python PY --repo-dir DIR` | exit 0 healthy, 1 hub problem (alerted), 2 relay failed (alerted); render the hourly timer with `--render-units DIR` |
 | Coverage link | `python -m backup coverage-sync DEVICE [--dry-run]` after `backup_coverage.py classify` | needs `POSTGRES_URL`; apply migration `20261111_diskaudit_restic_coverage_v1.sql` first (by hand) |
 | Backup names + catalog | hub: `python -m backup catalog run` (timer `havnvard-hub-catalog`, hourly at :40) | names each new data snapshot `YYYYMMDD_DEVICE_NNNNNN` (restic tag; one counter for all devices, never resets), appends ADDED/GONE lines to `~/.local/state/havnvard/catalog/catalog.tsv`, then backs the whole catalog up into every repo as `YYYYMMDD_CATALOG_NNNNNN_catalog.tsv` tagged `havnvard-catalog`. Needs `hub-passwords/<repo>.pass` for each repo (exit 1 lists any missing). First run names only each repo's newest snapshot (`--all-history` for every one). `state.json` is the commit point; a crash leaves nothing half-written |
 | Offsite feed (DESKTOP-1) | `~/.local/bin/havnvard-hub-pull` (repo `scripts/havnvard_hub_pull.sh`) runs as `ExecStartPre` of `restic-hub-offsite.service` | copies new settled files from the agent-1 hub into `~/restic-hub` (add only, snapshots last, never locks); log `~/.local/state/havnvard-hub-pull.log`; INFRA-547 |
-| Which backup holds a file | `python -m backup where bob.txt [--device SPARK] [--catalog FILE]` | 0 found, 1 not in any backup. Without the hub: `restic dump <catalog snapshot> <path>` from any repo (hub, NAS, Internxt), then `grep` |
+| Which backup holds a file | `python -m backup where bob.txt [--device the server] [--catalog FILE]` | 0 found, 1 not in any backup. Without the hub: `restic dump <catalog snapshot> <path>` from any repo (hub, NAS, Internxt), then `grep` |
 | Not backed up | `python -m backup not-backed-up [--host H] [--by type\|folder] [--limit N]` | |
 | Prune | `python -m backup prune --dry-run` then without | runs on the hub only |
 | Prove a device | `python -m backup restore-drill DEVICE` | all files must match |
@@ -427,7 +427,7 @@ state `~/.local/state/havnvard/` (last job, offsite logs/flag/tries/hold files, 
 
 Archiving an app must also stop its backups (GHY-209/210 were the same miss twice: a class, not a bug). In the same change:
 
-1. Spark, `spark-backup` repo: disable `havnvard-restic-<app>.timer` AND `havnvard-restic-<app>-retention.timer`
+1. the server, `spark-backup` repo: disable `havnvard-restic-<app>.timer` AND `havnvard-restic-<app>-retention.timer`
    (`sudo systemctl disable --now ...`), and archive the unit files and scripts in that repo.
 2. HavnVard config: remove the app's paths from the device's `paths` in `~/.config/havnvard/backup.toml` and re-run `enroll`
    (or edit `[device] paths`).
@@ -446,7 +446,7 @@ Tests: `pytest tests/test_backup_core.py tests/test_backup_restic.py tests/test_
 | `refresh_classification_mv.py --help` "hangs" for minutes | **Not a hang** — the script has no argparse; ANY invocation runs the full `REFRESH MATERIALIZED VIEW CONCURRENTLY` (≈6 min at current row count) | Wait it out (safe, idempotent), or check `select * from pg_stat_activity where query ilike '%refresh_file_status%'` to confirm it's progressing, not stuck |
 | NAS crawl fails on one share | `run_all_nas_shares.sh` continues past a per-share failure | Check `diskaudit.scan_errors` / journal for the specific share; re-run `load_nas_inventory.py --share <name>` alone |
 | Dashboard "total size" looks implausibly high vs `du -sh` | Hardlink double-counting (see gotcha above) — not a bug, a known raw-sum limitation | Use `diskaudit.v_duplicate_groups` (`reclaimable_bytes_total`) for a trustworthy figure, or compute `DISTINCT ON (host, inode)` yourself |
-| NAS capacity % blank in report | `/mnt/nas-diskaudit` doesn't exist on Spark (NAS is SSH-crawled, never mounted) | Expected/graceful — not a bug. File/byte counts for NAS are still correct; only the raw capacity-% panel is unavailable |
+| NAS capacity % blank in report | `/mnt/nas-diskaudit` doesn't exist on the server (NAS is SSH-crawled, never mounted) | Expected/graceful — not a bug. File/byte counts for NAS are still correct; only the raw capacity-% panel is unavailable |
 | TG PRESI report not arriving | `havnvard-presi-report.service` failed, or `AGENT_BOT_TOKEN`/`TG_PRESIDENT_CHAT` misconfigured | `journalctl -u havnvard-presi-report.service`; verify env resolves via `/etc/havnvard/havnvard.env` fallback in `get_dsn()`/`tg_token()` |
 | Monitor stops alerting | `diskaudit-monitor.timer` disabled/failed | `systemctl status diskaudit-monitor.timer`; re-enable if disabled |
 
@@ -481,7 +481,7 @@ Tests: `pytest tests/test_backup_core.py tests/test_backup_restic.py tests/test_
 - TG PRESI group receives automated alerts from `monitor.py` (stale/failed
   runs) and the daily `havnvard_report.py` summary — check there first for
   any live incident signal before diving into logs.
-- Owner: Parker (havnvard@server-1). No other on-call.
+- Owner: the operator (havnvard@server-1). No other on-call.
 
 ## GitHub notes
 

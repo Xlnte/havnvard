@@ -10,7 +10,7 @@ This list reflects the open-item snapshot supplied with INFRA-126. It is not a l
 - INFRA-98: progress checkpoints and hang detection
 - INFRA-110: TechWatch scheduling collision
 - INFRA-108: NAS crawl reliability
-- INFRA-107: NAS/Spark cadence mismatch
+- INFRA-107: NAS/the server cadence mismatch
 - MONITOR-16: full-stack success verification
 - MONITOR-36: rotate exposed diskaudit-agent credential
 
@@ -32,7 +32,7 @@ This list reflects the open-item snapshot supplied with INFRA-126. It is not a l
 
 - HavnVard / diskaudit
 - PostgreSQL `havnvard.diskaudit`
-- Spark scanner and client agents
+- the server scanner and client agents
 - NAS BusyBox crawler
 - `crosshost_verify.py`
 - `hash_batch.sh`
@@ -46,7 +46,7 @@ This list reflects the open-item snapshot supplied with INFRA-126. It is not a l
 - TechWatch
 - restic
 - QNAP RAID scrub and future snapshots
-- Spark, NAS, agent-1
+- the server, NAS, agent-1
 - Grafana
 - TG PRESI
 - Plane

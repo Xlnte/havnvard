@@ -33,7 +33,7 @@ entrypoints:
   backup_cli: python -m backup {hub|enroll|client-run|offsite|nas-target|nas-copy|health|health-relay|prune|restore-drill|coverage-sync|not-backed-up|check-timers|catalog|where} (2.2.0; docs README.md "Install HavnVard Backup", CLAUDE_SETUP.md)
   scanner: /opt/havnvard/scan.py
   timer: diskaudit-scan.timer (systemd, daily OnCalendar=*-*-* 08:00:00)
-  nas_crawl_script: /opt/havnvard/nas_native_crawl.sh (BusyBox sh, scp'd to and run on nas-1 via ssh, not a Spark-side entrypoint itself)
+  nas_crawl_script: /opt/havnvard/nas_native_crawl.sh (BusyBox sh, scp'd to and run on nas-1 via ssh, not a the server-side entrypoint itself)
   nas_loader: /opt/havnvard/load_nas_inventory.py --share <name> (2026-07-18, manual per-share invocation; not yet on a timer)
   crosshost_verify: /opt/havnvard/crosshost_verify.py {candidates|hash --host <h>|match|report} (2026-07-25, manual invocation so far, no timer; see docs below)
   crosshost_hash_remote_script: /opt/havnvard/hash_batch.sh (BusyBox/GNU-sh compatible, scp'd to and run on nas-1/agent-1 by crosshost_verify.py hash, deleted from both sides after load)

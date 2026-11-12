@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """diskaudit v2 — thin CLI wrapper around heartbeat.py's backup_runs support, for
-bash-based backup wrapper scripts (restic-claude-inbox*.sh and future restic targets)
+bash-based backup wrapper scripts (restic-app-c*.sh and future restic targets)
 that can't import heartbeat.py directly. Mirrors the scan_runs/dedup_runs create+close
 convention already used by scan.py/dedup.py (INSERT ... status='running' RETURNING
 <id>, write_heartbeat() for stage transitions, UPDATE status/finished_at on completion).

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import signal
 import time
 import uuid
@@ -932,7 +933,9 @@ def test_migration_is_idempotent_and_reconcile_clears_only_false_labels(nd_schem
         admin.execute(ins, ("/r/ok", True, nd.TOOL, "a" * 64, 100, 200))
         admin.execute(ins, ("/r/other-tool", False, "crosshost-sha256", "a" * 64, 100, 200))
         with open(os.path.join(conftest.MIGRATIONS, "20261109_diskaudit_nas_dedup_v3_reconcile.sql"), encoding="utf-8") as f:
-            admin.execute(conftest.rewrite(f.read(), nd_schema))
+            # the migration names its site's NAS (INFRA-557); point it at the test site's NAS
+            sql = re.sub(r"host = '[^']+'", "host = 'nas-1'", conftest.rewrite(f.read(), nd_schema))
+            admin.execute(sql)
         left = dict(admin.execute(f"SELECT path, duplicate_group_id FROM {nd_schema}.files WHERE host='nas-1'").fetchall())
         assert left == {"/r/vanished": None, "/r/modified": None, "/r/ok": "g", "/r/other-tool": "g"}
         with open(os.path.join(conftest.MIGRATIONS, "20261109_diskaudit_nas_dedup_v3_indexes.sql"), encoding="utf-8") as f:

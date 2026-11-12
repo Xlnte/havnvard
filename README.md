@@ -113,7 +113,7 @@ python -m backup not-backed-up --host agent-1 --by folder --limit 25   # biggest
 python -m backup check-timers   # list havnvard-restic-* timers whose script or backup source no longer exists
 ```
 
-A hub without `alertlib` (agent-1): on Spark run `python -m backup health-relay --ssh agent-1 --python PATH --repo-dir DIR`
+A hub without `alertlib` (agent-1): on the server run `python -m backup health-relay --ssh agent-1 --python PATH --repo-dir DIR`
 (or render an hourly timer with `--render-units ./out`). It runs `health --json --no-alert` on the hub and raises or
 resolves the alert locally; a failed ssh or unreadable output is itself an alert.
 
@@ -163,7 +163,7 @@ example with Syncthing, Immich or a cable copy) and include that folder in `--pa
 
 ## Entry points / schedule
 
-Systemd timers (all on Spark):
+Systemd timers (all on the server):
 - `diskaudit-scan.timer` — daily 08:00, full local scan
 - `diskaudit-nas-crawl.timer` — every 4 h at :20 (00/04/08/12/16/20), full NAS crawl (all shares)
 - `diskaudit-nas-dedup.timer` — weekly Sunday 02:00, NAS within-host dedup with `bkup_spark` excluded (installed; enabled only after the release gate passes once)
@@ -173,7 +173,7 @@ Systemd timers (all on Spark):
 
 Manual invocation:
 ```
-sudo /opt/havnvard/.venv/bin/python scan.py            # full Spark scan
+sudo /opt/havnvard/.venv/bin/python scan.py            # full the server scan
 sudo /opt/havnvard/run_all_nas_shares.sh                # full NAS crawl
 ```
 

@@ -1,7 +1,7 @@
 #!/bin/sh
 # diskaudit — NAS-native crawl script.
 #
-# Lives on Spark as the source of truth; gets scp'd to the NAS and executed
+# Lives on the server as the source of truth; gets scp'd to the NAS and executed
 # there via ssh. Does NOT persist on the NAS between runs (the orchestrator,
 # load_nas_inventory.py, copies it into the scratch dir, runs it, then
 # deletes it as part of cleanup).

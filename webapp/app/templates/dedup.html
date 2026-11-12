@@ -2,10 +2,9 @@
 {% block title %}HavnVard — DEDUP{% endblock %}
 {% block content %}
 <h1>A) DEDUP — duplicate groups</h1>
-<p class="muted small">One row per duplicate group per host, across all three scanned devices (server-1,
-agent-1, nas-1). Source: <code>diskaudit.mv_dedup_groups_by_host</code> (indexed materialized view,
-refreshed periodically — see <a href="https://server-1.example.ts.net:9452" target="_blank">Grafana</a>
-for refresh timestamps and trend history). This view never offers a delete/move action anywhere — export
+<p class="muted small">One row per duplicate group per host, across every scanned device ({{ site_all }}).
+Source: <code>diskaudit.mv_dedup_groups_by_host</code> (indexed materialized view, refreshed periodically{% if dashboard_url %}
+— see the <a href="{{ dashboard_url }}" target="_blank">dashboard</a> for refresh timestamps and trend history{% endif %}). This view never offers a delete/move action anywhere — export
 a manifest below for the separate, not-yet-built authorized cleanup process.</p>
 
 <form class="filters" hx-get="/havnvard/dedup/table" hx-target="#dedup-results" hx-push-url="true">

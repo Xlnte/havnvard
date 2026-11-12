@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """diskaudit — NAS-native inventory loader (nas-1 via native BusyBox crawl).
 
-Companion to scan.py (local Spark filesystem crawl). Where scan.py walks the
+Companion to scan.py (local the server filesystem crawl). Where scan.py walks the
 filesystem itself in Python, this script drives a crawl that runs NATIVELY on
 the NAS over SSH (see nas_native_crawl.sh) -- validated at ~29,300 files/sec
-native vs ~20 files/sec over an NFS/SSHFS mount from Spark (~1,450x), because
+native vs ~20 files/sec over an NFS/SSHFS mount from the server (~1,450x), because
 the bottleneck was the network-mount transport, not the NAS's disk. This
-script ships the crawl's flat-file output back to Spark and loads it into the
+script ships the crawl's flat-file output back to the server and loads it into the
 SAME diskaudit.files table via the SAME merge pattern scan.py already uses.
 
 Reuses verbatim from scan.py (imported, not reimplemented): get_dsn(),
@@ -16,9 +16,9 @@ MERGE_DISAPPEARED, root_prefix-scoped -- see scan.py's merge() docstring for
 the production bug that fix guards against).
 
 One thing NOT reused from scan.py: owner_name()/group_name(). Those call
-pwd.getpwuid()/grp.getgrgid() against SPARK's local user database, which is
+pwd.getpwuid()/grp.getgrgid() against the server's local user database, which is
 wrong here -- NAS uid/gid numbers are not guaranteed to map to the same
-identities as Spark's. Instead this script parses the NAS's OWN /etc/passwd
+identities as the server's. Instead this script parses the NAS's OWN /etc/passwd
 and /etc/group (copied alongside each crawl) and resolves against those.
 
 No birth time (btime) is available on the NAS at all (no statx path exists
@@ -116,7 +116,7 @@ NAS_EXTRA_EXCLUDE_COMPONENTS = (
     ".wifi", ".diskaudit_scratch", ".malware_remover",
     # Found the hard way during the homes/ share test (2026-07-18): these are
     # PER-DIRECTORY / per-share QNAP app caches, not per-share-root -- e.g.
-    # .@__thumb showed up nested under homes/Parker/bittorrents_paf/, not at
+    # .@__thumb showed up nested under homes/user/downloads/, not at
     # any share root. .@__thumb is QNAP's thumbnail cache (File Station/Photo
     # Station) and is where the out-of-range synthetic uid 3701760710 came
     # from (see 20260718_diskaudit_nas_uid_gid_bigint.sql) -- excluding it
@@ -249,7 +249,7 @@ def fetch_share(share_name: str) -> dict[str, str]:
 
 def cleanup_share(share_name: str, local_paths: dict[str, str]) -> None:
     """Remove this share's scratch files on BOTH sides after a successful load --
-    the NAS's real disk scratch dir and the local Spark inbox dir. passwd/group
+    the NAS's real disk scratch dir and the local the server inbox dir. passwd/group
     caches under _nas_etc/ are left in place (small, reused across shares, not
     share-specific)."""
     safe = _safe_name(share_name)
@@ -268,7 +268,7 @@ def cleanup_share(share_name: str, local_paths: dict[str, str]) -> None:
 
 def parse_passwd(path: str) -> dict[int, str]:
     """name:x:uid:gid:gecos:home:shell -- from the NAS's own /etc/passwd,
-    NOT Spark's (uid numbers are not guaranteed to mean the same person)."""
+    NOT the server's (uid numbers are not guaranteed to mean the same person)."""
     out: dict[int, str] = {}
     with open(path, encoding="utf-8", errors="replace") as f:
         for line in f:

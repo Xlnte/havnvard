@@ -3,11 +3,11 @@
 
 Answers the two questions the owner actually cares about, with cryptographic
 evidence, non-destructively:
-    1. "Is my Spark/agent-1 data genuinely intact on the NAS?"
-    2. "What can I safely delete from Spark?"
+    1. "Is my the server/agent-1 data genuinely intact on the NAS?"
+    2. "What can I safely delete from the server?"
 
 Why this tool exists (not just more dedup.py): dedup.py drives `rdfind`, which
-needs local filesystem access. The NAS is not mounted on Spark (mount-based
+needs local filesystem access. The NAS is not mounted on the server (mount-based
 crawling plateaued at ~20 files/sec and was abandoned for the SSH-based
 native crawl in load_nas_inventory.py/nas_native_crawl.sh) -- so NAS files
 have never been deduped or cross-checked: `dedup_checked_at` is NULL for
@@ -180,7 +180,7 @@ def cmd_candidates(conn, args):
 
 def _renice_self():
     """Best-effort: drop CPU + IO priority so hashing never competes with
-    anything time-sensitive on Spark. Never fatal if unsupported."""
+    anything time-sensitive on the server. Never fatal if unsupported."""
     try:
         os.nice(19)
     except OSError:

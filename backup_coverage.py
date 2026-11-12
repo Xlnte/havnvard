@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """diskaudit — TRUE backup-coverage classifier (HavnVard).
 
-Answers the owner's actual question -- "what on Spark/agent-1 is NOT safely
+Answers the owner's actual question -- "what on the server/agent-1 is NOT safely
 on the NAS" -- across the COMPLETE file universe, not the <1% candidate set
 that crosshost_verify.py's cross-host-size-match or v_backup_coverage's
 critical_patterns filter cover (both measured 2026-07-25; see
@@ -36,7 +36,7 @@ classify does three things per in-scope file:
      when both mtimes are present] -> BACKED_UP_UNVERIFIED /
      match_method='path_size_mtime'. NOTE: an earlier design assumption that
      `/share/CACHEDEV1_DATA/bkup_spark` is a literal path-for-path mirror of
-     Spark was checked live (ssh) and found FALSE -- it holds per-app
+     the server was checked live (ssh) and found FALSE -- it holds per-app
      tar.gz snapshots, restic repos, and DB dump trees, not a browsable
      mirror. This basename+size heuristic is the honest, ground-truth-driven
      replacement; it is intentionally weaker evidence and is always labeled
@@ -240,7 +240,7 @@ def cmd_classify(conn, host: str, limit: int | None) -> None:
                 cp.write_row((host, path, size_bytes, inode, nlink, "EXCLUDED", None, matched_rule, None, None, None, coverage_run_id, None))
                 continue
 
-            # 2a. helm-files special case
+            # 2a. config-files special case
             if path in helm_files_idx and helm_files_sizes.get(path) == size_bytes:
                 matched += 1
                 cp.write_row((host, path, size_bytes, inode, nlink, "BACKED_UP_UNVERIFIED", "restic_snapshot_listing", None, NAS_HOST, path, RESTIC_FILE_LIST_TARGET, coverage_run_id, None))

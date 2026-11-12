@@ -38,7 +38,7 @@ This sandbox did not have access to:
 
 - the live `havnvard` PostgreSQL instance;
 - the complete current HavnVard repository;
-- Spark/NAS/agent-1 SSH sessions;
+- the server/NAS/agent-1 SSH sessions;
 - TG PRESI delivery;
 - Plane ticket creation;
 - HELM WaitingRoom runtime;

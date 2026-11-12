@@ -1037,7 +1037,8 @@ def main(argv=None) -> int:
             return EXIT_FAILED
         try:
             scope = core.normalize_scope(args.path) if args.path else None
-            excludes = [core.normalize_scope(e) for e in args.exclude]
+            ex = args.exclude or (list(_site.nas("dedup_excludes") or []) if args.host == _site.nas_host() else [])
+            excludes = [core.normalize_scope(e) for e in ex]   # 3.0.0: default excludes from [nas] dedup_excludes
         except ValueError as e:
             print(f"[nas_trigkey_dedup] ERROR: {e}", file=sys.stderr)
             return EXIT_FAILED

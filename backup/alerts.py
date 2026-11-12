@@ -1,6 +1,7 @@
 """Alerting. Two ways to deliver, tried in order; no Telegram or vendor code lives here.
 
-1. alertlib, if it can be imported (path: HAVNVARD_ALERTLIB_PATH). alertlib.fire() dedups and never raises.
+1. alertlib, if it can be imported (path: HAVNVARD_ALERTLIB_PATH, or [alerts] alertlib_path in backup.toml).
+   alertlib.fire() dedups and never raises.
 2. An alert command from backup.toml, for any machine without alertlib:
 
        [alerts]
@@ -27,7 +28,7 @@ COMMAND_TIMEOUT_S = 60
 
 
 def _load():
-    path = os.environ.get("HAVNVARD_ALERTLIB_PATH")
+    path = os.environ.get("HAVNVARD_ALERTLIB_PATH") or (config.load().get("alerts") or {}).get("alertlib_path")
     if path and path not in sys.path:
         sys.path.append(path)   # append, never insert(0): path-first shadowing is a known defect class
     return importlib.import_module("alertlib")

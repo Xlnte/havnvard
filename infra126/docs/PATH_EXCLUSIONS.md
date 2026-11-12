@@ -3,8 +3,8 @@
 ## What it is
 
 A configurable list of absolute path prefixes the verifier will **never enqueue**
-for re-hashing. Introduced 2026-09-01 for `/home/UltraOC/` on `server-1`: the
-deprecated UltraOC account home is mode `0750` and owned by `UltraOC`, the
+for re-hashing. Introduced 2026-09-01 for `/home/olduser/` on `server-1`: the
+deprecated olduser account home is mode `0750` and owned by `olduser`, the
 verifier runs as `havnvard`, so every baseline under it hashed `unreadable`.
 Those 34 items were 34 of the 38 errors on every Tier C run, which propagated
 `completed_with_errors` -> `cli.py` exit 2 -> `havnvard-infra126-c.service`
@@ -17,8 +17,8 @@ coverage.
 
 | Value | Meaning |
 |---|---|
-| unset | shipped default: `server-1:/home/UltraOC/` |
-| `server-1:/home/UltraOC/,/global/prefix/` | comma/newline list; `host:` optional (omitted = all hosts) |
+| unset | no exclusions (3.0.0; earlier versions shipped one site-specific default) |
+| `server-1:/home/olduser/,/global/prefix/` | comma/newline list; `host:` optional (omitted = all hosts) |
 | `[{"host":"agent-1","prefix":"/mnt/x/","reason":"PLANE-1"}]` | JSON array, carries a reason string |
 | `""` (empty) | exclusions disabled entirely — deliberate operator choice |
 
@@ -60,7 +60,7 @@ remaining-due count still counted it, every run would report
 | Run | exclusions | checked | read-failure errors | `excluded_by_policy` | run errors | status |
 |---|---|---|---|---|---|---|
 | `48bef6f6` | on (default) | 9 | 0 | 34 | 4 | completed_with_errors |
-| `3399a813` | disabled (`=""`) | 43 | 34 (all `/home/UltraOC/`) | 0 | 38 | completed_with_errors |
+| `3399a813` | disabled (`=""`) | 43 | 34 (all `/home/olduser/`) | 0 | 38 | completed_with_errors |
 
 The negative control is the proof that genuine read failures still fail a run.
 The 4 residual errors in both runs are `stale_baseline` on churning system files
