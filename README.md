@@ -209,3 +209,7 @@ system's reports.
 bytes were proven equal to the kept copy in the same run: `verify_tree.py` (rows with
 `basis='fresh'`) or the delete script's own in-run rehash. Size, mtime, a partial hash or a
 digest read back from `diskaudit.files` (`basis='stored'`, crosshost `match`) never count.
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).

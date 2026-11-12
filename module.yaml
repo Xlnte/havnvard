@@ -1,6 +1,7 @@
 name: HavnVard
 display_name: HavnVard — Storage Assurance (Whole-Disk File Inventory)
 version: 3.0.0
+license: Apache-2.0
 type: scheduled-scanner
 status: active
 grandfather_status: standardized
