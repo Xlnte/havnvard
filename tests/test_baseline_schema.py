@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
+import subprocess
+import sys
 import uuid
 
 import pytest
@@ -95,7 +98,18 @@ def test_baseline_builds_schema_on_scratch_database():
             cur.execute("SELECT count(*) FILTER (WHERE c.relkind='r'), count(*) FILTER (WHERE c.relkind IN ('v','m')) "
                         "FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=%s", (schema,))
             tables, views = cur.fetchone()
-            assert tables >= 35 and views >= 10
+            text = _baseline()
+            assert tables == len(re.findall(r"(?m)^CREATE (?:UNLOGGED )?TABLE ", text))
+            assert views == len(re.findall(r"(?m)^CREATE (?:MATERIALIZED )?VIEW ", text))
+            cur.execute("SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace "
+                        "WHERE n.nspname=%s AND c.relkind='m' AND NOT c.relispopulated", (schema,))
+            assert cur.fetchone()[0] == 0  # materialized views are readable right after install
+            cur.execute("SELECT column_default FROM information_schema.columns WHERE table_schema=%s "
+                        "AND column_name='host' AND column_default IS NOT NULL", (schema,))
+            defaults = [r[0] for r in cur.fetchall()]
+            assert all(d.startswith("'*'") for d in defaults), defaults  # no site gets a silent default host
+            cur.execute(f"SELECT count(*) FROM {schema}.mutable_file_registry WHERE host = '*'")
+            assert cur.fetchone()[0] >= 20  # bit-rot mutable/immutable rules seeded for every host
             cur.execute(f"SELECT count(*) FROM {schema}.backup_scope_rules WHERE host_pattern <> '%'")
             assert cur.fetchone()[0] == 0  # seed rules are host-generic
             cur.execute(f"INSERT INTO {schema}.scan_runs (host, root_path, dry_run, status) "
@@ -106,4 +120,35 @@ def test_baseline_builds_schema_on_scratch_database():
     finally:
         with conn.cursor() as cur:
             cur.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+        conn.close()
+
+
+def test_leak_check_is_case_insensitive():
+    for name in ("NAS-TS453A", "Spark-20CF", "Spark NVMe", "Plane INFRA-98", "Heimdall"):
+        assert mbs.leaks(f"COMMENT ON TABLE t IS '{name}';", []), name
+    assert mbs.leaks("spark_path text, idx_x_spark, 'trigkey-agent'", []) == []  # code contract names allowed
+
+
+def test_refusal_never_empties_the_output_file(tmp_path):
+    dump = tmp_path / "dump.sql"
+    dump.write_text(_DUMP.replace("HOSTNAME", "nas-ts453a"), encoding="utf-8")
+    out = tmp_path / "baseline.sql"
+    out.write_text("previous good baseline", encoding="utf-8")
+    r = subprocess.run([sys.executable, os.path.join(REPO_ROOT, "scripts", "make_baseline_schema.py"), str(dump),
+                        "-o", str(out)], capture_output=True, text=True)
+    assert r.returncode == 1 and "refusing" in r.stderr
+    assert out.read_text(encoding="utf-8") == "previous good baseline"
+
+
+def test_load_bearing_census_is_skipped_without_thoth():
+    """A new site has no thoth.census: the refresh logs a skip instead of failing every timer run."""
+    import refresh_load_bearing_paths as rlb  # noqa: PLC0415
+    conn = connect_retry(autocommit=True)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass('thoth.census') IS NOT NULL")
+            if cur.fetchone()[0]:
+                pytest.skip("scratch database has a thoth.census table")
+        assert rlb.scan_census(conn) is rlb.CENSUS_SKIPPED
+    finally:
         conn.close()

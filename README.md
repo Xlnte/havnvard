@@ -2,7 +2,7 @@
 
 **Know that every file you care about is backed up, prove the backups restore, and find any file in any backup.**
 HavnVard is a self-hosted storage-assurance toolkit for a home or small-office fleet: a few Linux machines, a NAS and
-a cloud account. Version 3.0.0.
+a cloud account. Version 3.1.0.
 
 > **Absolute rule: HavnVard never deletes, moves or overwrites a scanned file.** Every "duplicate", "stale" or
 > "not backed up" result is a report for you to read. Deleting anything is always your decision, made by hand.
@@ -188,11 +188,23 @@ Schema `diskaudit` (PostgreSQL 15+). Core table `diskaudit.files` (`(host, path)
 then build the whole schema in one step:
 
 ```bash
-psql "$POSTGRES_URL" -v ON_ERROR_STOP=1 -f schema/baseline.sql
+psql "$POSTGRES_URL" -v ON_ERROR_STOP=1 --single-transaction -f schema/baseline.sql
+```
+
+Then give each of your hosts a bit-rot verification schedule (the monitor's overdue alarm checks these rows; the
+example is at the end of `schema/seed.sql`):
+
+```bash
+psql "$POSTGRES_URL" -c "INSERT INTO diskaudit.hash_verification_sla (host, tier, target_recheck_days, schedule_mode)
+  SELECT h, t, d, m FROM unnest(ARRAY['server-1','nas-1']) AS h,
+       (VALUES ('A',7,'weekly'),('B',30,'monthly'),('C',90,'quarterly'),('E',1,'daily')) AS s(t,d,m)
+  ON CONFLICT (host, tier) DO NOTHING"
 ```
 
 `schema/baseline.sql` is the current schema plus generic starting rules (`schema/seed.sql`: OS, cache and temp paths
-excluded from backup coverage; QNAP system folders). It names no hosts: every scan writes its own host name. Add your
+excluded from backup coverage; QNAP system folders). It names no hosts: every scan writes its own host name. The
+load-bearing-path refresh reads an optional external `thoth.census` registry; without one it scans systemd and
+crontab only and logs the skip. Add your
 own rules with plain `INSERT`s afterwards.
 
 `migrations/` is the change history of the original deployment (see `migrations/README.md`); a new site does not run

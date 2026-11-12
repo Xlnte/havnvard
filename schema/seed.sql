@@ -55,3 +55,41 @@ INSERT INTO diskaudit.classification_config (key, value, description) VALUES
     ('stale_atime_threshold_days', '365',
      'atime age (days) beyond which a file is a possibly-obsolete/stale candidate, subject to the load-bearing/decommissioned/critical overrides. Operator-editable; re-read on every classification refresh.')
 ON CONFLICT (key) DO NOTHING;
+
+-- Bit-rot verification (infra126): which changed files are expected to change (mutable) and which must never
+-- change without an alarm (immutable). Applies to every host ('*').
+INSERT INTO diskaudit.mutable_file_registry(host,path_pattern,score,reason,is_regex,pattern_kind,priority)
+VALUES
+('*','^/var/log/',99,'system logs',true,'mutable',10),
+('*','^/var/tmp/',97,'temporary files',true,'mutable',10),
+('*','^/tmp/',97,'temporary files',true,'mutable',10),
+('*','*.sqlite',98,'SQLite database',false,'mutable',20),
+('*','*.sqlite3',98,'SQLite database',false,'mutable',20),
+('*','*.db',98,'database file',false,'mutable',30),
+('*','*.db-wal',99,'SQLite WAL',false,'mutable',20),
+('*','*.db-shm',99,'SQLite shared memory',false,'mutable',20),
+('*','/\.config/(google-chrome|chromium)/',96,'browser profile',true,'mutable',20),
+('*','/\.cache/',96,'user cache',true,'mutable',30),
+('*','/\.git/',95,'Git metadata',true,'mutable',30),
+('*','^/run/',99,'runtime state',true,'mutable',10),
+('*','^/var/run/',99,'runtime state',true,'mutable',10),
+('*','^/var/lib/docker/',95,'container runtime data',true,'mutable',40),
+('*','^/var/lib/postgresql/',99,'PostgreSQL data directory',true,'mutable',10),
+('*','^/etc/hostname$',10,'host identity',true,'immutable',1),
+('*','^/etc/(passwd|group|shadow|gshadow)$',15,'account database',true,'immutable',1),
+('*','^/etc/(fstab|crypttab)$',10,'storage boot configuration',true,'immutable',1),
+('*','^/boot/',10,'boot files',true,'immutable',1),
+('*','^/(usr/)?(bin|sbin)/',10,'system executable',true,'immutable',2),
+('*','^/(usr/)?lib/',10,'system library',true,'immutable',2),
+('*','^/etc/systemd/system/',10,'systemd unit',true,'immutable',1),
+('*','^/etc/cron',10,'scheduler configuration',true,'immutable',1)
+ON CONFLICT(host,path_pattern,reason) DO UPDATE
+SET score=EXCLUDED.score,is_regex=EXCLUDED.is_regex,
+    pattern_kind=EXCLUDED.pattern_kind,priority=EXCLUDED.priority;
+
+-- Bit-rot verification schedule: one row per host and tier. Add your hosts after install, for example:
+--   INSERT INTO diskaudit.hash_verification_sla (host, tier, target_recheck_days, schedule_mode)
+--   SELECT h, t, d, m FROM unnest(ARRAY['server-1','nas-1']) AS h,
+--        (VALUES ('A',7,'weekly'),('B',30,'monthly'),('C',90,'quarterly'),('E',1,'daily')) AS s(t,d,m)
+--   ON CONFLICT (host, tier) DO NOTHING;
+-- Without these rows the monitor's overdue-verification alarm has nothing to check.

@@ -10,5 +10,5 @@ empty database they do **not** build the schema.
 
 ```bash
 pg_dump "$POSTGRES_URL" --schema-only --no-owner --no-privileges -n diskaudit -f /tmp/diskaudit.sql
-python3 scripts/make_baseline_schema.py /tmp/diskaudit.sql > schema/baseline.sql
+python3 scripts/make_baseline_schema.py /tmp/diskaudit.sql -o schema/baseline.sql
 ```

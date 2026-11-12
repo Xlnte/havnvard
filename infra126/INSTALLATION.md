@@ -1,5 +1,10 @@
 # Controlled Installation
 
+**New HavnVard site (3.1.0+):** `schema/baseline.sql` in the repo root already creates every infra126 table, view
+and function and seeds the mutable/immutable file rules. Skip §1 and §4 (they are for upgrading the original
+deployment, and migration 001 seeds that deployment's host names), add your hosts' verification schedule as shown
+in the README "Database" section, then continue at §5.
+
 ## 1. Do not install over an unknown prototype
 
 Check whether the earlier prototype was applied:

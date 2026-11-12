@@ -192,11 +192,20 @@ def scan_crontabs() -> tuple[dict[str, list[dict]], list[dict]]:
     return per_user, errors
 
 
+CENSUS_SKIPPED: list[dict] = []   # identity-checked: `is CENSUS_SKIPPED` means the source is absent
+
+
 def scan_census(conn) -> list[dict]:
     """thoth.census active-system paths — bounded query, same status='active' filter convention
     as diskaudit.critical_patterns' seed (20260717_diskaudit_multihost_dedup_v2.sql)."""
     candidates: list[dict] = []
     with conn.cursor() as cur:
+        # 3.1.0 (INFRA-557): thoth.census is an optional external registry. A site without it scans
+        # systemd + crontab only; the skip is logged and recorded as census_skipped in sources_scanned.
+        cur.execute("SELECT to_regclass('thoth.census') IS NOT NULL")
+        if not cur.fetchone()[0]:
+            print("[refresh_load_bearing_paths] census source skipped: no thoth.census table", file=sys.stderr)
+            return CENSUS_SKIPPED
         cur.execute(
             "SELECT system_key, primary_path, paths FROM thoth.census "
             "WHERE status = 'active' AND primary_path IS NOT NULL"
@@ -298,7 +307,10 @@ def main():
         print(f"[refresh_load_bearing_paths] run_id={run_id} started_at={datetime.now(timezone.utc).isoformat()}", file=sys.stderr)
 
         census_candidates = scan_census(conn)
-        sources_scanned["census_active"] = len(census_candidates)
+        if census_candidates is CENSUS_SKIPPED:
+            sources_scanned["census_skipped"] = 1
+        else:
+            sources_scanned["census_active"] = len(census_candidates)
 
         all_candidates = systemd_candidates + crontab_candidates + census_candidates
         # De-dupe within this run (same (pattern, source) can legitimately appear once per

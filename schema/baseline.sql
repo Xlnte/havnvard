@@ -192,7 +192,7 @@ CREATE TABLE diskaudit.backup_coverage (
 -- Name: TABLE backup_coverage; Type: COMMENT; Schema: diskaudit; Owner: -
 --
 
-COMMENT ON TABLE diskaudit.backup_coverage IS 'Complete-universe answer to "what on the scanned hosts is NOT safely on the NAS" -- one row per in-scope file (EXCLUDED rows included, for auditability). Built by backup_coverage.py, NOT limited to critical_patterns (see v_backup_coverage) or the cross-host size-candidate set (see crosshost_verify.py) -- both of those cover <1% of the true file universe on the scanned hosts, confirmed live 2026-07-25. BACKED_UP_VERIFIED = hash-proven bit-identical copy confirmed. BACKED_UP_UNVERIFIED = a plausible NAS/restic counterpart exists by path+size+mtime but has not (yet) been cryptographically confirmed -- never report this tier as proof. NOT_BACKED_UP = no counterpart found at all -- the actual deliverable list. EXCLUDED = matched a diskaudit.backup_scope_rules rule (see excluded_rule_id).';
+COMMENT ON TABLE diskaudit.backup_coverage IS 'Complete-universe answer to "what on the scanned hosts is NOT safely on the NAS" -- one row per in-scope file (EXCLUDED rows included, for auditability). Built by backup_coverage.py, NOT limited to critical_patterns (see v_backup_coverage) or the cross-host size-candidate set (see crosshost_verify.py) -- both of those cover <1% of the true file universe on the scanned hosts. BACKED_UP_VERIFIED = hash-proven bit-identical copy confirmed. BACKED_UP_UNVERIFIED = a plausible NAS/restic counterpart exists by path+size+mtime but has not (yet) been cryptographically confirmed -- never report this tier as proof. NOT_BACKED_UP = no counterpart found at all -- the actual deliverable list. EXCLUDED = matched a diskaudit.backup_scope_rules rule (see excluded_rule_id).';
 
 
 --
@@ -284,7 +284,7 @@ CREATE TABLE diskaudit.backup_runs (
 -- Name: TABLE backup_runs; Type: COMMENT; Schema: diskaudit; Owner: -
 --
 
-COMMENT ON TABLE diskaudit.backup_runs IS 'Minimal run-tracking table for restic backup timers (havnvard-restic-*), monitored by diskaudit/monitor.py alongside scan_runs/dedup_runs. Plane INFRA-98.';
+COMMENT ON TABLE diskaudit.backup_runs IS 'Minimal run-tracking table for restic backup timers (havnvard-restic-*), monitored by diskaudit/monitor.py alongside scan_runs/dedup_runs.';
 
 
 --
@@ -1517,7 +1517,7 @@ COMMENT ON COLUMN diskaudit.mv_dedup_groups_by_host.evidence_level IS '1=byte_id
 -- Name: COLUMN mv_dedup_groups_by_host.evidence_provenance; Type: COMMENT; Schema: diskaudit; Owner: -
 --
 
-COMMENT ON COLUMN diskaudit.mv_dedup_groups_by_host.evidence_provenance IS 'Who computed the evidence: nas-native (QNAP BusyBox sha256sum) / local (Spark NVMe) /
+COMMENT ON COLUMN diskaudit.mv_dedup_groups_by_host.evidence_provenance IS 'Who computed the evidence: nas-native (QNAP BusyBox sha256sum) / local (the local machine) /
    trigkey-agent / rdfind-pipeline (rdfind''s own local hashing, no cross-host agent) /
    inode-stat (same_inode groups -- no hash needed) / mixed (evidence_level 4 shows
    pipeline-tool disagreement -- true doubt, no rows have this today).';
@@ -1699,7 +1699,7 @@ CREATE VIEW diskaudit.v_critical_files AS
 -- Name: VIEW v_critical_files; Type: COMMENT; Schema: diskaudit; Owner: -
 --
 
-COMMENT ON VIEW diskaudit.v_critical_files IS 'Every live regular file matching a diskaudit.critical_patterns rule, any host. Helper view underlying diskaudit.v_backup_coverage -- current critical_patterns seeding matches ~46% of all files (2 broad an external system registry patterns dominate: heimdall evidence, /srv/backups/%), so this is expected to be a multi-million-row set, not a bug.';
+COMMENT ON VIEW diskaudit.v_critical_files IS 'Every live regular file matching a diskaudit.critical_patterns rule, any host. Helper view underlying diskaudit.v_backup_coverage -- can be a very large set when broad critical_patterns are seeded.';
 
 
 --
@@ -1723,7 +1723,7 @@ CREATE VIEW diskaudit.v_backup_coverage AS
 -- Name: VIEW v_backup_coverage; Type: COMMENT; Schema: diskaudit; Owner: -
 --
 
-COMMENT ON VIEW diskaudit.v_backup_coverage IS 'One row per critical file (diskaudit.critical_patterns). is_backed_up=true iff a content-identical (same duplicate_group_id) live copy exists on >=1 OTHER host. duplicate_group_id IS NULL (never deduped) or single-host-only both report is_backed_up=false, covering_hosts=''{}'' -- conservative by design, never silently excluded. As of 2026-07-18: nas-1 has not been deduped yet (0 of its files have a duplicate_group_id) and most NAS shares have not been crawled, so is_backed_up is expected to read false for effectively everything right now -- this is a data-coverage gap, not a view bug (confirmed: zero duplicate_group_id values currently span >1 host, system-wide). Coverage fills in automatically as NAS crawl+dedup work lands, since this is a live view, not a point-in-time report.';
+COMMENT ON VIEW diskaudit.v_backup_coverage IS 'One row per critical file (diskaudit.critical_patterns). is_backed_up=true iff a content-identical (same duplicate_group_id) live copy exists on >=1 OTHER host. duplicate_group_id IS NULL (never deduped) or single-host-only both report is_backed_up=false, covering_hosts=''{}'' -- conservative by design, never silently excluded. Coverage fills in as NAS crawl and dedup work lands; this is a live view, not a point-in-time report.';
 
 
 --
@@ -2888,3 +2888,45 @@ INSERT INTO diskaudit.classification_config (key, value, description) VALUES
     ('stale_atime_threshold_days', '365',
      'atime age (days) beyond which a file is a possibly-obsolete/stale candidate, subject to the load-bearing/decommissioned/critical overrides. Operator-editable; re-read on every classification refresh.')
 ON CONFLICT (key) DO NOTHING;
+
+-- Bit-rot verification (infra126): which changed files are expected to change (mutable) and which must never
+-- change without an alarm (immutable). Applies to every host ('*').
+INSERT INTO diskaudit.mutable_file_registry(host,path_pattern,score,reason,is_regex,pattern_kind,priority)
+VALUES
+('*','^/var/log/',99,'system logs',true,'mutable',10),
+('*','^/var/tmp/',97,'temporary files',true,'mutable',10),
+('*','^/tmp/',97,'temporary files',true,'mutable',10),
+('*','*.sqlite',98,'SQLite database',false,'mutable',20),
+('*','*.sqlite3',98,'SQLite database',false,'mutable',20),
+('*','*.db',98,'database file',false,'mutable',30),
+('*','*.db-wal',99,'SQLite WAL',false,'mutable',20),
+('*','*.db-shm',99,'SQLite shared memory',false,'mutable',20),
+('*','/\.config/(google-chrome|chromium)/',96,'browser profile',true,'mutable',20),
+('*','/\.cache/',96,'user cache',true,'mutable',30),
+('*','/\.git/',95,'Git metadata',true,'mutable',30),
+('*','^/run/',99,'runtime state',true,'mutable',10),
+('*','^/var/run/',99,'runtime state',true,'mutable',10),
+('*','^/var/lib/docker/',95,'container runtime data',true,'mutable',40),
+('*','^/var/lib/postgresql/',99,'PostgreSQL data directory',true,'mutable',10),
+('*','^/etc/hostname$',10,'host identity',true,'immutable',1),
+('*','^/etc/(passwd|group|shadow|gshadow)$',15,'account database',true,'immutable',1),
+('*','^/etc/(fstab|crypttab)$',10,'storage boot configuration',true,'immutable',1),
+('*','^/boot/',10,'boot files',true,'immutable',1),
+('*','^/(usr/)?(bin|sbin)/',10,'system executable',true,'immutable',2),
+('*','^/(usr/)?lib/',10,'system library',true,'immutable',2),
+('*','^/etc/systemd/system/',10,'systemd unit',true,'immutable',1),
+('*','^/etc/cron',10,'scheduler configuration',true,'immutable',1)
+ON CONFLICT(host,path_pattern,reason) DO UPDATE
+SET score=EXCLUDED.score,is_regex=EXCLUDED.is_regex,
+    pattern_kind=EXCLUDED.pattern_kind,priority=EXCLUDED.priority;
+
+-- Bit-rot verification schedule: one row per host and tier. Add your hosts after install, for example:
+--   INSERT INTO diskaudit.hash_verification_sla (host, tier, target_recheck_days, schedule_mode)
+--   SELECT h, t, d, m FROM unnest(ARRAY['server-1','nas-1']) AS h,
+--        (VALUES ('A',7,'weekly'),('B',30,'monthly'),('C',90,'quarterly'),('E',1,'daily')) AS s(t,d,m)
+--   ON CONFLICT (host, tier) DO NOTHING;
+-- Without these rows the monitor's overdue-verification alarm has nothing to check.
+
+-- Populate the materialized views (created empty by the schema dump).
+REFRESH MATERIALIZED VIEW diskaudit.mv_file_status;
+REFRESH MATERIALIZED VIEW diskaudit.mv_dedup_groups_by_host;

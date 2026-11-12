@@ -320,6 +320,8 @@ copy elsewhere (candidates for "is this actually the only copy of this").
 select * from diskaudit.v_nas_orphans limit 50;
 ```
 
+Original deployment only: the view names one NAS host, so `schema/baseline.sql` (new installs) leaves it out.
+
 **Advisory only** — "orphan" here means "only known copy," not "safe to
 delete." No automatic action follows from this label.
 
