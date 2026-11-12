@@ -93,10 +93,6 @@ def name_line(name: str, snap: dict) -> str:
     return "\t".join(["#NAME", name, snap.get("hostname", ""), *(_clean(p) for p in sorted(snap.get("paths") or []))]) + "\n"
 
 
-def _under(path: str, roots: list[str]) -> bool:
-    return any(path == r or path.startswith(r.rstrip("/") + "/") for r in roots)
-
-
 def name_device(name: str) -> str:
     return name.split("_")[1]
 
@@ -116,11 +112,11 @@ def where(lines, pattern: str, device: str | None = None) -> list[dict]:
     found: dict[tuple, dict] = {}
     alive: list[str] | None = None
     covered = 0
-    name_roots: dict[str, list[str]] = {}
+    stream: dict[str, tuple] = {}                         # name -> (host, roots) from #NAME lines
     for ln in lines:
         if ln.startswith("#NAME\t"):
             f = ln.rstrip("\n").split("\t")
-            name_roots[f[1]] = f[3:]
+            stream[f[1]] = (f[2], tuple(f[3:]))
             continue
         if ln.startswith("#ALIVE\t"):
             _, _, cov, names = ln.rstrip("\n").split("\t", 3)
@@ -134,10 +130,11 @@ def where(lines, pattern: str, device: str | None = None) -> list[dict]:
         name, ev, dev, path, size, mtime = parts
         if pat not in path.lower() or (device and dev != device.upper()):
             continue
-        key = (dev, path, size, mtime)
+        st_ = stream.get(name)                            # None for 2.2.0 lines without #NAME
+        key = (dev, st_, path, size, mtime)               # review S1: a version belongs to one stream
         if ev == "ADDED":
             found[key] = {"device": dev, "path": path, "size": int(size), "mtime": int(mtime),
-                          "first": name, "gone": ""}
+                          "first": name, "gone": "", "_stream": st_}
         elif ev == "GONE" and key in found:
             found[key]["gone"] = name
     for r in found.values():
@@ -147,7 +144,9 @@ def where(lines, pattern: str, device: str | None = None) -> list[dict]:
             r["held_by"] = None                           # not checked yet: unknown, never "pruned"
             continue
         r["held_by"] = sorted((n for n in alive if name_device(n) == r["device"] and lo <= name_number(n) < hi
-                               and (n not in name_roots or _under(r["path"], name_roots[n]))), key=name_number)
+                               and stream.get(n) == r["_stream"]), key=name_number)
+    for r in found.values():
+        del r["_stream"]
     return sorted(found.values(), key=lambda r: (not r["held_by"], r["device"], r["path"], r["mtime"]))
 
 

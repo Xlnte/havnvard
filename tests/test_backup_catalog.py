@@ -200,4 +200,36 @@ def test_two_streams_in_one_repo_are_diffed_separately(hub):
     assert not any("\tGONE\t" in ln for ln in lines)
     bob = catalog.where(lines, "bob.txt")
     assert len(bob) == 1 and len(bob[0]["held_by"]) == 2                    # the two data-stream backups only
-    assert all(catalog._under(bob[0]["path"], [str(data)]) for _ in [0])
+
+
+def _nm(name, host, *roots):
+    return "\t".join(["#NAME", name, host, *roots]) + "\n"
+
+
+def test_where_paths_change_starts_a_new_stream_old_version_not_held_by_it():
+    """Review S1 repro A: app paths change -> new stream; v1 (old stream) is never held by new-stream backups."""
+    t = dt.datetime(2026, 11, 20, tzinfo=dt.timezone.utc)
+    log = [catalog.HEADER,
+           _nm("20261101_SPARK_000001", "spark-20cf", "/srv/a"),
+           catalog.event_lines("20261101_SPARK_000001", "SPARK", [("/srv/a/f", 1, 1)], []),
+           _nm("20261110_SPARK_000003", "spark-20cf", "/srv/a", "/srv/b"),
+           catalog.event_lines("20261110_SPARK_000003", "SPARK", [("/srv/a/f", 2, 2)], []),
+           _nm("20261111_SPARK_000004", "spark-20cf", "/srv/a", "/srv/b"),
+           catalog.alive_line(t, 4, ["20261110_SPARK_000003", "20261111_SPARK_000004"])]
+    held = {h["size"]: h["held_by"] for h in catalog.where("".join(log).splitlines(True), "/srv/a/f")}
+    assert held == {1: [], 2: ["20261110_SPARK_000003", "20261111_SPARK_000004"]}
+
+
+def test_where_nested_streams_do_not_overwrite_each_other():
+    """Review S1 repro B: streams /srv and /srv/x both hold /srv/x/f; A logs it GONE at 5, B still holds it."""
+    t = dt.datetime(2026, 11, 20, tzinfo=dt.timezone.utc)
+    f = [("/srv/x/f", 9, 9)]
+    log = [catalog.HEADER,
+           _nm("20261101_SPARK_000001", "h", "/srv"), catalog.event_lines("20261101_SPARK_000001", "SPARK", f, []),
+           _nm("20261101_SPARK_000002", "h", "/srv/x"), catalog.event_lines("20261101_SPARK_000002", "SPARK", f, []),
+           _nm("20261102_SPARK_000005", "h", "/srv"), catalog.event_lines("20261102_SPARK_000005", "SPARK", [], f),
+           _nm("20261102_SPARK_000006", "h", "/srv/x"),
+           catalog.alive_line(t, 6, ["20261101_SPARK_000001", "20261101_SPARK_000002",
+                                     "20261102_SPARK_000005", "20261102_SPARK_000006"])]
+    held = sorted(tuple(h["held_by"]) for h in catalog.where("".join(log).splitlines(True), "/srv/x/f"))
+    assert held == [("20261101_SPARK_000001",), ("20261101_SPARK_000002", "20261102_SPARK_000006")]
