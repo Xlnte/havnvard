@@ -83,6 +83,20 @@ def name_number(name: str) -> int:
     return int(name.rsplit("_", 1)[1])
 
 
+def group_key(snap: dict) -> str:
+    """restic's prune grouping (host + paths): one backup stream."""
+    return snap.get("hostname", "") + "|" + "|".join(sorted(snap.get("paths") or []))
+
+
+def name_line(name: str, snap: dict) -> str:
+    """'#NAME' line: which folders a named backup covers, so `where` only counts backups of the same stream."""
+    return "\t".join(["#NAME", name, snap.get("hostname", ""), *(_clean(p) for p in sorted(snap.get("paths") or []))]) + "\n"
+
+
+def _under(path: str, roots: list[str]) -> bool:
+    return any(path == r or path.startswith(r.rstrip("/") + "/") for r in roots)
+
+
 def name_device(name: str) -> str:
     return name.split("_")[1]
 
@@ -102,7 +116,12 @@ def where(lines, pattern: str, device: str | None = None) -> list[dict]:
     found: dict[tuple, dict] = {}
     alive: list[str] | None = None
     covered = 0
+    name_roots: dict[str, list[str]] = {}
     for ln in lines:
+        if ln.startswith("#NAME\t"):
+            f = ln.rstrip("\n").split("\t")
+            name_roots[f[1]] = f[3:]
+            continue
         if ln.startswith("#ALIVE\t"):
             _, _, cov, names = ln.rstrip("\n").split("\t", 3)
             alive, covered = names.split(), int(cov)
@@ -127,8 +146,8 @@ def where(lines, pattern: str, device: str | None = None) -> list[dict]:
         if alive is None or lo > covered:
             r["held_by"] = None                           # not checked yet: unknown, never "pruned"
             continue
-        r["held_by"] = sorted((n for n in alive if name_device(n) == r["device"] and lo <= name_number(n) < hi),
-                              key=name_number)
+        r["held_by"] = sorted((n for n in alive if name_device(n) == r["device"] and lo <= name_number(n) < hi
+                               and (n not in name_roots or _under(r["path"], name_roots[n]))), key=name_number)
     return sorted(found.values(), key=lambda r: (not r["held_by"], r["device"], r["path"], r["mtime"]))
 
 
@@ -373,51 +392,55 @@ def catalog_run(first_run_latest_only: bool = True, recover: bool = False) -> in
 
     named = 0
     for repo, env in envs.items():
-        if env is None:
+        if env is None or repo not in snap_cache:
             continue
         dev = device_label(repo)
-        dst = st["devices"].get(repo, {})
-        if repo not in snap_cache:
-            continue
-        snaps = data_snapshots(snap_cache[repo])
-        last = parse_time(dst["last_time"]) if dst.get("last_time") else None
-        todo = [s for s in snaps if last is None or parse_time(s["time"]) > last]
-        if last is None and first_run_latest_only:
-            todo = todo[-1:]   # older snapshots age out under prune; naming them would only burn numbers
-        prev = _read_live(_live_path(repo, dst["live"])) if dst.get("live") else {}
-        for s in todo:
-            try:
-                cur = listing(restic, env, s["id"])
-            except BackupError as e:
-                problems.append(f"{repo}: {e}")
-                break
-            st["counter"] += 1
-            name = make_name(parse_time(s["time"]), dev, st["counter"])
-            added, gone = diff(prev, cur)
-            ref = f"{st['counter']:06d}"
-            _write_live(_live_path(repo, ref), cur)
-            with open(cat, "a", encoding="utf-8", errors="surrogateescape") as f:
-                f.write(event_lines(name, dev, added, gone))
-                f.flush()
-                os.fsync(f.fileno())
-            old_live = dst.get("live")
-            dst = {"last_time": s["time"], "last_name": name, "live": ref}
-            st["devices"][repo] = dst
-            st["catalog_bytes"] = cat.stat().st_size
-            item = [s["id"], name, repo, s["time"]]
-            st["untagged"].append(item)
-            _save_state(st)                                   # commit point
-            if old_live and _live_path(repo, old_live).is_file():
-                os.remove(_live_path(repo, old_live))
-            prev = cur
-            named += 1
-            print(f"catalog: {name} = {repo} snapshot {s['id'][:8]} (+{len(added)} / -{len(gone)})")
-            try:
-                _tag(restic, env, s["id"], name, s["time"])
-                st["untagged"].remove(item)
-                _save_state(st)
-            except BackupError as e:
-                problems.append(f"{repo}: {e}")
+        # One stream per (host, paths): a repo may hold many (Spark: one per app). Diffing across streams would
+        # log every file as GONE and ADDED (review finding 9), so state and diffs are per stream.
+        streams: dict[str, list[dict]] = {}
+        for s in data_snapshots(snap_cache[repo]):
+            streams.setdefault(group_key(s), []).append(s)
+        rstate = st["devices"].setdefault(repo, {})
+        for gk, snaps in sorted(streams.items()):
+            dst = rstate.get(gk, {})
+            last = parse_time(dst["last_time"]) if dst.get("last_time") else None
+            todo = [s for s in snaps if last is None or parse_time(s["time"]) > last]
+            if last is None and first_run_latest_only:
+                todo = todo[-1:]   # older snapshots age out under prune; naming them would only burn numbers
+            prev = _read_live(_live_path(repo, dst["live"])) if dst.get("live") else {}
+            for s in todo:
+                try:
+                    cur = listing(restic, env, s["id"])
+                except BackupError as e:
+                    problems.append(f"{repo}: {e}")
+                    break
+                st["counter"] += 1
+                name = make_name(parse_time(s["time"]), dev, st["counter"])
+                added, gone = diff(prev, cur)
+                ref = f"{st['counter']:06d}"
+                _write_live(_live_path(repo, ref), cur)
+                with open(cat, "a", encoding="utf-8", errors="surrogateescape") as f:
+                    f.write(name_line(name, s) + event_lines(name, dev, added, gone))
+                    f.flush()
+                    os.fsync(f.fileno())
+                old_live = dst.get("live")
+                dst = {"last_time": s["time"], "last_name": name, "live": ref}
+                rstate[gk] = dst
+                st["catalog_bytes"] = cat.stat().st_size
+                item = [s["id"], name, repo, s["time"]]
+                st["untagged"].append(item)
+                _save_state(st)                                   # commit point
+                if old_live and _live_path(repo, old_live).is_file():
+                    os.remove(_live_path(repo, old_live))
+                prev = cur
+                named += 1
+                print(f"catalog: {name} = {repo} {gk} snapshot {s['id'][:8]} (+{len(added)} / -{len(gone)})")
+                try:
+                    _tag(restic, env, s["id"], name, s["time"])
+                    st["untagged"].remove(item)
+                    _save_state(st)
+                except BackupError as e:
+                    problems.append(f"{repo}: {e}")
 
     # Per repo: names that still exist. A repo this run could not read keeps its last known names, so a
     # partial view never marks anything pruned (review round 2, R1).

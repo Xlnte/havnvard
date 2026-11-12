@@ -181,3 +181,23 @@ def test_alive_written_even_when_one_repo_is_unreadable(hub):
     assert any(ln.startswith("#ALIVE\t") for ln in lines)
     hits = catalog.where(lines, "bob.txt")
     assert hits and all(h["held_by"] for h in hits)                        # current backup is held, not "pruned"
+
+
+@needs_restic
+def test_two_streams_in_one_repo_are_diffed_separately(hub):
+    """Review finding 9: Spark's repo holds one stream per app (host + paths). Alternating backups of two folders
+    must not log each other's files as GONE, and `where` counts only backups of the file's own stream."""
+    data, root, pdir = hub
+    other = data.parent / "other"
+    other.mkdir()
+    (other / "alice.txt").write_text("a\n")
+    restic(root / "dev_1", pdir / "dev_1.pass", "backup", str(other))
+    assert catalog.catalog_run() == 0
+    restic(root / "dev_1", pdir / "dev_1.pass", "backup", str(data))       # no change in the data stream
+    restic(root / "dev_1", pdir / "dev_1.pass", "backup", str(other))      # no change in the other stream
+    assert catalog.catalog_run() == 0
+    lines = catalog.catalog_path().read_text().splitlines(True)
+    assert not any("\tGONE\t" in ln for ln in lines)
+    bob = catalog.where(lines, "bob.txt")
+    assert len(bob) == 1 and len(bob[0]["held_by"]) == 2                    # the two data-stream backups only
+    assert all(catalog._under(bob[0]["path"], [str(data)]) for _ in [0])
