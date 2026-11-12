@@ -2,12 +2,12 @@
  * forge-chrome.js — FORGE_CHROME_VERSION 1.0.0
  *
  * THE single markup renderer for the shared FORGE header/footer chrome.
- * SoT: /home/parker/spark-fleet/libs/forge_core/static/forge-chrome.js
+ * SoT: (upstream forge_core)
  * (consumer apps carry a vendored copy under <static>/forge-chrome/ —
  * synced by forge_core/scripts/sync_chrome.py, never hand-edited).
  *
  * Ratified: PRESCAB full cabinet 2026-08-17 (10/10 YES, 3/3 rounds,
- * /home/parker/cabinet-runs/20260816-forge-chrome-evolution/), evolving the
+ * (upstream forge_core)), evolving the
  * 2026-08-01 chrome ruling. Spec:
  * /srv/forge/modules/ivaldi/docs/SPEC_forge_shared_chrome_20260811.md §3-§4, §6.
  *
@@ -35,8 +35,8 @@
   if (window.ForgeChrome) { return; } // idempotent under double-include
 
   var FORGE_CHROME_VERSION = '1.0.0';
-  var THOTH_URL = 'https://spark-20cf.tail5f354b.ts.net:8888';
-  var DEFAULT_SUPPORT_URL = 'mailto:parkerfairfield@gmail.com?subject=FORGE%20feedback';
+  var THOTH_URL = '';            // HavnVard public copy: no default; pass cfg.thothUrl to show the link
+  var DEFAULT_SUPPORT_URL = '';  // HavnVard public copy: no default; pass cfg.supportUrl to show the link
   var THEME_KEY = 'forge-theme'; // ONE fleet-wide key (spec §4.2) — follows you across apps
   var DEFAULT_MODULES_URL = '/chrome/modules.json';
 
@@ -256,6 +256,17 @@
     return hdr;
   }
 
+  function footerLinks(cfg) {
+    var links = [];
+    var registry = cfg.thothUrl || THOTH_URL;
+    var support = cfg.supportUrl || DEFAULT_SUPPORT_URL;
+    if (registry) {
+      links.push('<a href="' + esc(registry) + '" target="_blank" rel="noopener">what else is running</a>');
+    }
+    if (support) { links.push('<a href="' + esc(support) + '">feedback</a>'); }
+    return links.join(' · ');
+  }
+
   function buildFooter(cfg) {
     var ftr = el('footer', 'forge-ftr');
     if (cfg.moduleKey) { ftr.setAttribute('data-module', cfg.moduleKey); }
@@ -263,12 +274,7 @@
     var version = cfg.version ? ' · ' + esc(cfg.version) : '';
     ftr.innerHTML = '<span>' + name + version + '</span>'
       + '<span class="forge-ftr-items"></span>'
-      + '<span>'
-      + '<a href="' + esc(cfg.thothUrl || THOTH_URL) + '" target="_blank" rel="noopener">'
-      + 'THOTH — what else is running</a>'
-      + ' · '
-      + '<a href="' + esc(cfg.supportUrl || DEFAULT_SUPPORT_URL) + '">feedback</a>'
-      + '</span>';
+      + '<span>' + footerLinks(cfg) + '</span>';
     adoptSlot(cfg.slots && cfg.slots.footerItems, ftr.querySelector('.forge-ftr-items'));
     return ftr;
   }
@@ -294,7 +300,7 @@
    * command palette (Ctrl+K / Cmd+K) — additive, own state, feature-    *
    * flagged. Search space = live modules list + appNav entries.         *
    * Behavior ported from the cabinet-selected Concept B mockup          *
-   * (/home/parker/runbooks/20260816-forge-shell-mockups/concept-b-topbar/). *
+   * ((upstream forge_core)). *
    * ------------------------------------------------------------------ */
   function ensurePalette() {
     if (pal || !paletteEnabled) { return; }

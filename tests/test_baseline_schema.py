@@ -37,7 +37,7 @@ def test_committed_baseline_is_complete():
     assert text.startswith("-- HavnVard database schema: baseline")
     assert "CREATE SCHEMA diskaudit;" in text
     assert "\\restrict" not in text
-    assert "DEFAULT 'spark" not in text
+    assert not re.search(r"host text DEFAULT", text)
     assert "INSERT INTO diskaudit.backup_scope_rules" in text  # seed appended
 
 
@@ -65,26 +65,31 @@ CREATE VIEW diskaudit.v_nas_orphans AS SELECT 1;
 -- Name: TABLE files; Type: COMMENT; Schema: diskaudit; Owner: -
 --
 
-COMMENT ON TABLE diskaudit.files IS 'scanned on spark-20cf by PAF, see /home/someone/runbooks/x.md';
+COMMENT ON TABLE diskaudit.files IS 'scanned on zebra-box by Zed, see /home/someone/runbooks/x.md';
 """
 
 
+# A made-up site's private rules (the real ones live in the operator's private file, never in the repo).
+RULES = [("zebra-box", "server-1"), (r"\bZed\b", "the operator"), ("okapi-nas", None)]
+
+
 def test_generator_strips_defaults_drops_host_view_and_rewrites_comments():
-    out = mbs.build(_DUMP.replace("HOSTNAME", "generic"), [])
+    out = mbs.build(_DUMP.replace("HOSTNAME", "generic"), RULES)
     assert "host text NOT NULL" in out
     assert "v_nas_orphans" not in out
     assert "scanned on server-1 by the operator, see the project runbook" in out
-    assert mbs.leaks(out, []) == []
+    assert mbs.leaks(out, RULES) == []
 
 
 def test_generator_refuses_a_site_name_in_code():
-    out = mbs.build(_DUMP.replace("HOSTNAME", "nas-ts453a"), [])
-    assert mbs.leaks(out, [])  # a name inside a view body is code, never silently rewritten
+    out = mbs.build(_DUMP.replace("HOSTNAME", "okapi-nas"), RULES)
+    assert mbs.leaks(out, RULES)  # a name inside a view body is code, never silently rewritten
 
 
-def test_generator_honours_extra_site_names():
-    out = mbs.build(_DUMP.replace("HOSTNAME", "generic").replace("spark-20cf", "zebra-box"), ["zebra-box"])
-    assert "zebra-box" not in out
+def test_site_rules_file_format(tmp_path):
+    f = tmp_path / "rules.txt"
+    f.write_text("# comment\n\nzebra-box => server-1\nokapi-nas\n", encoding="utf-8")
+    assert mbs.read_site_rules(str(f)) == [("zebra-box", "server-1"), ("okapi-nas", None)]
 
 
 def test_baseline_builds_schema_on_scratch_database():
@@ -124,18 +129,21 @@ def test_baseline_builds_schema_on_scratch_database():
 
 
 def test_leak_check_is_case_insensitive():
-    for name in ("NAS-TS453A", "Spark-20CF", "Spark NVMe", "Plane INFRA-98", "Heimdall"):
-        assert mbs.leaks(f"COMMENT ON TABLE t IS '{name}';", []), name
-    assert mbs.leaks("spark_path text, idx_x_spark, 'trigkey-agent'", []) == []  # code contract names allowed
+    rules = RULES + [(r"\bzebra\b(?!-agent)", None)]
+    for name in ("ZEBRA-BOX", "Okapi-NAS", "Plane INFRA-98", "/home/Zed"):
+        assert mbs.leaks(f"COMMENT ON TABLE t IS '{name}';", rules), name
+    assert mbs.leaks("zebra_path text, idx_x_zebra, 'zebra-agent'", rules) == []  # code contract names allowed
 
 
 def test_refusal_never_empties_the_output_file(tmp_path):
     dump = tmp_path / "dump.sql"
-    dump.write_text(_DUMP.replace("HOSTNAME", "nas-ts453a"), encoding="utf-8")
+    dump.write_text(_DUMP.replace("HOSTNAME", "okapi-nas"), encoding="utf-8")
+    rules = tmp_path / "rules.txt"
+    rules.write_text("okapi-nas\n", encoding="utf-8")
     out = tmp_path / "baseline.sql"
     out.write_text("previous good baseline", encoding="utf-8")
     r = subprocess.run([sys.executable, os.path.join(REPO_ROOT, "scripts", "make_baseline_schema.py"), str(dump),
-                        "-o", str(out)], capture_output=True, text=True)
+                        "--site-names", str(rules), "-o", str(out)], capture_output=True, text=True)
     assert r.returncode == 1 and "refusing" in r.stderr
     assert out.read_text(encoding="utf-8") == "previous good baseline"
 

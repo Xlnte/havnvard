@@ -1,8 +1,4 @@
 # Provenance
 
-Fresh-history copy for GHY-112 (Xlnte cutover).
-
-- Source path: /opt/havnvard
-- Source ref: havnvard-dedup-ui-fixes-20260725
-- Source commit: cbf30a37d2021156e5c1e1cb5ac0c6fb987e14bc
-- Copied: 2026-11-12T03:59:49Z
+HavnVard was developed privately from July 2026 and published with a fresh history at version 3.1.1. The private
+development history stays with the authors; it holds deployment-specific names, not code that differs from this one.

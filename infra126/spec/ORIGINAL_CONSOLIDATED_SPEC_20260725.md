@@ -658,7 +658,7 @@ removed `clip` user home, etc.), not just "large and cold."
 - **INFRA-134** [urgent] No backup coverage for ChromaDB vector stores — MUNINN's was **unrecoverable** ← requires verification strategy
 - **INFRA-115** [high] No QNAP snapshots configured — zero protection vs deletion/corruption/ransomware
 - **INFRA-116** [high] NAS SSH password-only, no passwordless sudo — blocks unattended SMART/mdadm
-- **INFRA-117** [high] `bkup_spark` partially stale — 6 restic repos untouched since 2026-07-19, legacy rotation stopped April
+- **INFRA-117** [high] `bkup_server` partially stale — 6 restic repos untouched since 2026-07-19, legacy rotation stopped April
 - **INFRA-96** [urgent] Offsite NAS replication down ~1 day — DB backups local-only
 - **INFRA-76** [urgent] Comprehensive off-machine backup coverage (local-only paths/devices)
 - **INFRA-124** [high] Weekly CRM backup retention silently broken — 15 tarballs survived a keep-12 policy

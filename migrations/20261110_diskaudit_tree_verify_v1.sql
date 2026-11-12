@@ -1,5 +1,5 @@
 -- HavnVard 1.5.0 -- full-byte tree verification before deletion (verify_tree.py)
--- Date: 2026-11-10 · Plane INFRA-538 · Runbook: /home/parker/runbooks/20261110-havnvard-full-hash/
+-- Date: 2026-11-10 · Plane INFRA-538 · Runbook: /home/alice/runbooks/20261110-havnvard-full-hash/
 --
 -- Additive + idempotent. Widens integrity_checks.verdict (adds extra_dest, not_verified),
 -- adds integrity_checks.basis ('fresh' = both sides hashed in this run; 'stored' = a digest

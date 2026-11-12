@@ -77,7 +77,7 @@ def test_require_dsn_refuses_builtin_fallback(site_file, monkeypatch):
 
 
 @pytest.mark.parametrize("text,key", [
-    ('[load_bearing]\ncrontab_users="parker"\n', "crontab_users"),
+    ('[load_bearing]\ncrontab_users="alice"\n', "crontab_users"),
     ('[scan]\nextra_excludes="/mnt/x"\n', "extra_excludes"),
     ('[report]\napp_prefixes=[["/a"]]\n', "app_prefixes"),
 ])

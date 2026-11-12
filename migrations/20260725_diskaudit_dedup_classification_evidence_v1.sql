@@ -1,10 +1,10 @@
 -- diskaudit — HavnVard dedup UI: classification badge + evidence-strength ladder
--- Date: 2026-07-25 · Owner: PAF · Runbook: /home/parker/runbooks/20260725-havnvard-dedup-ui-fixes/RUNBOOK.md
+-- Date: 2026-07-25 · Owner: the operator · Runbook: /home/alice/runbooks/20260725-havnvard-dedup-ui-fixes/RUNBOOK.md
 --
 -- WHY: three defects on the live /havnvard/dedup view (owner report, 2026-07-25):
 --   1. No OS/application/load-bearing classification badge — the machinery
 --      (critical_patterns, load_bearing_paths, mv_file_status, decommissioned_path_patterns)
---      already exists and was simply never surfaced on this view. Worst on nas-ts453a,
+--      already exists and was simply never surfaced on this view. Worst on nas-1,
 --      whose duplicate groups are full of QNAP system-generated artifacts
 --      (@Recycle, @Recently-Snapshot, .qsync, .qpkg, .streams sidecar dirs, Thumbs.db,
 --      .DS_Store) that critical_patterns had ZERO coverage for (verified: 0 of 37 rows
@@ -25,7 +25,7 @@ BEGIN;
 
 -- ============================================================================================
 -- 1. diskaudit.critical_patterns — add a `category` column so a matched pattern can be told
---    apart as 'application' (existing 37 thoth_census rows — Spark-hosted modules/apps) vs
+--    apart as 'application' (existing 37 thoth_census rows — server-hosted modules/apps) vs
 --    'os_system' (new: QNAP system-managed directories on the NAS data share). Nullable-safe
 --    default keeps every existing row + consumer (mv_file_status.is_critical) unchanged.
 -- ============================================================================================
@@ -43,23 +43,23 @@ BEGIN
     END IF;
 END $$;
 
--- New QNAP / NAS os_system + application coverage (data, not code — PAF's explicit
--- instruction). Inspected live 2026-07-25 against nas-ts453a's actual crawled paths
+-- New QNAP / NAS os_system + application coverage (data, not code — the operator's explicit
+-- instruction). Inspected live 2026-07-25 against nas-1's actual crawled paths
 -- (only /share/CACHEDEV1_DATA/* is reachable, QNAP firmware partition itself is not
 -- crawled) — these are the QNAP-generated system/app directories actually present:
 --   .qpkg (33 files)      — QNAP app-package install dir on the data volume
 --   .qsync (16 files)     — Qsync sync-client state
 --   @Recycle (33 files)   — QNAP-managed recycle bin (system-managed, not raw user delete)
 --   @Recently-Snapshot (27 files) — QNAP snapshot cache directory
---   bkup_spark (778,687 files, 946GB) — deliberate Spark app/DB backup archives, already
---   named/registered per-app in this same table (crm, paperclip, linkedin-agent, ...);
+--   bkup_server (778,687 files, 946GB) — deliberate server app/DB backup archives, already
+--   named/registered per-app in this same table (crm, oldapp, linkedin-agent, ...);
 --   classified 'application' at the share level rather than duplicating every app name.
 INSERT INTO diskaudit.critical_patterns (pattern, label, source, category) VALUES
     ('%/.qpkg/%',               'QNAP app-package install directory (QTS-managed)',            'manual', 'os_system'),
     ('%/.qsync/%',              'Qsync Central sync-client state directory (QTS-managed)',      'manual', 'os_system'),
     ('%/@Recycle/%',            'QNAP recycle bin (QTS-managed, not a raw user delete)',        'manual', 'os_system'),
     ('%/@Recently-Snapshot/%',  'QNAP snapshot cache directory (QTS-managed)',                  'manual', 'os_system'),
-    ('/share/CACHEDEV1_DATA/bkup_spark/%', 'Spark app/DB backup archives (NAS bkup_spark share, deliberate, not stray dupes)', 'manual', 'application')
+    ('/share/CACHEDEV1_DATA/bkup_server/%', 'server app/DB backup archives (NAS bkup_server share, deliberate, not stray dupes)', 'manual', 'application')
 ON CONFLICT (pattern) DO NOTHING;
 
 -- ============================================================================================
@@ -93,19 +93,19 @@ INSERT INTO diskaudit.file_category_patterns (pattern, category, label, source) 
     ('/var/tmp/%',     'cache_temp', 'Unix /var/tmp', 'manual'),
     ('%/__pycache__/%','cache_temp', 'Python bytecode cache (regenerable)', 'manual'),
     ('%/.cache/%',     'cache_temp', 'XDG user cache directory (regenerable)', 'manual'),
-    -- user_data: recognized human-content areas (NAS shares + Spark/trigkey home dirs).
+    -- user_data: recognized human-content areas (NAS shares + server/agent-1 home dirs).
     ('/share/CACHEDEV1_DATA/homes/%',      'user_data', 'NAS per-user home share', 'manual'),
-    ('/share/CACHEDEV1_DATA/PAFOther/%',   'user_data', 'NAS PAFOther share', 'manual'),
+    ('/share/CACHEDEV1_DATA/Share1/%',   'user_data', 'NAS Share1 share', 'manual'),
     ('/share/CACHEDEV1_DATA/Public/%',     'user_data', 'NAS Public share', 'manual'),
     ('/share/CACHEDEV1_DATA/Multimedia/%', 'user_data', 'NAS Multimedia share', 'manual'),
     ('/share/CACHEDEV1_DATA/Download/%',   'user_data', 'NAS Download share', 'manual'),
     ('/share/CACHEDEV1_DATA/bittorrents/%','user_data', 'NAS bittorrents share', 'manual'),
     ('/share/CACHEDEV1_DATA/Recordings/%', 'user_data', 'NAS Recordings share', 'manual'),
     ('/share/CACHEDEV1_DATA/Web/%',        'user_data', 'NAS Web share', 'manual'),
-    ('/home/parker/%',  'user_data', 'Spark parker home directory', 'manual'),
-    ('/home/nemo/%',    'user_data', 'Spark nemo home directory', 'manual'),
-    ('/home/clip/%',    'user_data', 'Spark clip home directory', 'manual'),
-    ('/home/sandbox/%', 'user_data', 'Spark sandbox home directory', 'manual')
+    ('/home/alice/%',  'user_data', 'server alice home directory', 'manual'),
+    ('/home/bob/%',    'user_data', 'server bob home directory', 'manual'),
+    ('/home/carol/%',    'user_data', 'server clip home directory', 'manual'),
+    ('/home/dave/%', 'user_data', 'server sandbox home directory', 'manual')
 ON CONFLICT (pattern, category) DO NOTHING;
 
 COMMIT;
@@ -117,7 +117,7 @@ COMMIT;
 --                               decommissioned > load_bearing > os_system > application >
 --                               cache_temp > user_data > unknown. "Worst case wins" so a
 --                               group is never mislabeled friendlier than its most
---                               sensitive member (verified 2026-07-25: 0 of nas-ts453a's
+--                               sensitive member (verified 2026-07-25: 0 of nas-1's
 --                               groups have members split across different top-level
 --                               shares, so this is not a lossy approximation in practice).
 --      evidence_level         — smallint 1..7, strongest to weakest:
@@ -277,7 +277,7 @@ COMMENT ON COLUMN diskaudit.mv_dedup_groups_by_host.evidence_level IS
   '1=byte_identical (not yet available) 2=sha256_both 3=sha256_rdfind 4=same_inode (hardlink,
    0 reclaim, checked before 2/3) 5=path_size_mtime 6=size_only 7=none. Strongest to weakest.';
 COMMENT ON COLUMN diskaudit.mv_dedup_groups_by_host.evidence_provenance IS
-  'Who computed the evidence: nas-native (QNAP BusyBox sha256sum) / local (Spark NVMe) /
+  'Who computed the evidence: nas-native (QNAP BusyBox sha256sum) / local (server NVMe) /
    trigkey-agent / rdfind-pipeline (rdfind''s own local hashing, no cross-host agent) /
    inode-stat (same_inode groups -- no hash needed) / mixed (evidence_level 4 shows
    pipeline-tool disagreement -- true doubt, no rows have this today).';

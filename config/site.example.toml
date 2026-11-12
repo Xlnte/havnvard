@@ -12,6 +12,7 @@ sources = ["server-1", "laptop-1"]   # machines whose files need a backup (the N
 [nas]
 ssh_target = "backup@nas-1.example"
 share_base = "/share/CACHEDEV1_DATA"     # QNAP default volume
+# backup_tree_prefix = "/share/CACHEDEV1_DATA/backups/"   # NAS folder holding backup replicas; never the dedup keeper
 admin_token_file = "/etc/havnvard/nas_admin.env"
 backup_token_file = "/etc/havnvard/nas_backup.env"
 

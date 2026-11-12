@@ -2,10 +2,24 @@
 
 **Know that every file you care about is backed up, prove the backups restore, and find any file in any backup.**
 HavnVard is a self-hosted storage-assurance toolkit for a home or small-office fleet: a few Linux machines, a NAS and
-a cloud account. Version 3.1.0.
+a cloud account. Version 3.1.1.
 
 > **Absolute rule: HavnVard never deletes, moves or overwrites a scanned file.** Every "duplicate", "stale" or
 > "not backed up" result is a report for you to read. Deleting anything is always your decision, made by hand.
+
+## Example setup: the home network it was built for
+
+HavnVard was built for, and runs every day on, one family's home network:
+
+- **An NVIDIA DGX Spark** as the always-on server. It runs the database, the web pages and the scheduled scans.
+- **A QNAP NAS** as the local backup target. HavnVard also inventories it with the NAS's own BusyBox tools, so no
+  extra software has to be installed on the NAS.
+- **Several family members' computers** around the house, each enrolled as a backup client.
+- **Every machine runs Ubuntu Linux** today.
+- **Tailscale** joins them all into one private network, so every device can reach the hub and be checked, wherever
+  in the world it is, without opening ports on the home router.
+
+Nothing in the code depends on this exact hardware: the names of your machines, NAS and shares go in your site file.
 
 ## What it does (most valuable first)
 
@@ -36,7 +50,7 @@ Everything that differs between installations lives in one TOML file: `/etc/havn
 It names your hosts (the local machine, the NAS, remote "agent" machines), the database env file, the NAS and the
 optional alert/report integrations. **It never holds a password:** it names the files that hold them.
 
-## Known limits in 3.1.0
+## Known limits in 3.1.1
 
 * `migrations/` is the change history of the original deployment, not an install path; new sites use
   `schema/baseline.sql` (see "Database").
@@ -168,7 +182,7 @@ example with Syncthing, Immich or a cable copy) and include that folder in `--pa
 Systemd timers (all on the server):
 - `diskaudit-scan.timer` — daily 08:00, full local scan
 - `diskaudit-nas-crawl.timer` — every 4 h at :20 (00/04/08/12/16/20), full NAS crawl (all shares)
-- `diskaudit-nas-dedup.timer` — weekly Sunday 02:00, NAS within-host dedup with `bkup_spark` excluded (installed; enabled only after the release gate passes once)
+- `diskaudit-nas-dedup.timer` — weekly Sunday 02:00, NAS within-host dedup with `bkup_server` excluded (installed; enabled only after the release gate passes once)
 - `diskaudit-monitor.timer` — every 5 min, health check + TG alerting
 - `diskaudit-prescab-review.timer` — weekly, Sunday 18:00 UTC
 - `diskaudit-load-bearing-refresh.timer`, `diskaudit-classification-refresh.timer` — periodic classification-layer refresh
@@ -235,6 +249,30 @@ system's reports.
 bytes were proven equal to the kept copy in the same run: `verify_tree.py` (rows with
 `basis='fresh'`) or the delete script's own in-run rehash. Size, mtime, a partial hash or a
 digest read back from `diskaudit.files` (`basis='stored'`, crosshost `match`) never count.
+
+## Credits
+
+HavnVard is glue and safety rules around excellent open-source tools. It does not copy their code; it runs them or
+imports them as ordinary dependencies, under their own licenses.
+
+| Project | What HavnVard uses it for | License |
+|---|---|---|
+| [restic](https://github.com/restic/restic) | Every backup: encrypted, deduplicated snapshots, `check`, `restore` | BSD-2-Clause |
+| [rest-server](https://github.com/restic/rest-server) | The hub's append-only repository server | BSD-2-Clause |
+| [rclone](https://github.com/rclone/rclone) | Offsite copy to Google Drive, OneDrive, Internxt or any other remote | MIT |
+| [PostgreSQL](https://www.postgresql.org/) | The inventory database | PostgreSQL License |
+| [psycopg](https://github.com/psycopg/psycopg) | Python access to PostgreSQL | LGPL-3.0 |
+| [rdfind](https://github.com/pauldreik/rdfind) | Fast duplicate finding on Linux hosts (run as a separate program) | GPL-2.0-or-later |
+| [BusyBox](https://busybox.net/) | `find`, `stat` and `sha256sum` on the NAS (the NAS's own copy; nothing installed) | GPL-2.0 |
+| [FastAPI](https://github.com/fastapi/fastapi), [Uvicorn](https://github.com/encode/uvicorn) | The web pages | MIT, BSD-3-Clause |
+| [Jinja2](https://github.com/pallets/jinja), [MarkupSafe](https://github.com/pallets/markupsafe) | Page templates | BSD-3-Clause |
+| [asyncpg](https://github.com/MagicStack/asyncpg) | Database access for the web pages | Apache-2.0 |
+| [pytest](https://github.com/pytest-dev/pytest) | The test suite | MIT |
+| [Tailscale](https://tailscale.com/) | Optional: the private network between machines (the setup above) | BSD-3-Clause (client) |
+| [Grafana](https://github.com/grafana/grafana) | Optional: dashboards over the same database | AGPL-3.0 |
+
+Thanks to the people who build and maintain them. The web-page header and footer (`webapp/app/static/forge-chrome/`)
+come from the authors' own UI kit.
 
 ## License
 

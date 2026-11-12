@@ -1,6 +1,6 @@
 -- diskaudit v2 — cross-host content-hash verification (crosshost_verify.py)
--- Date: 2026-07-25 · Owner: PAF · Plan: crosshost NAS-integrity build
--- Runbook: /home/parker/runbooks/20260725-havnvard-crosshost-integrity/RUNBOOK.md
+-- Date: 2026-07-25 · Owner: the operator · Plan: crosshost NAS-integrity build
+-- Runbook: /home/alice/runbooks/20260725-havnvard-crosshost-integrity/RUNBOOK.md
 --
 -- Adds the columns/tables needed to hash the cross-host candidate set (files
 -- whose size_bytes appears on >=2 hosts, >=1MB) and record, per file, whether a
@@ -42,8 +42,8 @@ CREATE INDEX IF NOT EXISTS idx_diskaudit_files_content_sha256
 CREATE TABLE IF NOT EXISTS diskaudit.integrity_checks (
     id              bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     checked_at      timestamptz NOT NULL DEFAULT now(),
-    -- "spark_*" naming per spec -- source side is spark-20cf OR trigkey (both
-    -- are "the machines whose data we want proven safe"); nas-ts453a is always
+    -- "spark_*" naming per spec -- source side is server-1 OR agent-1 (both
+    -- are "the machines whose data we want proven safe"); nas-1 is always
     -- the destination/backup side being checked against.
     spark_path      text NOT NULL,
     spark_host      text NOT NULL,

@@ -35,7 +35,7 @@ classify does three things per in-scope file:
      diskaudit.files inventory by (basename, size) [+-2min mtime tolerance
      when both mtimes are present] -> BACKED_UP_UNVERIFIED /
      match_method='path_size_mtime'. NOTE: an earlier design assumption that
-     `/share/CACHEDEV1_DATA/bkup_spark` is a literal path-for-path mirror of
+     `/share/CACHEDEV1_DATA/bkup_server` is a literal path-for-path mirror of
      the server was checked live (ssh) and found FALSE -- it holds per-app
      tar.gz snapshots, restic repos, and DB dump trees, not a browsable
      mirror. This basename+size heuristic is the honest, ground-truth-driven
@@ -269,7 +269,7 @@ def cmd_classify(conn, host: str, limit: int | None) -> None:
                             best = (cand_path, cand_mtime)
                             break
                 matched += 1
-                cp.write_row((host, path, size_bytes, inode, nlink, "BACKED_UP_UNVERIFIED", "path_size_mtime", None, NAS_HOST, best[0], None, coverage_run_id, "basename+size heuristic; bkup_spark is NOT a literal path mirror (verified 2026-07-25)"))
+                cp.write_row((host, path, size_bytes, inode, nlink, "BACKED_UP_UNVERIFIED", "path_size_mtime", None, NAS_HOST, best[0], None, coverage_run_id, "basename+size heuristic; bkup_server is NOT a literal path mirror (verified 2026-07-25)"))
                 continue
 
             # 4. no match anywhere

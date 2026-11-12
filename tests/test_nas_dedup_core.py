@@ -278,14 +278,14 @@ def test_keeper_never_in_recycle_when_alternative():
 
 
 def test_keeper_never_in_backup_tree_when_alternative():
-    """BH-3 / HV-REQ-28: a bkup_spark replica (oldest mtime, shortest path) is never the keeper while a live copy exists."""
-    backup = ("/share/CACHEDEV1_DATA/bkup_spark/a", 1)
+    """BH-3 / HV-REQ-28: a bkup_test replica (oldest mtime, shortest path) is never the keeper while a live copy exists."""
+    backup = ("/share/CACHEDEV1_DATA/bkup_test/a", 1)
     live = ("/share/CACHEDEV1_DATA/Public/some/much/longer/path.bin", 9_999)
     recycle_live = ("/share/CACHEDEV1_DATA/Public/@Recycle/x", 2)
     key = lambda c: core.keeper_sort_key(c[0], c[1])
     assert min([backup, live], key=key) == live
     assert min([backup, recycle_live], key=key) == backup          # recycle outranks backup in the rule order
-    assert min([backup, ("/share/CACHEDEV1_DATA/bkup_spark_other/z", 5)], key=key) == ("/share/CACHEDEV1_DATA/bkup_spark_other/z", 5)
+    assert min([backup, ("/share/CACHEDEV1_DATA/bkup_test_other/z", 5)], key=key) == ("/share/CACHEDEV1_DATA/bkup_test_other/z", 5)
 
 
 # ---- progress -----------------------------------------------------------

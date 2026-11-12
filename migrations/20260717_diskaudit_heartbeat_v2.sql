@@ -1,5 +1,5 @@
 -- diskaudit v2 — heartbeat/stage tracking + per-worker status + history log
--- Date: 2026-07-17 · Owner: PAF · Plan: witty-swinging-shore.md · Plane: INFRA-98
+-- Date: 2026-07-17 · Owner: the operator · Plan: witty-swinging-shore.md · Plane: INFRA-98
 --
 -- Adds hang-detection infrastructure: a heartbeat + current-stage field on the two
 -- existing run tables, per-worker granularity for the parallel dedup path (so a

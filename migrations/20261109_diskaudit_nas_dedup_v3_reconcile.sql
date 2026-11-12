@@ -1,4 +1,4 @@
--- diskaudit — HavnVard 1.4.0 ONE-TIME reconciliation of stale within-host labels on nas-ts453a (HV-REQ-15).
+-- diskaudit — HavnVard 1.4.0 ONE-TIME reconciliation of stale within-host labels on nas-1 (HV-REQ-15).
 -- Date: 2026-11-09 · Plane: INFRA-520 · Design §2.8 "One-time reconciliation".
 --
 -- Clears 'sha256-within-host' labels that are provably FALSE today:
@@ -15,18 +15,18 @@ BEGIN;
 
 UPDATE diskaudit.files
    SET duplicate_group_id = NULL, dedup_tool = NULL, dedup_method = NULL, dedup_checked_at = now()
- WHERE host = 'nas-ts453a' AND dedup_tool = 'sha256-within-host'
+ WHERE host = 'nas-1' AND dedup_tool = 'sha256-within-host'
    AND duplicate_group_id IS NOT NULL AND NOT still_exists;
 
 UPDATE diskaudit.files
    SET duplicate_group_id = NULL, dedup_tool = NULL, dedup_method = NULL, dedup_checked_at = now()
- WHERE host = 'nas-ts453a' AND dedup_tool = 'sha256-within-host'
+ WHERE host = 'nas-1' AND dedup_tool = 'sha256-within-host'
    AND duplicate_group_id IS NOT NULL AND still_exists AND content_sha256 IS NOT NULL AND mtime > hashed_at;
 
 SELECT
-  (SELECT count(*) FROM diskaudit.files WHERE host = 'nas-ts453a' AND dedup_tool = 'sha256-within-host'
+  (SELECT count(*) FROM diskaudit.files WHERE host = 'nas-1' AND dedup_tool = 'sha256-within-host'
       AND duplicate_group_id IS NOT NULL AND NOT still_exists)                                   AS remaining_vanished_labelled,
-  (SELECT count(*) FROM diskaudit.files WHERE host = 'nas-ts453a' AND dedup_tool = 'sha256-within-host'
+  (SELECT count(*) FROM diskaudit.files WHERE host = 'nas-1' AND dedup_tool = 'sha256-within-host'
       AND duplicate_group_id IS NOT NULL AND still_exists AND content_sha256 IS NOT NULL
       AND mtime > hashed_at)                                                                     AS remaining_stale_labelled;
 

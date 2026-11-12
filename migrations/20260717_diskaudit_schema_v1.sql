@@ -1,5 +1,5 @@
 -- diskaudit v1 — whole-disk file inventory (log-only)
--- Date: 2026-07-17 · Owner: PAF · Plan: witty-swinging-shore.md · Plane: INFRA-97
+-- Date: 2026-07-17 · Owner: the operator · Plan: witty-swinging-shore.md · Plane: INFRA-97
 --
 -- v1 is intentionally slim: just enough to record a monthly whole-disk file
 -- inventory. No dedup-group column, no cabinet_reviews table — those land in
@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS diskaudit.scan_runs (
     scan_id        bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     started_at     timestamptz NOT NULL DEFAULT now(),
     finished_at    timestamptz,
-    host           text NOT NULL DEFAULT 'spark-20cf',
+    host           text NOT NULL DEFAULT 'server-1',
     root_path      text NOT NULL DEFAULT '/',
     files_scanned  bigint,
     dirs_scanned   bigint,

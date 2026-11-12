@@ -1,5 +1,5 @@
 -- diskaudit v2 — multi-host (host,path) key + dedup columns
--- Date: 2026-07-17 · Owner: PAF · Plan: witty-swinging-shore.md · Plane: INFRA-97
+-- Date: 2026-07-17 · Owner: the operator · Plan: witty-swinging-shore.md · Plane: INFRA-97
 --
 -- Fixes a real bug in the v1 schema: diskaudit.files.path was the sole PRIMARY KEY,
 -- which breaks the moment a second host (the NAS) is added -- the same path string
@@ -12,11 +12,11 @@
 
 BEGIN;
 
--- 1. Add host to files, backfill existing v1 rows as spark-20cf (the only host so far).
+-- 1. Add host to files, backfill existing v1 rows as server-1 (the only host so far).
 ALTER TABLE diskaudit.files ADD COLUMN IF NOT EXISTS host text;
-UPDATE diskaudit.files SET host = 'spark-20cf' WHERE host IS NULL;
+UPDATE diskaudit.files SET host = 'server-1' WHERE host IS NULL;
 ALTER TABLE diskaudit.files ALTER COLUMN host SET NOT NULL;
-ALTER TABLE diskaudit.files ALTER COLUMN host SET DEFAULT 'spark-20cf';
+ALTER TABLE diskaudit.files ALTER COLUMN host SET DEFAULT 'server-1';
 
 -- 2. Swap the primary key from (path) to (host, path).
 ALTER TABLE diskaudit.files DROP CONSTRAINT IF EXISTS files_pkey;
@@ -34,12 +34,12 @@ CREATE INDEX IF NOT EXISTS idx_diskaudit_files_dup_group
 
 -- 4. Staging table needs the same host column + composite key for the merge to work.
 ALTER TABLE diskaudit.files_staging ADD COLUMN IF NOT EXISTS host text;
-UPDATE diskaudit.files_staging SET host = 'spark-20cf' WHERE host IS NULL;
+UPDATE diskaudit.files_staging SET host = 'server-1' WHERE host IS NULL;
 ALTER TABLE diskaudit.files_staging ALTER COLUMN host SET NOT NULL;
-ALTER TABLE diskaudit.files_staging ALTER COLUMN host SET DEFAULT 'spark-20cf';
+ALTER TABLE diskaudit.files_staging ALTER COLUMN host SET DEFAULT 'server-1';
 
 -- 5. critical_patterns config table (v2 Part B, created now so it's available for both hosts
--- from day one -- PAF-editable list of "things that would hurt to lose").
+-- from day one -- the operator-editable list of "things that would hurt to lose").
 CREATE TABLE IF NOT EXISTS diskaudit.critical_patterns (
     id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     pattern     text NOT NULL,       -- path prefix or LIKE pattern, e.g. '/srv/backups/%'

@@ -304,7 +304,7 @@ and hash evidence `crosshost_verify.py` already produced) — a dedicated
 hash-upgrade pass for `backup_coverage`'s own matched pairs is a known V+1
 gap (see runbook `/home/user/runbooks/20260725-havnvard-backup-coverage/RUNBOOK.md`).
 
-**Ground-truth note:** the NAS's `bkup_spark` share was checked live and
+**Ground-truth note:** the NAS's `bkup_server` share was checked live and
 found NOT to be a literal path-for-path mirror of the server (contains per-app
 tar.gz snapshots + restic repos + DB dump trees) — `classify`'s matching
 logic was designed around this confirmed reality, not the "mirrors known

@@ -23,8 +23,8 @@ def test_initial_hash_and_reverification_are_distinct():
 
 
 def test_sla_seed_is_12_scheduled_rows():
-    seed_lines=[line for line in CORE.splitlines() if "('spark-20cf'" in line or "('nas-ts453a'" in line or "('trigkey'" in line]
-    assert sum(line.count("('spark-20cf'")+line.count("('nas-ts453a'")+line.count("('trigkey'") for line in seed_lines)==12
+    seed_lines=[line for line in CORE.splitlines() if "('server-1'" in line or "('nas-1'" in line or "('agent-1'" in line]
+    assert sum(line.count("('server-1'")+line.count("('nas-1'")+line.count("('agent-1'") for line in seed_lines)==12
 
 
 def test_mutable_registry_has_at_least_20_seed_rules():

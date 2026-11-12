@@ -1,10 +1,10 @@
 -- diskaudit — HavnVard UI support: materialized dedup-groups-by-host view
--- Date: 2026-07-25 · Owner: PAF · Runbook: /home/parker/runbooks/20260725-havnvard-ui/RUNBOOK.md
+-- Date: 2026-07-25 · Owner: the operator · Runbook: /home/alice/runbooks/20260725-havnvard-ui/RUNBOOK.md
 --
 -- WHY: diskaudit.v_duplicate_groups_by_host (20260717 migration) is a plain view over
 -- 8.5M diskaudit.files rows. Interactive pagination against it (WHERE host=$1 ORDER BY
 -- reclaimable_bytes DESC LIMIT/OFFSET) re-aggregates the whole GROUP BY every request --
--- measured live 2026-07-25 at ~4s for a single 50-row page on spark-20cf alone, and a
+-- measured live 2026-07-25 at ~4s for a single 50-row page on server-1 alone, and a
 -- naive count(*) at ~3.8s. Both are unusable for a server-rendered page a human clicks
 -- through. This migration adds a MATERIALIZED copy of the same shape (additive only --
 -- does not touch v_duplicate_groups_by_host/v_duplicate_groups, which stay the live-query

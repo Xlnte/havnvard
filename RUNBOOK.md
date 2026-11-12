@@ -68,7 +68,7 @@ All `diskaudit-*` and `havnvard-*` systemd units are **root-owned system units**
 under `/etc/systemd/system/` (`User=root` in `[Service]`, `Type=oneshot`) — this
 is **not** a svc user-unit app. Use plain `sudo systemctl`, never the
 `sudo -u svc XDG_RUNTIME_DIR=... systemctl --user` pattern used for
-OpenClaw/Helm.
+other user-unit services.
 
 ```bash
 # Check what's scheduled (confirm live)
@@ -325,9 +325,9 @@ cd /opt/havnvard
 # scoped run (minutes): one directory tree, boundary-safe (/a/b never matches /a/bc)
 systemd-run --unit=havnvard-nas-dedup-scoped-$(date +%H%M) --uid=havnvard --wait --pipe --working-directory=/opt/havnvard \
   /opt/havnvard/.venv/bin/python3 nas_trigkey_dedup.py --host nas-1 --path /share/CACHEDEV1_DATA/Public/<dir>
-# whole host, bkup_spark left out (what the weekly timer runs; first run re-hashes every legacy digest, plan on ~1 day)
+# whole host, bkup_server left out (what the weekly timer runs; first run re-hashes every legacy digest, plan on ~1 day)
 systemd-run --unit=havnvard-nas-dedup-full-$(date +%Y%m%d) --uid=havnvard --working-directory=/opt/havnvard \
-  /opt/havnvard/.venv/bin/python3 nas_trigkey_dedup.py --host nas-1 --exclude /share/CACHEDEV1_DATA/bkup_spark
+  /opt/havnvard/.venv/bin/python3 nas_trigkey_dedup.py --host nas-1 --exclude /share/CACHEDEV1_DATA/bkup_server
 # hash only, publish nothing (a --limit run can never produce a publishable result)
 ... nas_trigkey_dedup.py --host nas-1 --limit 1000
 # reproducible snapshot export (what the delete script consumes); two exports of unchanged data differ only in run_id/timestamps
@@ -354,7 +354,7 @@ SELECT path, role, in_recycle_bin, in_backup_tree, links_outside_inventory FROM 
 SELECT path, outcome, reason FROM diskaudit.dedup_run_items WHERE dedup_run_id = R AND outcome = 'error';   -- per-file errors
 ```
 Roles: `keeper` (+ `keeper_link` = other paths of the keeper's inode), `victim` (+ `victim_link`). Keeper rule (1.4.1): not in a recycle bin -> not in the
-bkup_spark backup tree ->
+bkup_server backup tree ->
 earliest mtime -> shortest path -> bytewise. `bytes_reclaimable` counts a victim inode only when all its links are listed in the
 inventory (`links_outside_inventory`). Legacy labels on `files.duplicate_group_id` from before 1.4.0 are ADVISORY and are replaced per
 scope by each 1.4.0 publish; the delete script never reads them.
@@ -372,7 +372,7 @@ and the one-time reconcile (`migrations/20261109_diskaudit_nas_dedup_v3_reconcil
 scoped dry runs on that scope are `completed`, with 0 transport failures, 0 per-file errors inside the scope, and byte-identical
 exports after dropping run_id and timestamps. Record the gate table in the NAS-dedup runbook.
 
-**Switches.** Include `bkup_spark` (the operator decision; ~+2.2 M reps, ~+31 h once): drop `--exclude /share/CACHEDEV1_DATA/bkup_spark` from the
+**Switches.** Include `bkup_server` (the operator decision; ~+2.2 M reps, ~+31 h once): drop `--exclude /share/CACHEDEV1_DATA/bkup_server` from the
 unit's `ExecStart`, `daemon-reload`. Raise `--assumed-mbps` once a full run reports its measured MB/s. Optional indexes
 (`migrations/20261109_diskaudit_nas_dedup_v3_indexes.sql`, run without `-1`/`--single-transaction`) only if a scoped run exceeds 10 minutes.
 
@@ -380,7 +380,7 @@ unit's `ExecStart`, `daemon-reload`. Raise `--assumed-mbps` once a full run repo
 `dedup_group_snapshots`, `dedup_group_members`, new `dedup_runs` columns. Apply with `lock_timeout` set; it never blocks a running dedup.
 
 **1.4.1 change notes (bug-hunt, INFRA-520, 20261109):** (BH-3) `in_backup_tree` joins the keeper ORDER BY right after
-`in_recycle_bin`, so a `bkup_spark` replica is never the keeper while a live copy exists (HV-REQ-28); (BH-1) `classify_path` refuses
+`in_recycle_bin`, so a `bkup_server` replica is never the keeper while a live copy exists (HV-REQ-28); (BH-1) `classify_path` refuses
 every C0 control character, DEL, U+0085, U+2028, U+2029 as `UNSAFE_PATH`; (BH-8) a path holding U+FFFD (undecodable name, stored lossy)
 is recorded `NON_UTF8_PATH`, never sent to the NAS and never marked `still_exists=false`; (BH-7) `load_nas_inventory.py` reads the
 crawl TSV with `newline="\n"` so a bare CR inside a name cannot tear a row (the name then reaches HavnVard and is refused as

@@ -1,6 +1,6 @@
 -- diskaudit — classification layer v1 (orphaned/stale/possibly-obsolete + load-bearing override)
--- Date: 2026-07-18 · Owner: PAF · Plan: witty-swinging-shore.md item #12 · Plane: INFRA-97
--- Runbook: /home/parker/runbooks/20260718-diskaudit-classification/README.md
+-- Date: 2026-07-18 · Owner: the operator · Plan: witty-swinging-shore.md item #12 · Plane: INFRA-97
+-- Runbook: /home/alice/runbooks/20260718-diskaudit-classification/README.md
 --
 -- Design spec (PRESCAB 10-VP cabinet, all VPs converged): pure mtime/atime age produces false
 -- positives on cold-but-live files (a yearly cron script, a rarely-touched config). Fix: cross-
@@ -14,7 +14,7 @@
 BEGIN;
 
 -- ============================================================================================
--- 1. diskaudit.decommissioned_path_patterns — PAF-editable table of dead-system path prefixes.
+-- 1. diskaudit.decommissioned_path_patterns — the operator-editable table of dead-system path prefixes.
 --    Same shape/convention as diskaudit.critical_patterns (20260717_diskaudit_multihost_dedup_v2.sql):
 --    a LIKE pattern, not hardcoded logic in a script. Seeded from CLAUDE.md's documented
 --    [DEPRECATED]/[REMOVED] filesystem paths (Part II — MACHINE & SYSTEM FACTS, "Retired /
@@ -22,8 +22,8 @@ BEGIN;
 -- ============================================================================================
 CREATE TABLE IF NOT EXISTS diskaudit.decommissioned_path_patterns (
     id                  bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    pattern             text NOT NULL,   -- LIKE pattern, e.g. '/home/clip/.paperclip/%'
-    system_name         text NOT NULL,   -- human-readable dead system, e.g. 'Paperclip'
+    pattern             text NOT NULL,   -- LIKE pattern, e.g. '/home/carol/.oldapp/%'
+    system_name         text NOT NULL,   -- human-readable dead system, e.g. 'OldApp'
     decommissioned_date date,            -- NULL where CLAUDE.md doesn't give an exact date
     notes               text,
     added_at            timestamptz NOT NULL DEFAULT now(),
@@ -31,36 +31,36 @@ CREATE TABLE IF NOT EXISTS diskaudit.decommissioned_path_patterns (
 );
 
 INSERT INTO diskaudit.decommissioned_path_patterns (pattern, system_name, decommissioned_date, notes) VALUES
-    ('/home/clip/.paperclip/%', 'Paperclip', '2026-04-24',
+    ('/home/carol/.oldapp/%', 'OldApp', '2026-04-24',
         'Decommissioned 2026-04-17, made inert 2026-04-24 (CLAUDE.md Part I §1b). DEPRECATED-20260424.txt marker files present. Instance config/master.key/backups all under this tree.'),
-    ('/home/clip/paperclip/%', 'Paperclip', '2026-04-24',
-        'Second Paperclip filesystem root retained for archival per CLAUDE.md; do not restart.'),
-    ('/home/clip/paf-agent-system/%', 'Paperclip (agent system)', '2026-04-24',
-        'Per-agent OpenClaw configs, skills, .env, todo — all decommissioned with Paperclip.'),
-    ('/home/UltraOC/%', 'UltraOC', NULL,
-        'Former rootless Docker OpenClaw operator, marked [DEPRECATED] in CLAUDE.md user-architecture table; no decommission date given.'),
+    ('/home/carol/oldapp/%', 'OldApp', '2026-04-24',
+        'Second OldApp filesystem root retained for archival per CLAUDE.md; do not restart.'),
+    ('/home/carol/agent-system/%', 'OldApp (agent system)', '2026-04-24',
+        'Per-agent AgentGateway configs, skills, .env, todo — all decommissioned with OldApp.'),
+    ('/home/erin/%', 'UltraOC', NULL,
+        'Former rootless Docker AgentGateway operator, marked [DEPRECATED] in CLAUDE.md user-architecture table; no decommission date given.'),
     ('/opt/dgx-spark-vllm/vllm_env%', 'vLLM (disabled)', NULL,
         'Disabled vLLM virtualenv (CLAUDE.md "Retired / Inactive"); paired systemd unit below.'),
     ('/etc/systemd/system/vllm.service', 'vLLM (disabled)', NULL,
         'Disabled vLLM systemd unit file itself (exact-file pattern, no wildcard — CLAUDE.md "Retired / Inactive").'),
-    ('/etc/systemd/system/paperclip.service.archived-20260424', 'Paperclip', '2026-04-24',
-        'Archived Paperclip systemd unit (exact-file pattern) — CLAUDE.md Part I §1b.')
+    ('/etc/systemd/system/oldapp.service.archived-20260424', 'OldApp', '2026-04-24',
+        'Archived OldApp systemd unit (exact-file pattern) — CLAUDE.md Part I §1b.')
 ON CONFLICT (pattern) DO NOTHING;
 
 -- ============================================================================================
 -- 2. diskaudit.load_bearing_refresh_runs — traceability log for refresh_load_bearing_paths.py.
 --    Same shape as diskaudit.scan_runs/dedup_runs (started_at/finished_at/status). Required so
 --    "why does load_bearing_paths have this entry" always has a queryable answer: which run,
---    when, from which exact source. (PAF: "we don't want a GREP going haywire and not knowing
+--    when, from which exact source. (the operator: "we don't want a GREP going haywire and not knowing
 --    where it is being fired from.")
 -- ============================================================================================
 CREATE TABLE IF NOT EXISTS diskaudit.load_bearing_refresh_runs (
     id               bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    host             text NOT NULL DEFAULT 'spark-20cf',
+    host             text NOT NULL DEFAULT 'server-1',
     started_at       timestamptz NOT NULL DEFAULT now(),
     finished_at      timestamptz,
     status           text NOT NULL DEFAULT 'running' CHECK (status IN ('running', 'completed', 'failed')),
-    sources_scanned  jsonb,   -- e.g. {"systemd_units": 42, "crontab_parker": 38, "crontab_nemo": 1, "census_active": 16}
+    sources_scanned  jsonb,   -- e.g. {"systemd_units": 42, "crontab_alice": 38, "crontab_bob": 1, "census_active": 16}
     paths_found      integer, -- total candidate (pattern, source) pairs extracted this run
     paths_upserted   integer, -- how many were new inserts vs. already-known (upserted) rows
     errors           jsonb,   -- [{"source": "...", "error": "..."}] — per-unit-file/per-user granularity
@@ -76,14 +76,14 @@ CREATE TABLE IF NOT EXISTS diskaudit.load_bearing_refresh_runs (
 CREATE TABLE IF NOT EXISTS diskaudit.load_bearing_paths (
     id                   bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     pattern              text NOT NULL,   -- LIKE pattern; exact-file patterns (no '%') are common and preferred where precision allows
-    source               text NOT NULL,   -- precise provenance, e.g. 'systemd-unit:/etc/systemd/system/X.service#ExecStart', 'crontab:parker:L42', 'census:diskaudit#primary_path'
+    source               text NOT NULL,   -- precise provenance, e.g. 'systemd-unit:/etc/systemd/system/X.service#ExecStart', 'crontab:alice:L42', 'census:diskaudit#primary_path'
     last_verified_at     timestamptz NOT NULL DEFAULT now(),
     last_refresh_run_id  bigint REFERENCES diskaudit.load_bearing_refresh_runs(id),
     UNIQUE (pattern, source)
 );
 
 -- ============================================================================================
--- 4. diskaudit.classification_config — PAF-editable thresholds, so the age cutoff is a config
+-- 4. diskaudit.classification_config — the operator-editable thresholds, so the age cutoff is a config
 --    row, not a magic number buried in a view definition.
 -- ============================================================================================
 CREATE TABLE IF NOT EXISTS diskaudit.classification_config (
@@ -95,7 +95,7 @@ CREATE TABLE IF NOT EXISTS diskaudit.classification_config (
 
 INSERT INTO diskaudit.classification_config (key, value, description) VALUES
     ('stale_atime_threshold_days', '365',
-     'atime age (days) beyond which a file is a possibly-obsolete/stale candidate, subject to the load-bearing/decommissioned/critical overrides. PAF-editable; re-read on every classification refresh, no code change needed to adjust.')
+     'atime age (days) beyond which a file is a possibly-obsolete/stale candidate, subject to the load-bearing/decommissioned/critical overrides. the operator-editable; re-read on every classification refresh, no code change needed to adjust.')
 ON CONFLICT (key) DO NOTHING;
 
 CREATE OR REPLACE FUNCTION diskaudit.classification_threshold_days() RETURNS integer AS $$
@@ -103,10 +103,10 @@ CREATE OR REPLACE FUNCTION diskaudit.classification_threshold_days() RETURNS int
 $$ LANGUAGE sql STABLE;
 
 -- ============================================================================================
--- 5. diskaudit.git_repo_roots — ground-truth list of git repo roots on spark-20cf, for the
+-- 5. diskaudit.git_repo_roots — ground-truth list of git repo roots on server-1, for the
 --    supplementary git-tracked-recency signal. Populated from a real
 --    `find / -maxdepth 4 -name .git -type d` sweep on 2026-07-18 (72 repos found — this box has
---    far more git-tracked project directories than CLAUDE.md documents by name). PAF-editable
+--    far more git-tracked project directories than CLAUDE.md documents by name). the operator-editable
 --    table, not a hardcoded list in a view — re-run the same find command and INSERT ... ON
 --    CONFLICT DO NOTHING to pick up newly-created repos later.
 -- ============================================================================================
@@ -117,17 +117,17 @@ CREATE TABLE IF NOT EXISTS diskaudit.git_repo_roots (
 );
 
 INSERT INTO diskaudit.git_repo_roots (repo_root, discovered_via) VALUES
-    ('/home/nemo/NemoClaw', 'find-scan-20260718'),
-    ('/home/parker', 'find-scan-20260718'),
-    ('/home/parker/ComfyUI', 'find-scan-20260718'),
-    ('/home/parker/docs', 'find-scan-20260718'),
-    ('/home/parker/forge-executor', 'find-scan-20260718'),
-    ('/home/parker/lib', 'find-scan-20260718'),
-    ('/home/parker/NemoClaw', 'find-scan-20260718'),
-    ('/home/parker/.nvm', 'find-scan-20260718'),
-    ('/home/parker/opengraph-eval', 'find-scan-20260718'),
-    ('/home/parker/spark-fleet', 'find-scan-20260718'),
-    ('/home/parker/.sw-build-clone', 'find-scan-20260718'),
+    ('/home/bob/AgentSandbox', 'find-scan-20260718'),
+    ('/home/alice', 'find-scan-20260718'),
+    ('/home/alice/ComfyUI', 'find-scan-20260718'),
+    ('/home/alice/docs', 'find-scan-20260718'),
+    ('/home/alice/forge-executor', 'find-scan-20260718'),
+    ('/home/alice/lib', 'find-scan-20260718'),
+    ('/home/alice/AgentSandbox', 'find-scan-20260718'),
+    ('/home/alice/.nvm', 'find-scan-20260718'),
+    ('/home/alice/opengraph-eval', 'find-scan-20260718'),
+    ('/home/alice/spark-fleet', 'find-scan-20260718'),
+    ('/home/alice/.sw-build-clone', 'find-scan-20260718'),
     ('/opt/dgx-spark-vllm/vllm', 'find-scan-20260718'),
     ('/opt/openclaw', 'find-scan-20260718'),
     ('/srv/ai-memory', 'find-scan-20260718'),
@@ -198,7 +198,7 @@ COMMIT;
 --    diskaudit-classification-refresh.timer / refresh_file_status.py), NOT a live view.
 --
 --    Performance justification (measured live on this box, 2026-07-18, ~10.4M still-existing
---    regular files on spark-20cf+nas-ts453a combined):
+--    regular files on server-1+nas-1 combined):
 --      EXPLAIN ANALYZE of a single EXISTS-join against diskaudit.critical_patterns (37 real
 --      pattern rows) took 31.7s wall time (Nested Loop Semi Join, 353.7M join-filter evaluations,
 --      no index can help a dynamic LIKE-pattern-list join). The classification decision tree
@@ -334,7 +334,7 @@ SELECT * FROM diskaudit.mv_file_status;
 --    repo signal on its own, but is explicitly NOT wired into diskaudit.mv_file_status's main
 --    file_status decision (per spec: "fine to ship as a separate supplementary signal/view if
 --    that's cleaner"). A future enhancement could enrich this with real `git log -1 --format=%cI`
---    per repo via a small script (same pattern as refresh_load_bearing_paths.py) if PAF wants
+--    per repo via a small script (same pattern as refresh_load_bearing_paths.py) if the operator wants
 --    true commit-recency instead of this mtime proxy.
 -- ============================================================================================
 CREATE OR REPLACE VIEW diskaudit.v_git_tracked_recency AS
@@ -354,7 +354,7 @@ JOIN diskaudit.files f
 GROUP BY g.repo_root, f.host;
 
 COMMENT ON MATERIALIZED VIEW diskaudit.mv_file_status IS
-    'Classification of still-existing regular files by orphaned/stale/possibly-obsolete/load-bearing status. Refreshed by diskaudit.refresh_file_status() via diskaudit-classification-refresh.timer, NOT live. See /home/parker/runbooks/20260718-diskaudit-classification/README.md.';
+    'Classification of still-existing regular files by orphaned/stale/possibly-obsolete/load-bearing status. Refreshed by diskaudit.refresh_file_status() via diskaudit-classification-refresh.timer, NOT live. See /home/alice/runbooks/20260718-diskaudit-classification/README.md.';
 COMMENT ON VIEW diskaudit.v_file_status IS
     'Thin alias for diskaudit.mv_file_status (spec-literal name). Freshness = last materialized-view refresh, not query time.';
 COMMENT ON VIEW diskaudit.v_git_tracked_recency IS

@@ -1,5 +1,5 @@
 -- diskaudit v2 — fix inverted reclaimable-space formula
--- Date: 2026-07-17 · Owner: PAF · Plan: witty-swinging-shore.md · Plane: INFRA-97
+-- Date: 2026-07-17 · Owner: the operator · Plan: witty-swinging-shore.md · Plane: INFRA-97
 --
 -- Bug found the hard way, using the first real full-disk dedup data: the original
 -- formula (file_count - distinct_inode_count) * size_bytes is backwards.

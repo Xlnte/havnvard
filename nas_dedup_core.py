@@ -25,8 +25,20 @@ HEX64_RE = re.compile(r"[0-9a-f]{64}")
 ERROR_REASONS = ("MISSING", "UNREADABLE", "UNSTABLE", "NOT_REGULAR")
 RECYCLE_REGEX = r"/(@Recycle|\.@__thumb)/"                      # QNAP recycle / thumbnail dirs (HV-REQ-27/28)
 RECYCLE_RE = re.compile(RECYCLE_REGEX)
-BACKUP_TREE_PREFIX = "/share/CACHEDEV1_DATA/bkup_spark/"
-BACKUP_TREE_LIKE = r"/share/CACHEDEV1_DATA/bkup\_spark/%"         # HV-REQ-27 in_backup_tree flag (LIKE ... ESCAPE '\')
+
+
+def _backup_tree_prefix() -> str:
+    """The NAS folder that holds backup REPLICAS of other machines (site file [nas] backup_tree_prefix).
+    A replica is never chosen as the keeper while a live copy exists (BH-3). '' = the site has none.
+    Read once at import from the site file (a config read, not I/O on the data being judged)."""
+    import havnvard_site  # noqa: PLC0415  (stdlib-only site-file reader)
+    p = havnvard_site.nas("backup_tree_prefix") or ""
+    return p if not p or p.endswith("/") else p + "/"
+
+
+BACKUP_TREE_PREFIX = _backup_tree_prefix()
+# HV-REQ-27 in_backup_tree flag (LIKE ... ESCAPE '\'); '' never matches a real path.
+BACKUP_TREE_LIKE = re.sub(r"([\\%_])", r"\\\1", BACKUP_TREE_PREFIX) + "%" if BACKUP_TREE_PREFIX else ""
 _TRAILER_RE = re.compile(r"#DONE\|hashed=(\d+)\|statonly=(\d+)\|errors=(\d+)")
 
 DEFAULT_BATCH_SIZE = 500
@@ -422,7 +434,7 @@ def keeper_sort_key(path: str, mtime_epoch, in_recycle: Optional[bool] = None, i
     if in_recycle is None:
         in_recycle = bool(RECYCLE_RE.search(path))
     if in_backup is None:
-        in_backup = path.startswith(BACKUP_TREE_PREFIX)
+        in_backup = bool(BACKUP_TREE_PREFIX) and path.startswith(BACKUP_TREE_PREFIX)
     return (
         1 if in_recycle else 0,
         1 if in_backup else 0,

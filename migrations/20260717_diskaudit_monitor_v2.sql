@@ -1,5 +1,5 @@
 -- diskaudit v2 — monitor.py idempotency support
--- Date: 2026-07-17 · Owner: PAF · Plan: witty-swinging-shore.md · Plane: INFRA-98
+-- Date: 2026-07-17 · Owner: the operator · Plan: witty-swinging-shore.md · Plane: INFRA-98
 --
 -- Adds alerted_at to the three run/worker-status tables monitor.py polls, so a
 -- stale/failed condition is only ever alerted once per occurrence (a NEW

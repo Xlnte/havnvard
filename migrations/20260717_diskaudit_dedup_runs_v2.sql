@@ -1,5 +1,5 @@
 -- diskaudit v2 — dedup_runs audit table (per-stage elimination counts from rdfind's 4-step pipeline)
--- Date: 2026-07-17 · Owner: PAF · Plan: witty-swinging-shore.md · Plane: INFRA-97
+-- Date: 2026-07-17 · Owner: the operator · Plan: witty-swinging-shore.md · Plane: INFRA-97
 --
 -- Previously only the FINAL verdict (duplicate_group_id on diskaudit.files) was persisted.
 -- This captures the full result of rdfind's 4-stage elimination (size -> first bytes ->

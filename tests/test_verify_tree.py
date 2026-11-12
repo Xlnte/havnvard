@@ -337,7 +337,7 @@ def test_local_root_guard_autofs_then_nfs_same_mountpoint(tmp_path):
     mounts.write_text(
         "/dev/nvme0n1p2 / ext4 rw 0 0\n"
         f"systemd-1 {d} autofs rw,relatime,fd=70 0 0\n"
-        f"192.0.2.40:/bkup_spark {d} nfs rw,vers=3 0 0\n")
+        f"192.0.2.40:/bkup_test {d} nfs rw,vers=3 0 0\n")
     assert "nfs" in vt.local_root_problem(str(d), str(mounts))
     only_autofs = tmp_path / "mounts2"
     only_autofs.write_text(f"/dev/x / ext4 rw 0 0\nsystemd-1 {d} autofs rw 0 0\n")

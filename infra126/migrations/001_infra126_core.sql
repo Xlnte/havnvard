@@ -303,9 +303,9 @@ ALTER TABLE diskaudit.infra126_alert_events
 INSERT INTO diskaudit.hash_verification_sla(host,tier,target_recheck_days,schedule_mode)
 SELECT host,tier,target_days,mode
 FROM (VALUES
-  ('spark-20cf','A',7,'weekly'),('spark-20cf','B',30,'monthly'),('spark-20cf','C',90,'quarterly'),('spark-20cf','E',1,'daily'),
-  ('nas-ts453a','A',7,'weekly'),('nas-ts453a','B',30,'monthly'),('nas-ts453a','C',90,'quarterly'),('nas-ts453a','E',1,'daily'),
-  ('trigkey','A',7,'weekly'),('trigkey','B',30,'monthly'),('trigkey','C',90,'quarterly'),('trigkey','E',1,'daily')
+  ('server-1','A',7,'weekly'),('server-1','B',30,'monthly'),('server-1','C',90,'quarterly'),('server-1','E',1,'daily'),
+  ('nas-1','A',7,'weekly'),('nas-1','B',30,'monthly'),('nas-1','C',90,'quarterly'),('nas-1','E',1,'daily'),
+  ('agent-1','A',7,'weekly'),('agent-1','B',30,'monthly'),('agent-1','C',90,'quarterly'),('agent-1','E',1,'daily')
 ) AS seed(host,tier,target_days,mode)
 ON CONFLICT(host,tier) DO UPDATE
 SET target_recheck_days=EXCLUDED.target_recheck_days,

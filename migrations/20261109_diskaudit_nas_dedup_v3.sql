@@ -1,6 +1,6 @@
 -- diskaudit — HavnVard 1.4.0 NAS within-host dedup: bindings, per-run items, group snapshots
--- Date: 2026-11-09 · Owner: PAF · Plane: INFRA-519 (work) / INFRA-520 (source gaps)
--- Design: /home/parker/runbooks/20261109-havnvard-nas-dedup/20261109_ARCHITECTURE.md §2.2, 2.7, 2.8
+-- Date: 2026-11-09 · Owner: the operator · Plane: INFRA-519 (work) / INFRA-520 (source gaps)
+-- Design: /home/alice/runbooks/20261109-havnvard-nas-dedup/20261109_ARCHITECTURE.md §2.2, 2.7, 2.8
 --
 -- ADDITIVE ONLY. Three new tables + ten-odd new dedup_runs columns. Nothing is dropped, renamed or
 -- rewritten. ADD COLUMN IF NOT EXISTS / CREATE TABLE IF NOT EXISTS make it re-runnable.

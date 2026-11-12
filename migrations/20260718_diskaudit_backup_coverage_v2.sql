@@ -1,8 +1,8 @@
 -- diskaudit v2 — cross-host backup-coverage views (Dream feature #4/#5, design doc
 -- witty-swinging-shore.md)
--- Date: 2026-07-18 · Owner: PAF · Plan: witty-swinging-shore.md · Plane: INFRA-97
+-- Date: 2026-07-18 · Owner: the operator · Plan: witty-swinging-shore.md · Plane: INFRA-97
 --
--- Answers the actual question PAF asked for: for every file PAF considers "critical"
+-- Answers the actual question the operator asked for: for every file the operator considers "critical"
 -- (per diskaudit.critical_patterns), does a content-identical copy (same
 -- duplicate_group_id, still_exists=true) exist on a DIFFERENT host than the original?
 --
@@ -20,8 +20,8 @@
 --    critical set is ~5.3M of the table's ~11.4M rows (~46%). This is real, measured data,
 --    not a guess (see runbook). That means "one row per critical file" is inherently a
 --    multi-million-row result set today -- no amount of indexing changes that, since the
---    view is only as narrow as the patterns PAF has defined. Not something this migration
---    changes; critical_patterns stays PAF-editable and untouched here.
+--    view is only as narrow as the patterns the operator has defined. Not something this migration
+--    changes; critical_patterns stays the operator-editable and untouched here.
 --
 -- 2. Because of (1), several "clever" approaches were tried and rejected before landing on
 --    the design below (measured, not guessed -- see runbook for full numbers):
@@ -109,14 +109,14 @@ COMMENT ON VIEW diskaudit.v_backup_coverage IS
   'content-identical (same duplicate_group_id) live copy exists on >=1 OTHER host. '
   'duplicate_group_id IS NULL (never deduped) or single-host-only both report '
   'is_backed_up=false, covering_hosts=''{}'' -- conservative by design, never silently '
-  'excluded. As of 2026-07-18: nas-ts453a has not been deduped yet (0 of its files have a '
+  'excluded. As of 2026-07-18: nas-1 has not been deduped yet (0 of its files have a '
   'duplicate_group_id) and most NAS shares have not been crawled, so is_backed_up is '
   'expected to read false for effectively everything right now -- this is a data-coverage '
   'gap, not a view bug (confirmed: zero duplicate_group_id values currently span >1 host, '
   'system-wide). Coverage fills in automatically as NAS crawl+dedup work lands, since this '
   'is a live view, not a point-in-time report.';
 
--- Reverse check: files on nas-ts453a with no content-identical copy on any OTHER host.
+-- Reverse check: files on nas-1 with no content-identical copy on any OTHER host.
 -- Inherently ambiguous (intentional archive-only copy vs. real single point of failure) --
 -- this view surfaces the fact, it does not classify or judge it.
 CREATE OR REPLACE VIEW diskaudit.v_nas_orphans AS
@@ -128,20 +128,20 @@ SELECT
     f.inode,
     f.mtime
 FROM diskaudit.files f
-WHERE f.host = 'nas-ts453a'
+WHERE f.host = 'nas-1'
   AND f.still_exists
   AND f.file_type = 'regular'
   AND NOT EXISTS (
       SELECT 1
       FROM diskaudit.files other
       WHERE other.duplicate_group_id = f.duplicate_group_id
-        AND other.host <> 'nas-ts453a'
+        AND other.host <> 'nas-1'
         AND other.still_exists
         AND f.duplicate_group_id IS NOT NULL
   );
 
 COMMENT ON VIEW diskaudit.v_nas_orphans IS
-  'Live regular files on nas-ts453a with no content-identical copy (matching '
+  'Live regular files on nas-1 with no content-identical copy (matching '
   'duplicate_group_id) confirmed on any other host -- includes files never deduped '
   '(duplicate_group_id IS NULL). NOT limited to critical_patterns matches -- this is a '
   'whole-NAS reverse check. Deliberately unclassified: could be an intentional '

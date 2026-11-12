@@ -1,8 +1,8 @@
 -- diskaudit v2 — hardlink-aware duplicate-group views
--- Date: 2026-07-17 · Owner: PAF · Plan: witty-swinging-shore.md · Plane: INFRA-97
+-- Date: 2026-07-17 · Owner: the operator · Plan: witty-swinging-shore.md · Plane: INFRA-97
 --
 -- duplicate_group_id (from dedup.py, a real content-hash) is stable across hosts and runs,
--- so a group can legitimately span both Spark and the NAS -- that's the basis for the v2
+-- so a group can legitimately span both server and the NAS -- that's the basis for the v2
 -- Part B backup-coverage view. But hardlinks (same inode) only mean anything WITHIN one
 -- host/filesystem, so "reclaimable space" must be computed per-host, then summed -- naively
 -- counting every row in a cross-host group as separately "wasted" would double-count a file

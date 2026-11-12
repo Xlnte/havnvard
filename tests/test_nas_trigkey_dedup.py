@@ -807,19 +807,19 @@ def test_snapshot_record_has_all_fields(env):
 def test_recycle_and_backup_flags_and_keeper_never_in_recycle(env):
     old = env.mk_add("@Recycle/a", X, fs_mtime=MTIME - 10_000)               # oldest AND shortest -- but in a recycle bin
     keep = env.mk_add("docs/n.bin", X)
-    bk = env.mk_add("bkup_spark/m", X)
+    bk = env.mk_add("bkup_test/m", X)
     rid, _ = env.run()
     g = env.snap_groups(rid)[sha(X)]
     assert g[3] == keep
     flags = {p: (rc, bt) for p, rc, bt in env.q(
         "SELECT path, in_recycle_bin, in_backup_tree FROM diskaudit.dedup_group_members WHERE dedup_run_id=%s", (rid,))}
     assert flags[old][0] is True and flags[keep] == (False, False)
-    assert flags[bk][1] is False        # the synthetic tree is not under /share/CACHEDEV1_DATA/bkup_spark
+    assert flags[bk][1] is False        # the synthetic tree is not under /share/CACHEDEV1_DATA/bkup_test
 
 
 def test_keeper_never_in_backup_tree_when_a_live_copy_exists(env):
-    """BH-3 / HV-REQ-28 (1.4.1): the replica in bkup_spark has the OLDEST mtime and the SHORTEST path but must not be the keeper."""
-    bk = "/share/CACHEDEV1_DATA/bkup_spark/m"
+    """BH-3 / HV-REQ-28 (1.4.1): the replica in bkup_test has the OLDEST mtime and the SHORTEST path but must not be the keeper."""
+    bk = "/share/CACHEDEV1_DATA/bkup_test/m"
     live = "/share/CACHEDEV1_DATA/Public/docs/much/longer/n.bin"
     for p, ino, mt in ((bk, 1, MTIME - 5_000), (live, 2, MTIME)):
         env.add(p, size=len(X), mtime=mt, inode=ino, nlink=1)

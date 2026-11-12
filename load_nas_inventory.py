@@ -396,7 +396,7 @@ def parse_tsv_line(line: str) -> tuple[str, int, int, int, int, int, int, float,
     # rsplit has no way to distinguish that from a real empty path. Reject
     # it explicitly rather than silently insert a row with an empty path,
     # which collides with every other torn line on the (host, path) unique
-    # constraint at merge time (found live 2026-07-18, bkup_spark share).
+    # constraint at merge time (found live 2026-07-18, bkup_server share).
     if not path or not path.startswith("/"):
         return None
     try:

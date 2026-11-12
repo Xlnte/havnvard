@@ -37,7 +37,7 @@ Exit codes: 0 completed | 2 run failed | 3 database unreachable | 4 refused
 Run supervised, never bare background:
     systemd-run --unit=havnvard-nas-dedup --uid=havnvard --working-directory=/opt/havnvard \\
         .venv/bin/python3 nas_trigkey_dedup.py --host NAS_HOST \\
-        --exclude /share/CACHEDEV1_DATA/bkup_spark
+        --exclude /share/CACHEDEV1_DATA/bkup_server
 """
 from __future__ import annotations
 

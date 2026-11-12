@@ -1,7 +1,7 @@
 -- diskaudit v3.1 — backup_coverage write-batching (same fix dedup_staging got
 -- in 20260717_diskaudit_dedup_staging_v2.sql: COPY-into-staging + one
 -- set-based INSERT ... ON CONFLICT, instead of one row at a time, at
--- spark-20cf's ~5.7M-file scale).
+-- server-1's ~5.7M-file scale).
 
 BEGIN;
 
