@@ -1,0 +1,15 @@
+[Unit]
+Description=diskaudit — weekly PRESCAB operational review
+Documentation=file:///home/user/runbooks/20260718-diskaudit-prescab-weekly-review/README.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/havnvard
+ExecStart=/opt/havnvard/.venv/bin/python /opt/havnvard/weekly_prescab_review.py
+StandardOutput=journal
+StandardError=journal
+Nice=10
+TimeoutStartSec=5min

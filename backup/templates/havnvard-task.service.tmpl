@@ -1,0 +1,11 @@
+[Unit]
+Description=$description
+
+[Service]
+Type=oneshot
+WorkingDirectory=$repo_dir
+ExecStart=$python -m backup $command
+Nice=10
+IOSchedulingClass=idle
+SuccessExitStatus=$success_exit
+TimeoutStartSec=$timeout

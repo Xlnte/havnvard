@@ -1,0 +1,52 @@
+INFRA-126 REBUILT PACKAGE VALIDATION
+Generated: 2026-07-26T04:41:08Z
+Runtime: Python 3.13.5
+
+1. Pytest
+Command: python -m pytest -q
+Result:
+...........................................................              [100%]
+59 passed in 0.13s
+
+2. Python compilation
+Command: python -m compileall -q src scripts web tests
+Result: PASS
+
+3. POSIX shell syntax
+Command: sh -n bin/*.sh deploy/*.sh
+Result: PASS
+
+4. Grafana JSON
+Result: PASS: parsed JSON; 4 panels
+
+5. Wheel build
+Command: python -m pip wheel . --no-deps --no-build-isolation -w dist
+Result: PASS
+Wheel: dist/havnvard_bitrot-1.0.0-py3-none-any.whl
+SHA-256: e56709a0c101877394eded458a96a8a5aabda56e4ff277a4874293f8d841b238
+
+6. Wheel install and CLI smoke
+Command: isolated venv install --no-deps; havnvard-bitrot --help
+Result: PASS
+
+7. Static safety coverage included in pytest
+- no scanned-file delete/move/rename Python primitives
+- no executable pkill -f
+- no NAS /tmp scratch configuration
+- no PUBLIC database update grants
+- concurrent production indexes outside transactions
+- cross-host votes require explicit copy links
+- live-copy votes require current successful re-verification
+- critical-file refresh avoids full-inventory long transaction
+- restic voting evidence requires passing repository verification
+
+NOT VALIDATED IN THIS SANDBOX
+- live havnvard PostgreSQL migrations or query plans
+- the server/NAS/agent-1 file hashing or SSH
+- TG PRESI delivery
+- Plane ticket creation
+- HELM WaitingRoom runtime commands
+- live restic repositories
+- live Grafana rendering
+- live HavnVard Flask integration
+- systemd timer execution

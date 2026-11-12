@@ -1,0 +1,15 @@
+[Unit]
+Description=diskaudit — stale/failed run monitor (TG PRESI alerting)
+Documentation=file:///home/user/runbooks/20260717-diskaudit-v2-heartbeat-monitor/README.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/havnvard
+ExecStart=/opt/havnvard/.venv/bin/python /opt/havnvard/monitor.py
+StandardOutput=journal
+StandardError=journal
+Nice=10
+TimeoutStartSec=5min

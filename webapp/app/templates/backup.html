@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}HavnVard — BACKUP{% endblock %}
+{% block content %}
+<h1>C) BACKUP — not safely on the NAS (candidates to copy)</h1>
+<p class="muted small">Files on {{ site_sources }} not confirmed safely present on {{ site_nas }}. Informational
+only — HavnVard never copies or moves anything itself. Export a manifest below to drive a manual or
+scripted backup pass.</p>
+
+<form class="filters" hx-get="/havnvard/backup/table" hx-target="#backup-results" hx-push-url="true">
+  <div class="field"><label>Host</label>
+    <select name="host" multiple size="2">
+      {% for h in source_hosts %}<option value="{{ h }}" {% if h in f.host %}selected{% endif %}>{{ h }}</option>{% endfor %}
+    </select>
+  </div>
+  {% if source == 'coverage' %}
+  <div class="field"><label>Classification</label>
+    <select name="classification" multiple size="4">
+      {% for c in all_classifications %}<option value="{{ c }}" {% if c in f.classification %}selected{% endif %}>{{ c }}</option>{% endfor %}
+    </select>
+  </div>
+  {% endif %}
+  <div class="field"><label>Path contains</label><input type="text" name="q" value="{{ f.q or '' }}"></div>
+  <div class="field"><label>Min size (bytes)</label><input type="number" name="size_min" value="{{ f.size_min or '' }}"></div>
+  <div class="field"><label>Per page</label>
+    <select name="page_size">
+      {% for n in [25,50,100,200] %}<option value="{{ n }}" {% if f.page_size == n %}selected{% endif %}>{{ n }}</option>{% endfor %}
+    </select>
+  </div>
+  <input type="hidden" name="page" value="1">
+  <input type="hidden" name="sort" value="{{ f.sort }}">
+  <button class="btn" type="submit">Apply filters</button>
+</form>
+
+<div id="backup-results">
+{% include "_backup_table.html" %}
+</div>
+{% endblock %}

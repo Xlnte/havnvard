@@ -1,0 +1,16 @@
+[Unit]
+Description=diskaudit — monthly whole-disk file inventory (log-only v1)
+Documentation=file:///home/user/runbooks/20260717-diskaudit-v1/README.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/havnvard
+ExecStart=/opt/havnvard/.venv/bin/python /opt/havnvard/scan.py
+StandardOutput=journal
+StandardError=journal
+Nice=15
+IOSchedulingClass=idle
+TimeoutStartSec=6h

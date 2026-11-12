@@ -1,0 +1,17 @@
+[Unit]
+Description=HavnVard INFRA-126 Tier D mutable-baseline stabilization
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=havnvard
+WorkingDirectory=/opt/havnvard/infra126
+EnvironmentFile=/etc/havnvard/infra126.env
+ExecStart=/opt/havnvard/infra126/.venv/bin/python scripts/run_scheduled_tier.py --tier D --max-items 10000
+Nice=19
+IOSchedulingClass=idle
+TimeoutStartSec=4h
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=havnvard-infra126-d

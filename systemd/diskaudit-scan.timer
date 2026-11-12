@@ -1,0 +1,8 @@
+[Unit]
+Description=diskaudit — daily whole-disk inventory schedule (changed 2026-07-18, was monthly)
+
+[Timer]
+OnCalendar=*-*-* 08:00:00
+
+[Install]
+WantedBy=timers.target

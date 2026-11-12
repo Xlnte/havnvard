@@ -1,0 +1,24 @@
+[Unit]
+Description=HavnVard UI (diskaudit webapp, FastAPI+HTMX, :9108 loopback / :9457 via Caddy)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+User=havnvard
+Group=havnvard
+WorkingDirectory=/opt/havnvard/webapp
+ExecStart=/opt/havnvard/.venv/bin/python3 -m uvicorn app.main:app --host 127.0.0.1 --port 9108
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+
+# Strictly read-only against every diskaudit.* table/view: no INSERT/UPDATE/
+# DELETE path anywhere in this app, and no template renders a delete/move
+# control (see /opt/havnvard/FEATURES.md "Absolute constraint").
+#
+# To install:
+#   sudo cp /opt/havnvard/webapp/systemd/havnvard-ui.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now havnvard-ui.service

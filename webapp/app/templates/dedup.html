@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}HavnVard — DEDUP{% endblock %}
+{% block content %}
+<h1>A) DEDUP — duplicate groups</h1>
+<p class="muted small">One row per duplicate group per host, across every scanned device ({{ site_all }}).
+Source: <code>diskaudit.mv_dedup_groups_by_host</code> (indexed materialized view, refreshed periodically{% if dashboard_url %}
+— see the <a href="{{ dashboard_url }}" target="_blank">dashboard</a> for refresh timestamps and trend history{% endif %}). This view never offers a delete/move action anywhere — export
+a manifest below for the separate, not-yet-built authorized cleanup process.</p>
+
+<form class="filters" hx-get="/havnvard/dedup/table" hx-target="#dedup-results" hx-push-url="true">
+  <div class="field"><label>Host</label>
+    <select name="host" multiple size="3">
+      {% for h in all_hosts %}<option value="{{ h }}" {% if h in f.host %}selected{% endif %}>{{ h }}</option>{% endfor %}
+    </select>
+  </div>
+  <div class="field"><label>Path contains</label><input type="text" name="q" value="{{ f.q or '' }}"></div>
+  <div class="field"><label>Min size (bytes)</label><input type="number" name="size_min" value="{{ f.size_min or '' }}"></div>
+  <div class="field"><label>Min files/group</label><input type="number" name="min_file_count" value="{{ f.min_file_count or '' }}"></div>
+
+  <div class="field"><label>Classification</label>
+    <select name="classification" multiple size="4" title="Worst-case classification across every member file in the group.">
+      {% for key, label, desc in classifications %}
+      <option value="{{ key }}" title="{{ desc }}" {% if f.classification and key in f.classification %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+    <div class="small muted">Leave blank = all. <a href="{{ exclude_os_app_url }}" hx-get="{{ exclude_os_app_url }}" hx-target="#dedup-results" hx-push-url="true">exclude OS/system + application in one click</a>{% if f.classification %} &middot; <a href="{{ clear_classification_url }}" hx-get="{{ clear_classification_url }}" hx-target="#dedup-results" hx-push-url="true">clear</a>{% endif %}</div>
+  </div>
+
+  <div class="field"><label>Evidence level (exact)</label>
+    <select name="evidence_level" multiple size="4" title="Ladder position this group's proof actually supports — see legend below the table.">
+      {% for lvl, key, label, available, desc in evidence_levels %}
+      <option value="{{ lvl }}" title="{{ desc }}" {% if f.evidence_level and lvl in f.evidence_level %}selected{% endif %} {% if not available %}disabled{% endif %}>{{ lvl }}. {{ label }}{% if not available %} (not yet available){% endif %}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="field"><label>Evidence — at least this strong</label>
+    <select name="evidence_at_least" title="Cumulative threshold: level number and everything stronger (lower number = stronger proof).">
+      <option value="" {% if f.evidence_at_least is none %}selected{% endif %}>any</option>
+      {% for lvl, key, label, available, desc in evidence_levels %}
+      <option value="{{ lvl }}" {% if f.evidence_at_least == lvl %}selected{% endif %}>at least level {{ lvl }} ({{ label }})</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="field"><label>Provenance</label>
+    <select name="provenance" multiple size="3" title="WHO computed the evidence — independent of how strong it is.">
+      {% for key in all_provenance %}
+      <option value="{{ key }}" {% if f.provenance and key in f.provenance %}selected{% endif %}>{{ provenance_labels[key] }}</option>
+      {% endfor %}
+    </select>
+  </div>
+
+  <div class="field"><label>Per page</label>
+    <select name="page_size">
+      {% for n in [25,50,100,200] %}<option value="{{ n }}" {% if f.page_size == n %}selected{% endif %}>{{ n }}</option>{% endfor %}
+    </select>
+  </div>
+  <input type="hidden" name="page" value="1">
+  <input type="hidden" name="sort" value="{{ f.sort }}">
+  <button class="btn" type="submit">Apply filters</button>
+</form>
+
+<div id="dedup-results">
+{% include "_dedup_table.html" %}
+</div>
+{% endblock %}

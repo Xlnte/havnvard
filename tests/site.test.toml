@@ -1,0 +1,20 @@
+# Generic site used by the test suite (3.0.0). Real installs use /etc/havnvard/site.toml.
+[database]
+fallback_url = "postgresql://havnvard@127.0.0.1:5432/havnvard_test"
+
+[hosts]
+local = "server-1"
+nas = "nas-1"
+sources = ["server-1", "agent-1"]
+
+[agents.agent-1]
+ssh_host = "agent-1.invalid"
+ssh_user = "havnvard"
+ssh_key = "~/.ssh/id_ed25519"
+
+[nas]
+share_base = "/share/CACHEDEV1_DATA"
+backup_tree_prefix = "/share/CACHEDEV1_DATA/bkup_test/"
+
+[scan]
+extra_excludes = ["/mnt/backup"]

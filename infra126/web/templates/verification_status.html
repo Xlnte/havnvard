@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>HavnVard Verification Status</title>
+  <style>
+    :root { color-scheme: light dark; font-family: Arial, sans-serif; }
+    body { margin: 24px; }
+    table { width: 100%; border-collapse: collapse; margin: 12px 0 28px; }
+    th, td { padding: 7px 9px; border-bottom: 1px solid #7775; text-align: left; font-size: 14px; vertical-align: top; }
+    th { position: sticky; top: 0; background: Canvas; }
+    .OVERDUE, .NEVER_SUCCESSFUL, .COMPLETED_WITH_ERRORS { font-weight: 700; }
+    input, select, button { padding: 6px; }
+    .path { max-width: 680px; overflow-wrap: anywhere; }
+  </style>
+</head>
+<body>
+<h1>Verification Assurance</h1>
+<p><a href="/havnvard/verification-divergences.csv">CSV export</a> | <a href="/havnvard/verification-divergences.json">JSON export</a></p>
+<form method="get">
+  <label>Host <input name="host" value="{{ host or '' }}"></label>
+  <label>Minimum verification age <input name="min_hash_age_days" type="number" min="0" value="{{ min_age if min_age is not none else '' }}"></label>
+  <button type="submit">Filter</button>
+</form>
+<h2>SLA Status</h2>
+<table><thead><tr><th>Host</th><th>Tier</th><th>Target</th><th>Eligible</th><th>On time</th><th>Pending</th><th>Last success</th><th>Next due</th><th>State</th></tr></thead>
+<tbody>{% for r in slas %}<tr class="{{ r.sla_state }}"><td>{{ r.host }}</td><td>{{ r.tier }}</td><td>{{ r.target_recheck_days }}d</td><td>{{ r.files_total }}</td><td>{{ r.pct_on_time }}%</td><td>{{ r.files_pending }}</td><td>{{ r.last_successful_at }}</td><td>{{ r.next_scheduled_at }}</td><td>{{ r.sla_state }}</td></tr>{% endfor %}</tbody></table>
+<h2>Open Corruption Suspects</h2>
+<table><thead><tr><th>Host</th><th>Path</th><th>Score</th><th>Decision</th><th>Action</th><th>Verdict</th><th>Last seen</th><th>Plane</th></tr></thead>
+<tbody>{% for r in suspects %}<tr><td>{{ r.host }}</td><td class="path"><a href="/havnvard/verification-file/{{ r.file_key }}">{{ r.path }}</a></td><td>{{ r.mutable_score }}</td><td>{{ r.decision_state }}</td><td>{{ r.operator_action }}</td><td>{{ r.operator_verdict }}</td><td>{{ r.last_seen_divergence_at }}</td><td>{{ r.plane_ticket_id }}</td></tr>{% endfor %}</tbody></table>
+<h2>Oldest Verification</h2>
+<table><thead><tr><th>Host</th><th>Path</th><th>Bytes</th><th>First hash</th><th>Current baseline</th><th>Last verified</th><th>Age</th><th>Checks</th><th>Baseline revisions</th><th>Divergences</th><th>Status</th><th>Critical</th></tr></thead>
+<tbody>{% for r in files %}<tr><td>{{ r.host }}</td><td class="path"><a href="/havnvard/verification-file/{{ r.file_key }}">{{ r.path }}</a></td><td>{{ r.size_bytes }}</td><td>{{ r.first_hashed_at }}</td><td>{{ r.current_baseline_at }}</td><td>{{ r.last_verified_at }}</td><td>{{ r.days_since_last_verification }}</td><td>{{ r.verification_count }}</td><td>{{ r.baseline_revision_count }}</td><td>{{ r.hash_divergence_count }}</td><td>{{ r.hash_status }}</td><td>{{ r.is_critical }}</td></tr>{% endfor %}</tbody></table>
+</body></html>

@@ -1,0 +1,9 @@
+[Unit]
+Description=HavnVard — NAS within-host dedup, weekly Sunday 02:00 (after the 00:20 crawl, clear of the 04:20 crawl and 08:00 scan). Installed but NOT enabled until the release gate (HV-REQ-34) has passed once.
+
+[Timer]
+OnCalendar=Sun *-*-* 02:00:00
+Persistent=false
+
+[Install]
+WantedBy=timers.target

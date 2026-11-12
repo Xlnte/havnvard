@@ -1,0 +1,49 @@
+# HavnVard site file (3.0.0). Copy to /etc/havnvard/site.toml and edit. Never put a password here.
+
+[database]
+env_file = "/etc/havnvard/havnvard.env"   # a file holding POSTGRES_URL=...; never put the password in site.toml
+fallback_url = "postgresql://havnvard@127.0.0.1:5432/havnvard"
+
+[hosts]
+local = "server-1"          # the name this machine's rows carry in the inventory
+nas = "nas-1"               # the NAS host name (rows of NAS shares)
+sources = ["server-1", "laptop-1"]   # machines whose files need a backup (the NAS is the target)
+
+[nas]
+ssh_target = "backup@nas-1.example"
+share_base = "/share/CACHEDEV1_DATA"     # QNAP default volume
+# backup_tree_prefix = "/share/CACHEDEV1_DATA/backups/"   # NAS folder holding backup replicas; never the dedup keeper
+admin_token_file = "/etc/havnvard/nas_admin.env"
+backup_token_file = "/etc/havnvard/nas_backup.env"
+
+[ui]
+public_url = "http://127.0.0.1:9108"
+dashboard_url = ""
+
+# Remote machines hashed over plain key-based ssh (crosshost_verify, nas_trigkey_dedup).
+[agents.laptop-1]
+ssh_host = "laptop-1.example"
+ssh_user = "havnvard"
+ssh_key = "~/.ssh/id_ed25519"
+scratch_dir = "/tmp/diskaudit_crosshost_scratch"
+
+# Optional: Telegram chat for monitor.py / havnvard_report.py (token: AGENT_BOT_TOKEN in the env file).
+# [telegram]
+# chat_id = -1001234567890
+
+# Optional: operator alert library on this machine (otherwise configure [alerts] command in backup.toml).
+# [alerts]
+# alertlib_path = "/opt/alertlib"
+
+# Optional: extra paths scan.py never descends into (other machines' mounts, backup mounts).
+[scan]
+extra_excludes = ["/mnt/nas", "/mnt/backup"]
+
+# Optional: users whose crontabs mark files as load-bearing.
+[load_bearing]
+crontab_users = ["havnvard"]
+
+# Optional: report labels for path prefixes, and shares whose scans run for hours.
+[report]
+app_prefixes = [["/srv/myapp", "My app"], ["/home/me", "my files"]]
+slow_shares = []

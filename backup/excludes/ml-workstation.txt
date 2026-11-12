@@ -1,0 +1,24 @@
+{HOME}/.cache
+{HOME}/snap
+{HOME}/.npm
+{HOME}/.nvm
+{HOME}/.unsloth
+{HOME}/.local/share/Trash
+{HOME}/.config/restic
+**/node_modules
+**/.venv
+**/__pycache__
+**/Cache
+**/Code Cache
+**/GPUCache
+**/Service Worker/CacheStorage
+{HOME}/.ollama
+{HOME}/.local/share/containers
+# model weights and envs are re-downloadable; do not back up
+{HOME}/.lmstudio/models
+{HOME}/ComfyUI/models
+{HOME}/ComfyUI/downloads_staging
+{HOME}/ComfyUI/venv
+{HOME}/ComfyUI/comfyui-env
+{HOME}/comfyenv
+{HOME}/mambaforge

@@ -1,0 +1,64 @@
+{% if kpi.groups == 0 %}
+<div class="empty-state">No cleanup candidates match these filters.</div>
+{% else %}
+<div class="kpi-row">
+  <div class="kpi"><div class="n">{{ human_count(kpi.groups) }}</div><div class="l">duplicate groups involved</div></div>
+  <div class="kpi"><div class="n">{{ human_bytes(kpi.reclaim) }}</div><div class="l">reclaimable (hardlink-aware, per group)</div></div>
+  <div class="kpi"><div class="n">{{ human_count(total) }}</div><div class="l">candidate file rows (this page's filter)</div></div>
+</div>
+<div class="caveat">
+  <b>Non-destructive:</b> this list is informational only — HavnVard never deletes or moves a file.
+  Every row below is one member of a group that has other copies on the SAME host; the group's
+  hardlink-aware reclaim total is shown once per group, not summed per file row. Toggle "include
+  hardlink-only sets" to also see groups where every member is the same inode (0 bytes reclaimable
+  either way). Export a manifest for the separate, not-yet-built authorized cleanup process.
+</div>
+{% endif %}
+<table>
+  <thead><tr>
+    <th>Host</th>
+    <th class="num"><a href="{{ sort_links.size.url }}">Size <span class="sortarrow">{{ sort_links.size.icon }}</span></a></th>
+    <th class="num"><a href="{{ sort_links.mtime.url }}">mtime <span class="sortarrow">{{ sort_links.mtime.icon }}</span></a></th>
+    <th>Group</th>
+    <th class="num">Group files</th>
+    <th class="num">Distinct inodes</th>
+    <th class="num"><a href="{{ sort_links.reclaim.url }}">Group reclaim <span class="sortarrow">{{ sort_links.reclaim.icon }}</span></a></th>
+    <th>Classification</th>
+    <th>Evidence</th>
+    <th><a href="{{ sort_links.path.url }}">Path <span class="sortarrow">{{ sort_links.path.icon }}</span></a></th>
+  </tr></thead>
+  <tbody>
+  {% for r in rows %}
+    <tr class="{{ r.band_class }}">
+      <td>{{ r.host }}</td>
+      <td class="num">{{ r.size_h }}</td>
+      <td class="small">{{ r.mtime.strftime('%Y-%m-%d %H:%M') if r.mtime else '—' }}</td>
+      <td class="mono small" title="Drill down into this group's copies &amp; KEEP/CANDIDATE recommendation &#10;{{ r.duplicate_group_id }}">
+        <a href="/havnvard/group/{{ r.duplicate_group_id }}?host={{ r.host }}">{{ r.duplicate_group_id[:12] }}…</a>
+      </td>
+      <td class="num">{{ r.group_file_count }}</td>
+      <td class="num">{{ r.group_distinct_inodes }}
+        {% if r.is_hardlink_only %}<br><span class="badge hardlink">hardlink set</span>{% endif %}
+      </td>
+      <td class="num">{{ r.group_reclaim_h }}</td>
+      <td>
+        {% set cm = classification_map.get(r.classification) %}
+        <span class="badge cls-{{ r.classification }}" title="{{ cm[1] if cm else '' }}">{{ cm[0] if cm else r.classification }}</span>
+      </td>
+      <td>
+        <span class="badge ev-{{ r.evidence_level_label }}" title="level {{ r.evidence_level }} of 7 (1=strongest)">{{ r.evidence_level }}. {{ r.evidence_level_label.replace('_', ' ') }}</span><br>
+        <span class="badge provenance">{{ r.provenance_label }}</span>
+      </td>
+      <td class="mono">{{ r.path }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+<div class="pager">
+  <a href="{{ prev_url }}" {% if f.page <= 1 %}style="pointer-events:none;color:#999;"{% endif %}
+     hx-get="{{ prev_url }}" hx-target="#cleanup-results" hx-push-url="true">&laquo; prev</a>
+  <span>page {{ f.page }} / {{ page_count }} &middot; {{ human_count(total) }} files matched</span>
+  <a href="{{ next_url }}" {% if f.page >= page_count %}style="pointer-events:none;color:#999;"{% endif %}
+     hx-get="{{ next_url }}" hx-target="#cleanup-results" hx-push-url="true">next &raquo;</a>
+  <span class="small">&middot; <a href="{{ export_csv }}">export CSV</a> &middot; <a href="{{ export_json }}">export JSON</a></span>
+</div>

@@ -1,0 +1,85 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "id": 12601,
+      "type": "barchart",
+      "title": "Verification age by host",
+      "description": "Counts successful re-verifications. Initial baseline hashes remain in the never bucket until a later hash matches.",
+      "datasource": {"type": "postgres", "uid": "${DS_POSTGRES}"},
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 0},
+      "options": {"stacking": "normal", "orientation": "auto", "showValue": "auto"},
+      "targets": [{
+        "refId": "A",
+        "format": "table",
+        "rawSql": "SELECT host, count(*) FILTER (WHERE last_verified_at >= now()-interval '7 days') AS \"0-7d\", count(*) FILTER (WHERE last_verified_at < now()-interval '7 days' AND last_verified_at >= now()-interval '30 days') AS \"7-30d\", count(*) FILTER (WHERE last_verified_at < now()-interval '30 days' AND last_verified_at >= now()-interval '90 days') AS \"30-90d\", count(*) FILTER (WHERE last_verified_at < now()-interval '90 days') AS \"90d+\", count(*) FILTER (WHERE last_verified_at IS NULL) AS \"never\" FROM diskaudit.v_infra126_verification_age GROUP BY host ORDER BY host"
+      }]
+    },
+    {
+      "id": 12602,
+      "type": "table",
+      "title": "Corruption suspects this month",
+      "datasource": {"type": "postgres", "uid": "${DS_POSTGRES}"},
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 0},
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [{
+          "matcher": {"id": "byName", "options": "path"},
+          "properties": [{
+            "id": "links",
+            "value": [{"title": "Open file verification", "url": "https://server-1.example.ts.net:9457/havnvard/verification-file/${__data.fields.file_key}"}]
+          }]
+        }]
+      },
+      "targets": [{
+        "refId": "A",
+        "format": "table",
+        "rawSql": "SELECT file_key,host,path,mutable_score,decision_state,operator_action,operator_verdict,last_seen_divergence_at,plane_ticket_id FROM diskaudit.corruption_suspects WHERE last_seen_divergence_at >= date_trunc('month',now()) ORDER BY mutable_score ASC,last_seen_divergence_at DESC"
+      }]
+    },
+    {
+      "id": 12603,
+      "type": "gauge",
+      "title": "Verification SLA attainment",
+      "datasource": {"type": "postgres", "uid": "${DS_POSTGRES}"},
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 9},
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 100,
+          "unit": "percent",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 50}, {"color": "green", "value": 80}]}
+        },
+        "overrides": []
+      },
+      "targets": [{
+        "refId": "A",
+        "format": "table",
+        "rawSql": "SELECT host||' Tier-'||tier AS metric,pct_on_time AS value FROM diskaudit.v_infra126_sla_status ORDER BY host,tier"
+      }]
+    },
+    {
+      "id": 12604,
+      "type": "xychart",
+      "title": "Hash divergences by mutable score",
+      "datasource": {"type": "postgres", "uid": "${DS_POSTGRES}"},
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 9},
+      "targets": [{
+        "refId": "A",
+        "format": "table",
+        "rawSql": "SELECT mutable_score AS x,count(*) AS y,divergence_type AS series FROM diskaudit.hash_divergences WHERE created_at >= now()-interval '30 days' GROUP BY mutable_score,divergence_type ORDER BY mutable_score"
+      }]
+    }
+  ],
+  "refresh": "5m",
+  "schemaVersion": 39,
+  "tags": ["havnvard", "infra126", "integrity"],
+  "templating": {"list": [{"name": "DS_POSTGRES", "type": "datasource", "query": "postgres", "label": "Postgres"}]},
+  "time": {"from": "now-30d", "to": "now"},
+  "timezone": "utc",
+  "title": "HavnVard INFRA-126 Verification",
+  "uid": "havnvard-infra126",
+  "version": 2
+}

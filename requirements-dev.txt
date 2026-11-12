@@ -1,0 +1,4 @@
+# Test-only dependencies, additive to requirements.txt (not needed at runtime
+# in production -- pytest is never imported by scan.py/dedup.py/crosshost_verify.py
+# etc. themselves). Install into the same .venv as requirements.txt.
+pytest>=8.0

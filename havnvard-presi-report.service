@@ -1,0 +1,11 @@
+[Unit]
+Description=HavnVard — daily storage-inventory metadata report + PRESCAB analysis to TG PRESI
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=havnvard
+WorkingDirectory=/opt/havnvard
+ExecStart=/opt/havnvard/.venv/bin/python /opt/havnvard/havnvard_report.py --analyze
+TimeoutStartSec=20min

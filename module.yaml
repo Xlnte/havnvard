@@ -1,0 +1,140 @@
+name: HavnVard
+display_name: HavnVard — Storage Assurance (Whole-Disk File Inventory)
+version: 3.1.1
+license: Apache-2.0
+type: scheduled-scanner
+status: active
+grandfather_status: standardized
+owner: havnvard
+description: >
+  Whole-disk file-inventory scanner and storage-assurance system. Walks the root
+  filesystem device (skips other mounts, excludes /var/lib/docker overlay
+  internals), records path/size/permissions/owner/group/inode/nlink/extension/
+  mtime/atime/btime into Postgres. Goal: identify files obsolete due to
+  software lifecycle changes (deprecated modules, superseded configs, orphaned
+  migration leftovers), not merely large-and-cold files. Hashes (read-only
+  SHA-256) for within-host and cross-host dedup; never deletes, moves or renames
+  a scanned file (a guard test fails the build if a delete/move primitive appears).
+  1.4.0: NAS within-host dedup (nas_trigkey_dedup.py) with stat-bound digests, scoped
+  runs, fail-loud transport and an immutable per-run group snapshot for the operator
+  quarantine script.
+  1.4.1 (bug-hunt fixes, INFRA-520): the keeper is never a bkup_server replica while a live copy
+  exists (in_backup_tree in the keeper ORDER BY, HV-REQ-28); names with any control character
+  or Unicode line separator are UNSAFE_PATH and U+FFFD names are NON_UTF8_PATH (recorded, never
+  sent, never marked missing); the crawl TSV is read with LF-only records.
+  2.0.0 (the operator 20261110/11, spec runbooks/20261110-havnvard-restic/20261110_SPEC.md): HavnVard Backup. restic backups as a
+  HavnVard feature: `python -m backup` (hub install, hub set, enroll, client-run, offsite, nas-target, nas-copy,
+  health, prune, restore-drill). Standard library only; renders systemd units, never installs them. Config and
+  secrets under ~/.config/havnvard/ (GHY-38).
+  2.1.0: coverage-sync (restic snapshot listing -> BACKED_UP_VERIFIED, migration 20261111 not applied by the build),
+  not-backed-up report, health --json + health-relay (hub without alertlib), check-timers (archived-app timers).
+  2.2.0 (the operator 20261111): backup names YYYYMMDD_DEVICE_NNNNNN (restic tag, one counter for all devices) and the
+  append-only file catalog, backed up into every hub repo (`catalog run`, hourly on the hub); `where PATTERN`.
+entrypoints:
+  backup_cli: python -m backup {hub|enroll|client-run|offsite|nas-target|nas-copy|health|health-relay|prune|restore-drill|coverage-sync|not-backed-up|check-timers|catalog|where} (2.2.0; docs README.md "Install HavnVard Backup", CLAUDE_SETUP.md)
+  scanner: /opt/havnvard/scan.py
+  timer: diskaudit-scan.timer (systemd, daily OnCalendar=*-*-* 08:00:00)
+  nas_crawl_script: /opt/havnvard/nas_native_crawl.sh (BusyBox sh, scp'd to and run on nas-1 via ssh, not a the server-side entrypoint itself)
+  nas_loader: /opt/havnvard/load_nas_inventory.py --share <name> (2026-07-18, manual per-share invocation; not yet on a timer)
+  crosshost_verify: /opt/havnvard/crosshost_verify.py {candidates|hash --host <h>|match|report} (2026-07-25, manual invocation so far, no timer; see docs below)
+  crosshost_hash_remote_script: /opt/havnvard/hash_batch.sh (BusyBox/GNU-sh compatible, scp'd to and run on nas-1/agent-1 by crosshost_verify.py hash, deleted from both sides after load)
+  nas_dedup: /opt/havnvard/nas_trigkey_dedup.py --host nas-1 [--path <dir>] [--exclude <dir>]... [--limit N] [--export <run_id> --format csv|json] (1.4.0)
+  nas_dedup_timer: diskaudit-nas-dedup.timer (Sun 02:00, --exclude /share/CACHEDEV1_DATA/bkup_server; installed, NOT enabled until the release gate passes once)
+  nas_dedup_remote_script: /opt/havnvard/hash_stat_batch.sh (stat-before/after + digest + #DONE trailer; scp'd to and run on the host by nas_trigkey_dedup.py, cleaned up by the driver)
+inputs:
+  - root filesystem (/, single ext4 partition /dev/nvme0n1p2)
+  - nas-1 (QNAP, /share/CACHEDEV1_DATA/<share>) via native SSH crawl -- see 2026-07-18 runbook addendum in docs/
+outputs:
+  - havnvard schema diskaudit (scan_runs, files, scan_errors, files_staging)
+  - >-
+    havnvard schema diskaudit NAS-dedup tables (1.4.0, migration 20261109_diskaudit_nas_dedup_v3.sql;
+    dedup_digest_bindings, dedup_run_items, dedup_group_snapshots, dedup_group_members, plus new
+    dedup_runs columns code_version, exclude_paths, is_partial, counts, failure_reason, published_at)
+  - havnvard schema diskaudit (content_sha256/hashed_at/hash_source on files, integrity_checks,
+    crosshost_verify_runs -- added 2026-07-25 for cross-host content verification)
+  - /opt/havnvard/reports/*.md (dedup / NAS-integrity / cleanup-candidate reports,
+    gitignored, regenerated on demand by `crosshost_verify.py report`)
+databases:
+  reads:
+    - filesystem stat()/statx() metadata only for scan.py — never reads file contents
+    - crosshost_verify.py additionally reads file CONTENTS (to SHA-256-hash them) for the
+      cross-host candidate set only (size >= 1MB, size shared by >= 2 hosts) -- still strictly
+      read-only, never writes/deletes/renames a scanned file
+  writes:
+    - havnvard schema diskaudit.*
+external_services:
+  - nas-1 (SSH/SCP, creds from /etc/havnvard/nas_admin.env, admin-group account; 2026-07-18) -- used by load_nas_inventory.py
+  - nas-1 (SSH/SCP, creds from /etc/havnvard/nas_backup.env, DISTINCT nas_backup account
+    from the nas_admin.env used above -- crosshost_verify.py deliberately uses the lower-privilege
+    backup account for content-hashing, not the admin account)
+  - agent-1 (SSH, existing key-based access; passwordless sudo -n for a small READ-only
+    sha256sum fallback on root-owned files)
+environment_variables:
+  - HAVNVARD_CONFIG_DIR, HAVNVARD_STATE_DIR, HAVNVARD_RESTIC, HAVNVARD_RCLONE, HAVNVARD_ALERTLIB_PATH (backup package; all optional overrides)
+  - POSTGRES_URL (SoT /etc/havnvard/havnvard.env; scan.py falls back to reading that file directly)
+shared_libraries:
+  - alertlib (backup/alerts.py: health and disk-guard alerts; no Telegram code in this repo)
+related_modules:
+  - thoth (census entry: system_key=havnvard, renamed 2026-07-18 from diskaudit)
+  - vp-dispatcher / PRESCAB (informed of function 2026-07-17; v2 will dispatch candidate reviews)
+  - spark-backup-db (systemd/root-run pattern this module follows)
+docs:
+  - /home/user/runbooks/20260717-diskaudit-v1/README.md
+  - /home/user/runbooks/20260717-diskaudit-v2-dedup/README.md (dedup engine + NAS-native crawl pivot, 2026-07-18)
+  - /home/user/runbooks/20260725-havnvard-crosshost-integrity/RUNBOOK.md (cross-host SHA-256 content verification, 2026-07-25)
+  - /home/user/runbooks/20261109-havnvard-nas-dedup/20261109_ARCHITECTURE.md (NAS within-host dedup 1.4.0: design, requirements HV-REQ-01..38, test plan, deploy; Plane INFRA-519/INFRA-520)
+  - /home/user/.claude/plans/witty-swinging-shore.md (objectives + design, incl. v2 roadmap)
+risks:
+  - >-
+    HavnVard Backup 2.0.0: `offsite run` deletes (rclone deletefile) only HavnVard's own half-written or oversize
+    COPY of an encrypted restic file on the offsite remote, never a scanned file and never a hub file; the
+    delete/move guard test still passes because no os.remove / rm -f / os.replace appears in backup/.
+  - >-
+    HavnVard Backup 2.0.0: the hub keeps a copy of each device's repo password (hub-passwords/DEVICE.pass, mode 600)
+    so it can prune, drill and copy to the NAS. Anyone with the hub account can read every device's backups.
+  - >-
+    v1 gap: externally-killed runs (tool timeout, pkill, OOM) leave scan_runs.status='running'
+    forever — no signal handler yet; manual UPDATE required (documented in runbook)
+  - >-
+    full-disk crawl requires root to read cross-user home directories uniformly
+  - >-
+    "abandoned due to software change" detection (the actual differentiator vs. generic
+    disk-usage tools) is NOT YET DESIGNED — flagged as the key open question for v2
+  - >-
+    NAS pipeline (load_nas_inventory.py) validated against 2 of 10 shares (Public, homes) as of
+    2026-07-18 — remaining 8 shares (Download, Multimedia, other1, Recordings, Web, bittorrents,
+    bkup_server, "a share with a space in its name") not yet run, awaiting the operator go-ahead
+  - >-
+    NAS_EXTRA_EXCLUDE_COMPONENTS (QNAP app-cache dirs like .@__thumb) was built incrementally from
+    what homes/ actually contained — bigger/weirder shares may surface more such names needing
+    the same treatment
+  - >-
+    crosshost_verify.py: killing the LOCAL ssh client process (e.g. an operator hitting Ctrl-C or a
+    shell-level `timeout` on a manual invocation) does NOT reliably kill the corresponding REMOTE
+    hash_batch.sh/sha256sum process on nas-1 -- orphaned remote processes can accumulate if a
+    running hash job is interrupted this way. Normal automated operation never applies such a
+    timeout, so this should not occur in scheduled/unattended runs; documented with recovery
+    steps in the 2026-07-25 runbook (check/kill `ps w | grep -E 'hash_batch|sha256sum'` on the NAS).
+  - >-
+    crosshost_verify.py: a crosshost_verify_runs row can be left status='running' forever if the
+    Python process itself is killed (SIGKILL/OOM) mid-run -- same class of gap as scan_runs (see
+    risk above), no signal handler yet; manual UPDATE required if this happens.
+  - >-
+    crosshost_verify.py never attempts a sudo-read fallback for LOCAL (server-1) hashing, only
+    for the remote (agent-1) path in hash_batch.sh -- server-1's ~1,934 unreadable candidate
+    files (verified 2026-07-25) are predominantly live PostgreSQL WAL/base files (should not be
+    read out from under a running DB anyway) and another user's permission-restricted home
+    directory; left as an accepted gap, not escalated, and reported as "unverified" rather than
+    "missing" in the NAS integrity report.
+  - >-
+    NAS dedup (1.4.0): legacy (pre-1.4.0) 'sha256-within-host' labels on diskaudit.files are ADVISORY until
+    replaced by a 1.4.0 publish in their scope, and are never read by the operator delete script (it reads
+    only dedup_group_snapshots of a completed, non-partial, >= 1.4.0 run).
+  - >-
+    NAS dedup (1.4.0): bkup_server is excluded from the weekly run and from the delete script's default scope
+    until the operator decides (it is ~63% of NAS rows and is rewritten by rsync at all hours).
+  - >-
+    NAS dedup (1.4.0): same-second, same-size in-place edits that keep the inode are undetectable at the NAS's
+    1-second mtime resolution (accepted residual risk); the delete script closes it by re-hashing both sides
+    immediately before acting.
+plane: INFRA-97

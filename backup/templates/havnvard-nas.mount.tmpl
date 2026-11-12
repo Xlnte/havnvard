@@ -1,0 +1,15 @@
+[Unit]
+Description=HavnVard NAS backup target ($smb)
+After=network-online.target
+Wants=network-online.target
+
+[Mount]
+What=$smb
+Where=$mountpoint
+Type=cifs
+# credentials file holds username= and password= lines (mode 600), never the password here.
+# vers=3.0 is the default; if the NAS refuses it, try vers=2.1 or vers=3.1.1.
+Options=credentials=$cred_file,uid=$uid,gid=$gid,file_mode=0600,dir_mode=0700,vers=$vers,_netdev,nofail
+
+[Install]
+WantedBy=multi-user.target

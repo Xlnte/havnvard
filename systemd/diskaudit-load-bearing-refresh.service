@@ -1,0 +1,15 @@
+[Unit]
+Description=diskaudit — load-bearing path refresh (classification layer v1)
+Documentation=file:///home/user/runbooks/20260718-diskaudit-classification/README.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/havnvard
+ExecStart=/opt/havnvard/.venv/bin/python /opt/havnvard/refresh_load_bearing_paths.py
+StandardOutput=journal
+StandardError=journal
+Nice=10
+TimeoutStartSec=30min

@@ -1,0 +1,9 @@
+[Unit]
+Description=diskaudit classification refresh schedule, changed 2026-07-19 (was monthly *-*-01 08:00, collided with diskaudit-scan.timer + havnvard-restic-app-i-retention.timer) to daily, 15min after load-bearing-refresh so it picks up fresh load-bearing data same cycle instead of lagging weeks behind.
+
+[Timer]
+OnCalendar=*-*-* 08:35:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

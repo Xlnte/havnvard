@@ -1,0 +1,7 @@
+# Python dependencies only. System-level binaries (rdfind, sshpass, ssh,
+# rsync, restic, etc. — see README.md "Requirements") are OS packages, not
+# pip-installable, and are not listed here.
+psycopg[binary]>=3.2
+
+# Optional integrations (daily report review, weekly AI review) need extra
+# packages: see requirements-optional.txt. The core tools do not.

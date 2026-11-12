@@ -1,0 +1,10 @@
+[Unit]
+Description=HavnVard daily PRESI report schedule (metadata report + PRESCAB analysis)
+
+[Timer]
+OnCalendar=*-*-* 15:00:00
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

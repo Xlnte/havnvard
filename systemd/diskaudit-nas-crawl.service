@@ -1,0 +1,16 @@
+[Unit]
+Description=diskaudit — monthly NAS-native file inventory (via SSH crawl + load)
+Documentation=file:///home/user/runbooks/20260717-diskaudit-v2-dedup/README.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/havnvard
+ExecStart=/opt/havnvard/run_all_nas_shares.sh
+StandardOutput=journal
+StandardError=journal
+Nice=15
+IOSchedulingClass=idle
+TimeoutStartSec=8h

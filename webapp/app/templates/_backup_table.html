@@ -1,0 +1,79 @@
+{% if source == 'coverage' %}
+<div class="banner">
+  <b>Source: diskaudit.backup_coverage</b> (full per-file classification, landed live during this build).
+  Per-host evaluation progress —
+  {% for c in kpi.coverage_by_host %}
+    {{ c.host }}: {{ human_count(c.evaluated) }} / {{ human_count(c.total) }} files evaluated ({{ c.pct }}%){% if not loop.last %} &middot; {% endif %}
+  {% endfor %}
+  . A host at 0% has not been through a coverage pass yet — it is <b>not</b> "all safe", it is
+  <b>not yet evaluated</b>.
+</div>
+{% else %}
+<div class="banner">
+  <b>Source: diskaudit.integrity_checks (fallback — diskaudit.backup_coverage not present).</b>
+  This is a narrow, hash-proven-only sample: {{ human_count(kpi.total_checked) }} of
+  {{ human_count(kpi.total_files) }} live files on {{ site_sources }} have ever been cross-host verified
+  ({{ kpi.sample_pct }}%). The vast majority of files have <b>not</b> been checked — this list is
+  necessarily partial, not a complete "not backed up" inventory, until backup_coverage lands.
+</div>
+{% endif %}
+<div class="caveat">
+  <b>"mismatch" is not corruption.</b> A mismatch verdict reflects live mutable state (e.g. a Chrome
+  profile or sqlite file that has changed since the NAS snapshot was taken) compared against a
+  point-in-time backup copy — it does not by itself mean data loss or a bad file. Read the evidence
+  badge: <span class="badge hash-proven">hash-proven</span> = sha256 compared directly;
+  <span class="badge guess">path+size+mtime guess</span> = same path/size/mtime found elsewhere, not
+  byte-compared; <span class="badge no-evidence">no evidence</span> = no counterpart found or checked yet,
+  which is not proof the file is missing everywhere.
+</div>
+{% if kpi.candidates == 0 %}
+<div class="empty-state">No backup candidates match these filters.</div>
+{% else %}
+<div class="kpi-row">
+  <div class="kpi"><div class="n">{{ human_count(kpi.candidates) }}</div><div class="l">candidate files</div></div>
+  <div class="kpi"><div class="n">{{ human_bytes(kpi.at_risk_bytes) }}</div><div class="l">bytes not safely on NAS</div></div>
+</div>
+{% endif %}
+<table>
+  <thead><tr>
+    <th>Host</th>
+    <th class="num"><a href="{{ sort_links.size.url }}">Size <span class="sortarrow">{{ sort_links.size.icon }}</span></a></th>
+    <th>Classification</th>
+    <th>Evidence</th>
+    {% if source == 'coverage' %}<th>Matched NAS location</th>{% endif %}
+    <th><a href="{{ sort_links.checked_at.url }}">Checked <span class="sortarrow">{{ sort_links.checked_at.icon }}</span></a></th>
+    <th><a href="{{ sort_links.path.url }}">Path <span class="sortarrow">{{ sort_links.path.icon }}</span></a></th>
+  </tr></thead>
+  <tbody>
+  {% for r in rows %}
+    <tr>
+      <td>{{ r.host }}</td>
+      <td class="num">{{ r.size_h }}</td>
+      <td>
+        {% if r.classification == 'NOT_BACKED_UP' %}<span class="badge not-backed-up">NOT_BACKED_UP</span>
+        {% elif r.classification == 'BACKED_UP_UNVERIFIED' %}<span class="badge unverified">UNVERIFIED</span>
+        {% elif r.classification == 'EXCLUDED' %}<span class="badge excluded">EXCLUDED</span>
+        {% elif r.classification == 'mismatch' %}<span class="badge unverified">MISMATCH (not necessarily corruption)</span>
+        {% elif r.classification == 'missing_dest' %}<span class="badge not-backed-up">NO NAS CANDIDATE FOUND</span>
+        {% else %}<span class="badge excluded">{{ r.classification }}</span>{% endif %}
+      </td>
+      <td>{% if r.evidence == 'hash_proven' %}<span class="badge hash-proven">hash-proven</span>
+          {% elif r.evidence == 'guess' %}<span class="badge guess">path+size+mtime guess</span>
+          {% else %}<span class="badge no-evidence">no evidence</span>{% endif %}</td>
+      {% if source == 'coverage' %}
+      <td class="small mono">{{ r.matched_nas_host or '' }} {{ r.matched_nas_path or '' }}</td>
+      {% endif %}
+      <td class="small">{{ r.checked_at.strftime('%Y-%m-%d %H:%M') if r.checked_at else '—' }}</td>
+      <td class="mono">{{ r.path }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+<div class="pager">
+  <a href="{{ prev_url }}" {% if f.page <= 1 %}style="pointer-events:none;color:#999;"{% endif %}
+     hx-get="{{ prev_url }}" hx-target="#backup-results" hx-push-url="true">&laquo; prev</a>
+  <span>page {{ f.page }} / {{ page_count }} &middot; {{ human_count(total) }} candidates matched</span>
+  <a href="{{ next_url }}" {% if f.page >= page_count %}style="pointer-events:none;color:#999;"{% endif %}
+     hx-get="{{ next_url }}" hx-target="#backup-results" hx-push-url="true">next &raquo;</a>
+  <span class="small">&middot; <a href="{{ export_csv }}">export CSV</a> &middot; <a href="{{ export_json }}">export JSON</a></span>
+</div>

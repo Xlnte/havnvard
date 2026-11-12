@@ -1,0 +1,14 @@
+{HOME}/.cache
+{HOME}/snap
+{HOME}/.npm
+{HOME}/.nvm
+{HOME}/.unsloth
+{HOME}/.local/share/Trash
+{HOME}/.config/restic
+**/node_modules
+**/.venv
+**/__pycache__
+**/Cache
+**/Code Cache
+**/GPUCache
+**/Service Worker/CacheStorage

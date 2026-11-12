@@ -1,0 +1,9 @@
+[Unit]
+Description=diskaudit — weekly PRESCAB operational review schedule
+
+[Timer]
+OnCalendar=Sun 18:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,9 @@
+HavnVard
+Copyright 2026 the HavnVard authors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product includes third-party software:
+
+- htmx 1.9.10 (webapp/app/static/htmx.min.js), Copyright (c) 2020, Big Sky Software.
+  BSD 2-Clause License; full text in webapp/app/static/htmx.LICENSE.

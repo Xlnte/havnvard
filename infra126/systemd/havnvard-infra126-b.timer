@@ -1,0 +1,12 @@
+[Unit]
+Description=Monthly HavnVard Tier B verification after QNAP scrub
+
+[Timer]
+OnCalendar=*-*-07 02:00:00 UTC
+Persistent=true
+RandomizedDelaySec=1800
+AccuracySec=1min
+Unit=havnvard-infra126-b.service
+
+[Install]
+WantedBy=timers.target

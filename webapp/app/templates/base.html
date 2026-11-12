@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}HavnVard{% endblock %}</title>
+<script src="/static/htmx.min.js"></script>
+<style>
+  html,body{margin:0;padding:0;background:#f4f3f0;color:#1b1916;
+    font-family:Arial,Helvetica,sans-serif;font-size:11pt;min-width:1280px;}
+  a{color:#2f5f8a;}
+  h1{font-size:22pt;font-weight:bold;margin:0 0 4px 0;}
+  h2{font-size:14pt;font-weight:bold;margin:14px 0 6px 0;}
+  .muted{color:#666;}
+  .small{font-size:10pt;}
+  .badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:9.5pt;font-weight:bold;white-space:nowrap;}
+  .badge.hash-proven{background:#1f7a3d;color:#fff;}
+  .badge.guess{background:#c98a1a;color:#fff;}
+  .badge.no-evidence{background:#888;color:#fff;}
+  .badge.hardlink{background:#5a5a9a;color:#fff;}
+  .badge.not-backed-up{background:#8a2f2f;color:#fff;}
+  .badge.unverified{background:#c98a1a;color:#fff;}
+  .badge.excluded{background:#888;color:#fff;}
+  /* ---- Classification badges (defect 1) — worst-case category per group ---- */
+  .badge.cls-decommissioned{background:#8a2f2f;color:#fff;}
+  .badge.cls-load_bearing{background:#a3361f;color:#fff;}
+  .badge.cls-os_system{background:#5a5a9a;color:#fff;}
+  .badge.cls-application{background:#3f7fb0;color:#fff;}
+  .badge.cls-cache_temp{background:#c98a1a;color:#fff;}
+  .badge.cls-user_data{background:#1f7a3d;color:#fff;}
+  .badge.cls-unknown{background:#888;color:#fff;}
+  /* ---- Evidence-strength ladder badges (defect 3) — strongest to weakest ---- */
+  .badge.ev-byte_identical{background:#0d5c26;color:#fff;}
+  .badge.ev-sha256_both{background:#1f7a3d;color:#fff;}
+  .badge.ev-sha256_rdfind{background:#3f8f4f;color:#fff;}
+  .badge.ev-same_inode{background:#5a5a9a;color:#fff;}
+  .badge.ev-path_size_mtime{background:#c98a1a;color:#fff;}
+  .badge.ev-size_only{background:#b56a1a;color:#fff;}
+  .badge.ev-none{background:#8a2f2f;color:#fff;}
+  /* ---- Provenance (who computed the evidence) — independent axis, neutral color so it never reads as a strength signal ---- */
+  .badge.provenance{background:#555;color:#fff;font-weight:normal;}
+  table.small{font-size:9.5pt;width:auto;min-width:420px;}
+  details.caveat{padding:6px 12px;}
+  details.caveat summary{cursor:pointer;}
+  details.caveat table{margin-top:8px;}
+  tr.muted td{color:#999;}
+  .caveat{background:#fff4e0;border:1px solid #e0b76a;color:#6b4a10;padding:8px 12px;border-radius:6px;
+    font-size:10pt;margin-bottom:10px;}
+  .banner{background:#eef4fa;border:1px solid #a9c4dd;color:#1b3a52;padding:8px 12px;border-radius:6px;
+    font-size:10pt;margin-bottom:10px;}
+  nav.tabs{display:flex;gap:4px;padding:0 18px;background:#1b1916;}
+  nav.tabs a{color:#cfc9bd;text-decoration:none;padding:8px 14px;font-size:10.5pt;border-bottom:3px solid transparent;}
+  nav.tabs a.active{color:#fff;border-bottom-color:#2f5f8a;font-weight:bold;}
+  .shell{padding:14px 18px;}
+  header.page{background:#1b1916;color:#e8e6e1;padding:10px 18px;display:flex;
+    justify-content:space-between;align-items:center;}
+  header.page a{color:#6fa8d8;text-decoration:none;}
+  table{border-collapse:collapse;width:100%;background:#fff;font-size:10.5pt;}
+  table th, table td{border:1px solid #ddd;padding:5px 8px;text-align:left;vertical-align:top;}
+  table th{background:#efece6;font-size:10.5pt;font-weight:bold;white-space:nowrap;}
+  table th a{color:#1b1916;text-decoration:none;}
+  tr:hover td{background:#faf8f4;}
+  .num{text-align:right;}
+  .mono{font-family:"DejaVu Sans Mono",monospace;font-size:9.5pt;word-break:break-all;}
+  .toolbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px;}
+  form.filters{display:flex;flex-wrap:wrap;gap:8px;align-items:end;margin-bottom:10px;}
+  form.filters .field{display:flex;flex-direction:column;}
+  form.filters label{font-size:9pt;font-weight:bold;margin-bottom:2px;}
+  input[type=text],input[type=number],select{
+    font-family:inherit;font-size:10pt;padding:4px 6px;border:1px solid #bbb;border-radius:4px;}
+  button.btn{font-family:inherit;font-size:10pt;padding:5px 12px;border-radius:5px;border:1px solid #2f5f8a;
+    background:#3f7fb0;color:#fff;cursor:pointer;}
+  button.btn.secondary{background:#fff;color:#333;border:1px solid #999;}
+  .kpi-row{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:10px;}
+  .kpi{background:#fff;border:1px solid #ddd;border-radius:8px;padding:8px 14px;min-width:140px;}
+  .kpi .n{font-size:16pt;font-weight:bold;}
+  .kpi .l{font-size:9.5pt;color:#666;}
+  .pager{display:flex;gap:10px;align-items:center;margin-top:10px;font-size:10pt;}
+  .empty-state{color:#888;font-style:italic;font-size:10pt;padding:20px;text-align:center;}
+  .sortarrow{font-size:9pt;color:#2f5f8a;}
+  /* ---- Dark theme: overrides only; light stays default ---- */
+  html[data-theme="dark"], html[data-theme="dark"] body{background:#17140f;color:#e6e2da;}
+  html[data-theme="dark"] .muted, html[data-theme="dark"] .kpi .l{color:#9c968b;}
+  html[data-theme="dark"] table,
+  html[data-theme="dark"] .kpi,
+  html[data-theme="dark"] button.btn.secondary,
+  html[data-theme="dark"] input[type=text],
+  html[data-theme="dark"] input[type=number],
+  html[data-theme="dark"] select{background:#221f19;color:#e6e2da;border-color:#3a352d;}
+  html[data-theme="dark"] table th{background:#2b271f;}
+  html[data-theme="dark"] table th a{color:#e6e2da;}
+  html[data-theme="dark"] table th, html[data-theme="dark"] table td{border-color:#3a352d;}
+  html[data-theme="dark"] tr:hover td{background:#2a261e;}
+  html[data-theme="dark"] .caveat{background:#3a2e12;border-color:#7a5a1a;color:#e8c98a;}
+  html[data-theme="dark"] .banner{background:#152230;border-color:#3a5570;color:#bcd6ee;}
+  html[data-theme="dark"] nav.tabs{background:#0f0d0a;}
+  html[data-theme="dark"] tr.muted td{color:#6b665c;}
+
+  /* ---- Group-detail + banding additions (2026-07-25, HavnVard dedup drill-down) ---- */
+  /* Alternating per-duplicate-group row tint (owner ask: "all the files...
+     row duplicated file" -- CLEANUP tab, one row per file). Subtle, low-
+     saturation background only -- never the sole signal for anything
+     meaningful; it's a grouping aid, not a verdict. Verdicts/classification
+     always carry an explicit text badge alongside any color. */
+  tr.band-a td{background:#f7f6f2;}
+  tr.band-b td{background:#eceae3;}
+  tr.band-a:hover td{background:#efece4;}
+  tr.band-b:hover td{background:#e3e0d6;}
+  html[data-theme="dark"] tr.band-a td{background:#1d1a14;}
+  html[data-theme="dark"] tr.band-b td{background:#24211a;}
+  html[data-theme="dark"] tr.band-a:hover td{background:#252219;}
+  html[data-theme="dark"] tr.band-b:hover td{background:#2c281f;}
+
+  /* file_status classification badges (group-detail member rows) */
+  .badge.status-protected{background:#a3361f;color:#fff;}
+  .badge.status-decommissioned{background:#8a2f2f;color:#fff;}
+  .badge.status-obsolete{background:#c98a1a;color:#fff;}
+  .badge.status-stale{background:#b56a1a;color:#fff;}
+  .badge.status-active{background:#1f7a3d;color:#fff;}
+  .badge.status-unknown{background:#888;color:#fff;}
+
+  /* KEEP / CANDIDATE verdict -- always rendered with its own text (KEEP /
+     CANDIDATE), color is reinforcement only, never the only signal. */
+  .badge.verdict-keep{background:#1f7a3d;color:#fff;}
+  .badge.verdict-candidate{background:#8a2f2f;color:#fff;}
+
+  .reason-cell{font-size:9.5pt;max-width:420px;}
+  .snapshot-callout{background:#fff4e0;border:2px solid #b5691a;color:#5a3a08;padding:10px 14px;
+    border-radius:6px;font-size:10.5pt;margin-bottom:12px;}
+  .snapshot-callout b.headline{font-size:11.5pt;}
+  html[data-theme="dark"] .reason-cell{color:#d8d4cb;}
+  html[data-theme="dark"] .snapshot-callout{background:#3a2608;border-color:#8a5a1f;color:#f0cf9a;}
+
+  tr.protected-row td{outline:1px solid #a3361f;outline-offset:-1px;}
+  html[data-theme="dark"] tr.protected-row td{outline-color:#c9553a;}
+</style>
+<script>
+  /* Synchronous pre-paint theme bootstrap -- avoids a flash of the wrong
+     theme. forge-chrome.js (INFRA-51) owns the toggle CONTROL and the
+     canonical 'forge-theme' localStorage key, but it hydrates on
+     DOMContentLoaded (async), so it can't itself prevent first-paint
+     flash -- this early guard stays for that reason (documented decision,
+     see runbook). Reads the canonical key first so it stays correct after
+     a toggle via the forge_core header; falls back to HavnVard's own
+     legacy 'havnvard-theme' key (forge-chrome.js migrates that key into
+     'forge-theme' once, on first hydration -- see legacy_theme_key in
+     app/templates.py) and finally to prefers-color-scheme. */
+  (function(){
+    var t = null;
+    try { t = localStorage.getItem('forge-theme'); } catch(e){}
+    if(!t){ try { t = localStorage.getItem('havnvard-theme'); } catch(e){} }
+    if(!t){ t = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light'; }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+</head>
+<body>
+{{ forge_header(app_nav=[
+  {"label": "A) DEDUP — duplicate groups", "href": "/havnvard/dedup", "active": active_tab == "dedup"},
+  {"label": "B) CLEANUP — files with duplicates", "href": "/havnvard/cleanup", "active": active_tab == "cleanup"},
+  {"label": "C) BACKUP — not safely on NAS", "href": "/havnvard/backup", "active": active_tab == "backup"},
+]) }}
+<div class="shell">
+{% block content %}{% endblock %}
+</div>
+{{ forge_footer() }}
+</body>
+</html>

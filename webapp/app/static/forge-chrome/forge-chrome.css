@@ -1,0 +1,169 @@
+/*!
+ * forge-chrome.css — FORGE_CHROME_VERSION 1.0.0
+ *
+ * Shared FORGE chrome stylesheet. SoT:
+ * (upstream forge_core)
+ * (consumer apps carry a vendored copy under <static>/forge-chrome/ —
+ * synced by forge_core/scripts/sync_chrome.py, never hand-edited).
+ *
+ * ============================= THEMING CONTRACT =============================
+ * (binding — PRESCAB cabinet 2026-08-17, Item A; spec §4.3)
+ *
+ *   TOKEN VALUES = THEMING (app-owned).  SELECTORS = FORKING (disallowed).
+ *
+ * - This file defines the default --fc-* token palette: SPARK Console
+ *   blue/cyan (the cabinet-settled baseline, from
+ *   (upstream forge_core)),
+ *   light + dark.
+ * - A consuming app MAY re-declare --fc-* custom-property VALUES in its own
+ *   stylesheet loaded AFTER this one, to blend the chrome into its identity
+ *   (e.g. IVALDI -> ember/paper/ink, kvasir -> its blues). Key both states
+ *   off the same [data-theme] attribute so the one toggle drives both layers.
+ * - A consuming app MUST NOT override .forge-* structural selectors. That is
+ *   the fork line the shared chrome exists to prevent (six independent
+ *   chrome forks existed before this package). If a structural change is
+ *   needed, change it HERE (the SoT) and re-vendor — never downstream.
+ * - Chrome touches only .forge-* classes and --fc-* tokens; it never styles
+ *   host elements. Slot content (headerTools/footerItems) is adopted into
+ *   position, not restyled.
+ *
+ * Theme states: [data-theme="light"] / [data-theme="dark"] on <html> (set by
+ * forge-chrome.js from localStorage 'forge-theme'); when unset,
+ * prefers-color-scheme decides. Light is the bare-:root base; dark overrides
+ * via the attribute and the media-query fallback below.
+ * ===========================================================================
+ */
+
+:root{
+  --fc-bg:#F4F7FB;        /* page/app ground behind the chrome */
+  --fc-fg:#0B1220;        /* primary text */
+  --fc-mut:#4B5A72;       /* secondary/metadata text */
+  --fc-card:#FFFFFF;      /* header bar / dropdown / palette surface */
+  --fc-card-2:#F3F6FB;    /* raised surface gradient stop */
+  --fc-line:#DCE3EE;      /* hairline borders */
+  --fc-accent:#0090C7;    /* SPARK primary blue (light-tuned) */
+  --fc-accent-2:#0077A6;  /* SPARK bright blue — links/focus (light-tuned) */
+  --fc-accent-fg:#FFFFFF; /* text on accent fills */
+  --fc-cyan:#00A98A;      /* SPARK spark-energy accent (light-tuned) */
+  --fc-overlay:rgba(11,18,32,.5); /* palette backdrop */
+  --fc-font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --fc-mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+}
+:root[data-theme="dark"]{
+  --fc-bg:#050A12;
+  --fc-fg:#F4F8FF;
+  --fc-mut:#8FA8C8;
+  --fc-card:#0E1A2E;
+  --fc-card-2:#101D33;
+  --fc-line:#1B2C46;
+  --fc-accent:#00AEEF;
+  --fc-accent-2:#00D4FF;
+  --fc-accent-fg:#050A12;
+  --fc-cyan:#00FFD1;
+  --fc-overlay:rgba(2,6,12,.72);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --fc-bg:#050A12;
+    --fc-fg:#F4F8FF;
+    --fc-mut:#8FA8C8;
+    --fc-card:#0E1A2E;
+    --fc-card-2:#101D33;
+    --fc-line:#1B2C46;
+    --fc-accent:#00AEEF;
+    --fc-accent-2:#00D4FF;
+    --fc-accent-fg:#050A12;
+    --fc-cyan:#00FFD1;
+    --fc-overlay:rgba(2,6,12,.72);
+  }
+}
+
+/* ---------------------------- header ---------------------------- */
+.forge-hdr{display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+  background:linear-gradient(180deg,var(--fc-card),var(--fc-card-2));
+  border:1px solid var(--fc-line);border-radius:8px;
+  padding:10px 16px;margin:0 0 18px 0;
+  font-family:var(--fc-font);
+  font-size:14px;color:var(--fc-fg);position:relative;z-index:50;}
+.forge-hdr *{box-sizing:border-box;}
+.forge-brand{font-weight:600;font-size:16px;color:var(--fc-fg);text-decoration:none;
+  white-space:nowrap;}
+.forge-brand:hover{color:var(--fc-accent-2);}
+.forge-menu{position:relative;}
+.forge-menu-btn{background:none;border:none;cursor:pointer;color:var(--fc-mut);
+  font:inherit;padding:6px 10px;border-radius:6px;white-space:nowrap;}
+.forge-menu-btn:hover,.forge-menu.forge-open .forge-menu-btn,
+.forge-menu:focus-within .forge-menu-btn{color:var(--fc-fg);background:var(--fc-bg);}
+.forge-menu-panel{position:absolute;top:100%;left:0;margin-top:6px;
+  background:linear-gradient(180deg,var(--fc-card),var(--fc-card-2));
+  border:1px solid var(--fc-line);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.25);
+  padding:6px;min-width:220px;max-height:70vh;overflow:auto;
+  display:none;flex-direction:column;gap:1px;z-index:60;}
+.forge-menu.forge-open .forge-menu-panel,
+.forge-menu:focus-within .forge-menu-panel{display:flex;}
+.forge-menu-panel a{color:var(--fc-fg);text-decoration:none;padding:7px 12px;border-radius:5px;
+  white-space:nowrap;font-size:13px;}
+.forge-menu-panel a:hover{background:var(--fc-bg);color:var(--fc-accent-2);}
+.forge-menu-empty{color:var(--fc-mut);font-size:12px;padding:7px 12px;}
+
+/* optional intra-app nav (config.appNav) */
+.forge-appnav{display:flex;align-items:center;gap:2px;flex-wrap:wrap;}
+.forge-appnav-link{color:var(--fc-mut);text-decoration:none;font-size:13px;
+  padding:6px 10px;border-radius:6px;white-space:nowrap;}
+.forge-appnav-link:hover{color:var(--fc-fg);background:var(--fc-bg);}
+.forge-appnav-active{color:var(--fc-accent);font-weight:600;}
+
+/* headerTools slot — adopted host content, positioned only */
+.forge-tools{display:flex;align-items:center;gap:10px;min-width:0;}
+
+.forge-right{margin-left:auto;display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+.forge-env{font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;
+  padding:3px 8px;border-radius:999px;border:1px solid var(--fc-line);color:var(--fc-mut);}
+.forge-env[data-env="prod"]{color:var(--fc-accent-fg);background:var(--fc-accent);
+  border-color:var(--fc-accent);}
+.forge-settings{color:var(--fc-mut);text-decoration:none;font-size:13px;}
+.forge-settings:hover{color:var(--fc-accent-2);}
+.forge-theme-btn{background:none;border:1px solid var(--fc-line);color:var(--fc-fg);
+  border-radius:6px;padding:4px 9px;cursor:pointer;line-height:1;font-size:14px;}
+.forge-theme-btn:hover{color:var(--fc-accent-2);border-color:var(--fc-accent);}
+.forge-palette-btn{background:var(--fc-bg);border:1px solid var(--fc-line);
+  color:var(--fc-mut);border-radius:6px;padding:4px 9px;cursor:pointer;line-height:1;
+  font-family:var(--fc-mono);font-size:11px;}
+.forge-palette-btn:hover{color:var(--fc-fg);border-color:var(--fc-accent);}
+
+/* ---------------------------- footer ---------------------------- */
+.forge-ftr{margin-top:28px;padding:14px 16px;border-top:1px solid var(--fc-line);
+  color:var(--fc-mut);font-size:12px;
+  font-family:var(--fc-mono);display:flex;
+  justify-content:space-between;flex-wrap:wrap;gap:8px;}
+.forge-ftr a{color:var(--fc-mut);text-decoration:none;}
+.forge-ftr a:hover{color:var(--fc-accent-2);}
+.forge-ftr-items{display:flex;align-items:center;gap:12px;flex-wrap:wrap;}
+
+/* ------------------- command palette (Ctrl+K) ------------------- */
+/* structure ported from the cabinet-selected Concept B mockup
+   (20260816-forge-shell-mockups/concept-b-topbar). Feature-flagged:
+   ForgeChrome.mount({palette:false}) renders none of this. */
+.forge-palette-overlay{display:none;position:fixed;top:0;right:0;bottom:0;left:0;
+  z-index:100;background:var(--fc-overlay);
+  align-items:flex-start;justify-content:center;padding-top:12vh;
+  font-family:var(--fc-font);}
+.forge-palette-overlay.forge-palette-open{display:flex;}
+.forge-palette{width:560px;max-width:92vw;
+  background:linear-gradient(180deg,var(--fc-card),var(--fc-card-2));
+  border:1px solid var(--fc-line);border-radius:12px;
+  box-shadow:0 24px 64px rgba(0,0,0,.6);overflow:hidden;}
+.forge-palette-input{width:100%;border:none;border-bottom:1px solid var(--fc-line);
+  background:var(--fc-bg);color:var(--fc-fg);font-family:inherit;font-size:15px;
+  padding:14px 16px;box-sizing:border-box;}
+.forge-palette-input:focus{outline:none;}
+.forge-palette-results{padding:6px;max-height:320px;overflow-y:auto;}
+.forge-palette-result{display:flex;justify-content:space-between;align-items:center;
+  gap:10px;padding:9px 12px;border-radius:6px;font-size:13px;color:var(--fc-mut);
+  cursor:pointer;}
+.forge-palette-result:hover,.forge-palette-sel{background:var(--fc-bg);color:var(--fc-fg);}
+.forge-palette-kind{font-family:var(--fc-mono);font-size:10px;color:var(--fc-mut);
+  border:1px solid var(--fc-line);border-radius:4px;padding:1px 5px;}
+.forge-palette-empty{padding:9px 12px;font-size:13px;color:var(--fc-mut);}
+.forge-palette-hint{padding:9px 12px;border-top:1px solid var(--fc-line);
+  font-size:11px;color:var(--fc-mut);}

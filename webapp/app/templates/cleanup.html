@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}HavnVard — CLEANUP{% endblock %}
+{% block content %}
+<h1>B) CLEANUP — files with duplicates (candidates to remove)</h1>
+<p class="muted small">Files on {{ site_sources }} that belong to a duplicate group on that host. This is
+informational only — <b>HavnVard never deletes or moves a file, anywhere</b>. Use the export below to hand
+a manifest to the separate, not-yet-built authorized cleanup process.</p>
+
+<form class="filters" hx-get="/havnvard/cleanup/table" hx-target="#cleanup-results" hx-push-url="true">
+  <div class="field"><label>Host</label>
+    <select name="host" multiple size="2">
+      {% for h in source_hosts %}<option value="{{ h }}" {% if h in f.host %}selected{% endif %}>{{ h }}</option>{% endfor %}
+    </select>
+  </div>
+  <div class="field"><label>Path contains</label><input type="text" name="q" value="{{ f.q or '' }}"></div>
+  <div class="field"><label>Min size (bytes)</label><input type="number" name="size_min" value="{{ f.size_min or '' }}"></div>
+  <div class="field"><label>Evidence</label>
+    <select name="hash_proven">
+      <option value="any" {% if f.hash_proven is none %}selected{% endif %}>any</option>
+      <option value="true" {% if f.hash_proven == true %}selected{% endif %}>hash-proven only</option>
+      <option value="false" {% if f.hash_proven == false %}selected{% endif %}>path-matched guess only</option>
+    </select>
+  </div>
+  <div class="field"><label>Hardlink-only sets</label>
+    <select name="include_hardlink_only">
+      <option value="false" {% if not f.include_hardlink_only %}selected{% endif %}>hide (default — 0 reclaim)</option>
+      <option value="true" {% if f.include_hardlink_only %}selected{% endif %}>include</option>
+    </select>
+  </div>
+  <div class="field"><label>Per page</label>
+    <select name="page_size">
+      {% for n in [25,50,100,200] %}<option value="{{ n }}" {% if f.page_size == n %}selected{% endif %}>{{ n }}</option>{% endfor %}
+    </select>
+  </div>
+  <input type="hidden" name="page" value="1">
+  <input type="hidden" name="sort" value="{{ f.sort }}">
+  <button class="btn" type="submit">Apply filters</button>
+</form>
+
+<div id="cleanup-results">
+{% include "_cleanup_table.html" %}
+</div>
+{% endblock %}

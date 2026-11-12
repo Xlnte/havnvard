@@ -1,0 +1,22 @@
+[Unit]
+Description=HavnVard — NAS within-host SHA-256 dedup (nas-1, weekly; set [nas] backup_tree_prefix so backup replicas are never the keeper)
+Documentation=file:///home/user/runbooks/20261109-havnvard-nas-dedup/20261109_ARCHITECTURE.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=havnvard
+WorkingDirectory=/opt/havnvard
+ExecStart=/opt/havnvard/.venv/bin/python3 /opt/havnvard/nas_trigkey_dedup.py --host nas-1
+# --host: your site file's [hosts] nas. Excludes come from [nas] dedup_excludes (or pass --exclude DIR).
+Nice=15
+IOSchedulingClass=idle
+KillSignal=SIGTERM
+TimeoutStopSec=180
+TimeoutStartSec=6d
+# exit 4 = "refused: a whole-host run is already active" (HV-REQ-25/35) -- not a unit failure;
+# the refusal line is in the journal and the next week's run proceeds.
+SuccessExitStatus=4
+StandardOutput=journal
+StandardError=journal

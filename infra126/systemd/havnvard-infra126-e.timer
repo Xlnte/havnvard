@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily HavnVard Tier E critical-path verification
+
+[Timer]
+OnCalendar=*-*-* 22:00:00 UTC
+Persistent=true
+RandomizedDelaySec=600
+AccuracySec=1min
+Unit=havnvard-infra126-e.service
+
+[Install]
+WantedBy=timers.target

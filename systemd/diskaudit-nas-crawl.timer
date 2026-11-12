@@ -1,0 +1,13 @@
+[Unit]
+Description=diskaudit NAS-native inventory schedule, every 4h, changed 2026-07-19 -- shifted 30min earlier (was :50 past 00/04/08/12/16/20) to reduce overlap with TechWatch's 04:00-14:00 daily pipeline window (INFRA-110). Does not fully clear TechWatch's enrich-step tail, only reduces the overlap -- full fix still open in INFRA-110.
+
+[Timer]
+OnCalendar=*-*-* 00:20:00
+OnCalendar=*-*-* 04:20:00
+OnCalendar=*-*-* 08:20:00
+OnCalendar=*-*-* 12:20:00
+OnCalendar=*-*-* 16:20:00
+OnCalendar=*-*-* 20:20:00
+
+[Install]
+WantedBy=timers.target

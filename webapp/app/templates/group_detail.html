@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}HavnVard — group {{ duplicate_group_id[:12] }}…{% endblock %}
+{% block content %}
+<div class="toolbar">
+  <div>
+    <h2 style="margin:0;">Group drill-down &middot; <span class="mono small">{{ duplicate_group_id }}</span></h2>
+    <div class="small muted">Host: <b>{{ host }}</b> &middot; <a href="{{ back_url }}">&laquo; back to DEDUP list</a></div>
+  </div>
+  <div class="small"><a href="{{ export_csv }}">export CSV</a> &middot; <a href="{{ export_json }}">export JSON</a></div>
+</div>
+
+<div class="kpi-row">
+  <div class="kpi"><div class="n">{{ human_count(totals.file_count) }}</div><div class="l">copies in this group</div></div>
+  <div class="kpi"><div class="n">{{ human_count(totals.distinct_inode_count) }}</div><div class="l">distinct inodes</div></div>
+  <div class="kpi"><div class="n">{{ totals_size_h }}</div><div class="l">size per copy</div></div>
+  <div class="kpi"><div class="n">{{ totals_reclaim_h }}</div><div class="l">reclaimable (hardlink-aware, group total)</div></div>
+</div>
+
+<div class="caveat">
+  <b>Hardlink-aware, honest per-row figures:</b> the group total above ({{ totals_reclaim_h }}) is the
+  materialized view's authoritative number. Summing this page's own per-row <code>reclaim_bytes</code>
+  gives {{ checked_sum_h }}{% if not reclaim_matches %} &mdash; <b>these do not currently match; treat the
+  group total above as authoritative and report this discrepancy</b>{% else %} &mdash; matches, as expected
+  {% endif %}. A CANDIDATE row sharing an inode with the KEEP copy (or with another already-counted
+  candidate) frees <b>zero</b> bytes on its own and is labelled as such below.
+  {% if is_hardlink_only %}<br><span class="badge hardlink">hardlink set — every copy is the same inode, 0 bytes reclaimable regardless of verdict</span>{% endif %}
+</div>
+
+{% if ranked.dated_snapshot %}
+<div class="snapshot-callout">
+  <b class="headline">⚠ Dated-snapshot series detected — this is very likely a BACKUP JOB BUG, not user duplication.</b><br>
+  Every copy in this group sits at the same path except for an embedded <code>YYYYMMDD</code>-shaped date
+  component, and the file content is otherwise identical. That means a backup job re-copied an
+  <b>unchanged</b> file on every run instead of hardlinking to the prior snapshot (e.g.
+  <code>rsync --link-dest</code> or equivalent incremental-with-hardlinks strategy). Deleting the older
+  snapshots here reclaims the space <b>today</b>, but the root cause is upstream at the backup job — if it
+  isn't fixed, this group (and every other dated-snapshot series like it) will silently regrow the same
+  reclaimable bytes on the very next backup cycle. See the filed Plane INFRA issue for the fleet-wide
+  quantification of this pattern.
+</div>
+{% endif %}
+
+<div class="banner"><b>{{ ranked.headline }}</b></div>
+
+<table>
+  <thead><tr>
+    <th>Verdict</th>
+    <th>Path</th>
+    <th class="num">Size</th>
+    <th class="num">Inode</th>
+    <th class="num">nlink</th>
+    <th class="small">mtime</th>
+    <th class="small">atime</th>
+    <th>Status</th>
+    <th>Evidence</th>
+    <th class="num">Reclaim</th>
+    <th>Reason</th>
+  </tr></thead>
+  <tbody>
+  {% for r in ranked.annotated %}
+    <tr class="{{ 'protected-row' if r.is_protected_row else '' }}">
+      <td>
+        {% if r.verdict == 'KEEP' %}<span class="badge verdict-keep">KEEP</span>
+        {% else %}<span class="badge verdict-candidate">CANDIDATE</span>{% endif %}
+      </td>
+      <td class="mono">{{ r.path }}</td>
+      <td class="num">{{ r.size_h }}</td>
+      <td class="num">{{ r.inode }}</td>
+      <td class="num">{{ r.nlink }}</td>
+      <td class="small">{{ r.mtime.strftime('%Y-%m-%d %H:%M') if r.mtime else '—' }}</td>
+      <td class="small">{{ r.atime.strftime('%Y-%m-%d %H:%M') if r.atime else '—' }}</td>
+      <td><span class="badge status-{{ r.status_badge }}" title="diskaudit.v_file_status">{{ r.status_label }}</span></td>
+      <td>{% if r.evidence_badge == 'hash-proven' %}<span class="badge hash-proven">hash-proven</span>{% else %}<span class="badge guess">guess</span>{% endif %}
+        <div class="small muted">{{ r.evidence }}</div>
+      </td>
+      <td class="num">{{ r.reclaim_h }}</td>
+      <td class="reason-cell">{{ r.reason }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<div class="caveat" style="margin-top:12px;">
+  <b>Non-destructive:</b> this page recommends, it does not act. No control on this page deletes or moves
+  a file. If you agree with the recommendation, export the manifest above (CSV/JSON) for the separate,
+  not-yet-built authorized cleanup process (FERJA).
+</div>
+{% endblock %}

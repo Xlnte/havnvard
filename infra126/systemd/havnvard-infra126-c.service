@@ -1,0 +1,17 @@
+[Unit]
+Description=HavnVard INFRA-126 Tier C verification
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=havnvard
+WorkingDirectory=/opt/havnvard/infra126
+EnvironmentFile=/etc/havnvard/infra126.env
+ExecStart=/opt/havnvard/infra126/.venv/bin/python scripts/run_scheduled_tier.py --tier C --max-items 0
+Nice=19
+IOSchedulingClass=idle
+TimeoutStartSec=36h
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=havnvard-infra126-c

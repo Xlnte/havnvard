@@ -1,0 +1,15 @@
+[Unit]
+Description=diskaudit — classification materialized-view refresh (post-monthly-scan trigger)
+Documentation=file:///home/user/runbooks/20260718-diskaudit-classification/README.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/havnvard
+ExecStart=/opt/havnvard/.venv/bin/python /opt/havnvard/refresh_classification_mv.py
+StandardOutput=journal
+StandardError=journal
+Nice=10
+TimeoutStartSec=30min
