@@ -83,10 +83,15 @@ def name_number(name: str) -> int:
     return int(name.rsplit("_", 1)[1])
 
 
-def alive_line(when: dt.datetime, names: list[str]) -> str:
-    """'#ALIVE' line: every named data backup that still exists in a repository at this run (prune removes
-    old ones). Starts with '#' so older readers skip it; `where` uses the last one."""
-    return f"#ALIVE\t{when.isoformat(timespec='seconds')}\t{' '.join(sorted(names))}\n"
+def name_device(name: str) -> str:
+    return name.split("_")[1]
+
+
+def alive_line(when: dt.datetime, covered: int, names: list[str]) -> str:
+    """'#ALIVE' line: every named data backup that still exists at this run (prune removes old ones), and the
+    highest number this line covers. Names above it were issued later: `where` reports them as "not checked
+    yet", never as pruned. Starts with '#' so plain readers skip it; `where` uses the last one."""
+    return f"#ALIVE\t{when.isoformat(timespec='seconds')}\t{covered}\t{' '.join(sorted(names))}\n"
 
 
 def where(lines, pattern: str, device: str | None = None) -> list[dict]:
@@ -96,9 +101,11 @@ def where(lines, pattern: str, device: str | None = None) -> list[dict]:
     pat = pattern.lower()
     found: dict[tuple, dict] = {}
     alive: list[str] | None = None
+    covered = 0
     for ln in lines:
         if ln.startswith("#ALIVE\t"):
-            alive = ln.rstrip("\n").split("\t", 2)[2].split()
+            _, _, cov, names = ln.rstrip("\n").split("\t", 3)
+            alive, covered = names.split(), int(cov)
             continue
         if ln.startswith("#") or pat not in ln.lower():
             continue
@@ -117,8 +124,11 @@ def where(lines, pattern: str, device: str | None = None) -> list[dict]:
     for r in found.values():
         lo = name_number(r["first"])
         hi = name_number(r["gone"]) if r["gone"] else 10**9
-        r["held_by"] = None if alive is None else sorted(
-            (n for n in alive if f"_{r['device']}_" in n and lo <= name_number(n) < hi), key=name_number)
+        if alive is None or lo > covered:
+            r["held_by"] = None                           # not checked yet: unknown, never "pruned"
+            continue
+        r["held_by"] = sorted((n for n in alive if name_device(n) == r["device"] and lo <= name_number(n) < hi),
+                              key=name_number)
     return sorted(found.values(), key=lambda r: (not r["held_by"], r["device"], r["path"], r["mtime"]))
 
 
@@ -134,7 +144,7 @@ def catalog_path() -> Path:
 
 def _fresh_state() -> dict:
     return {"counter": 0, "catalog_bytes": 0, "devices": {}, "untagged": [], "catalog_snapshots": [],
-            "catalog_bytes_backed_up": 0, "alive": []}
+            "catalog_bytes_backed_up": 0, "alive": [], "alive_by_repo": {}, "alive_covered": 0}
 
 
 def _load_state() -> dict:
@@ -332,6 +342,14 @@ def catalog_run(first_run_latest_only: bool = True, recover: bool = False) -> in
             snap_cache[repo] = snapshots(restic, env)
         except BackupError as e:
             problems.append(f"{repo}: {e}")
+    if recover and (problems or len(snap_cache) != len(envs)):
+        raise BackupError("--recover needs every repository readable (the counter floor comes from all their tags): "
+                          + "; ".join(problems))
+    if fresh and not recover and any(CATALOG_TAG in (s.get("tags") or []) for v in snap_cache.values() for s in v):
+        raise BackupError(
+            "the catalog state is gone but the repositories already hold catalog snapshots: starting over would "
+            "lose the history. Restore it: `restic dump <newest havnvard-catalog snapshot> <its _catalog.tsv path>` "
+            f"> {cat}, then `python -m backup catalog run --recover`")
     if fresh or recover:                                  # never reissue a number some repo already carries
         st["counter"] = max([st["counter"], *(_repo_max_number(s) for s in snap_cache.values())])
         _save_state(st)
@@ -401,22 +419,25 @@ def catalog_run(first_run_latest_only: bool = True, recover: bool = False) -> in
             except BackupError as e:
                 problems.append(f"{repo}: {e}")
 
-    alive = []
+    # Per repo: names that still exist. A repo this run could not read keeps its last known names, so a
+    # partial view never marks anything pruned (review round 2, R1).
+    by_repo = dict(st.get("alive_by_repo", {}))
     for repo, env in envs.items():
         if env is None or repo not in snap_cache:
             continue
         try:
-            alive += [t for s in data_snapshots(snapshots(restic, env)) for t in (s.get("tags") or [])
-                      if NAME_RE.match(t) and "_CATALOG_" not in t]
+            by_repo[repo] = sorted(t for s in data_snapshots(snapshots(restic, env)) for t in (s.get("tags") or [])
+                                   if NAME_RE.match(t) and name_device(t) != "CATALOG")
         except BackupError as e:
             problems.append(f"{repo}: {e}")
-    if sorted(alive) != st.get("alive", []) and not problems:   # a partial view must not mark backups pruned
+    # names issued but not yet tagged (a failed tag, retried next run) still exist as snapshots: count them
+    alive = sorted({n for names in by_repo.values() for n in names} | {it[1] for it in st["untagged"]})
+    if alive != st.get("alive", []):     # a name issued but not yet tagged stays above `covered`: "not checked"
         with open(cat, "a", encoding="utf-8") as f:
-            f.write(alive_line(dt.datetime.now(dt.timezone.utc), alive))
+            f.write(alive_line(dt.datetime.now(dt.timezone.utc), st["counter"], alive))
             f.flush()
             os.fsync(f.fileno())
-        st["alive"] = sorted(alive)
-        st["catalog_bytes"] = cat.stat().st_size
+        st.update(alive=alive, alive_by_repo=by_repo, alive_covered=st["counter"], catalog_bytes=cat.stat().st_size)
         _save_state(st)
 
     if st["catalog_bytes"] != st.get("catalog_bytes_backed_up"):
@@ -476,7 +497,7 @@ def run_where(pattern: str, device: str | None = None, catalog: str | None = Non
         hits = where(f, pattern, device)
     for h in hits:
         if h["held_by"] is None:
-            state = f"from {h['first']}" + (f" until {h['gone']}" if h["gone"] else " on")
+            state = f"from {h['first']}" + (f" until {h['gone']}" if h["gone"] else " on") + " (not checked against prune yet)"
         elif h["held_by"]:
             state = f"in {h['held_by'][-1]} (newest of {len(h['held_by'])} backup(s) that hold it)"
         else:

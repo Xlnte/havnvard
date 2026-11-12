@@ -39,9 +39,16 @@ def test_diff_and_where_replay():
         (5, "20261101_SPARK_000001", "20261102_SPARK_000002"), (6, "20261102_SPARK_000002", "")]
     assert all(h["held_by"] is None for h in hits)                       # no #ALIVE line yet: unknown, not "pruned"
     # prune removed backup 1: the old version is held by nothing, the new one by backup 2 (review 2.2.0 #3)
-    log.append(catalog.alive_line(dt.datetime(2026, 11, 3, tzinfo=dt.timezone.utc), ["20261102_SPARK_000002"]))
+    log.append(catalog.alive_line(dt.datetime(2026, 11, 3, tzinfo=dt.timezone.utc), 2, ["20261102_SPARK_000002"]))
     hits = {h["size"]: h["held_by"] for h in catalog.where("".join(log).splitlines(True), "bob.txt")}
     assert hits == {6: ["20261102_SPARK_000002"], 5: []}
+    # a version first named AFTER the last #ALIVE line is "not checked", never "pruned" (round 2, R1)
+    log.append(catalog.event_lines("20261104_SPARK_000003", "SPARK", [("/a/bob.txt", 7, 300)], [("/a/bob.txt", 6, 200)]))
+    hits = {h["size"]: h["held_by"] for h in catalog.where("".join(log).splitlines(True), "bob.txt")}
+    assert hits[7] is None and hits[6] == ["20261102_SPARK_000002"]
+    # device match is exact, not a substring (R8)
+    log.append(catalog.alive_line(dt.datetime(2026, 11, 5, tzinfo=dt.timezone.utc), 3, ["20261104_SPARK-2_000003"]))
+    assert {h["size"]: h["held_by"] for h in catalog.where("".join(log).splitlines(True), "bob.txt")}[7] == []
     assert catalog.where(log, "nothing-here") == []
 
 
@@ -153,3 +160,24 @@ def test_corrupt_state_is_loud_for_health():
     (catalog.cat_dir() / "state.json").write_text("{not json")
     with pytest.raises(BackupError):
         catalog.catalog_snapshot_ids()
+
+
+@needs_restic
+def test_lost_catalog_dir_with_catalog_snapshots_in_repos_refuses(hub):
+    data, root, pdir = hub
+    assert catalog.catalog_run() == 0
+    for p in sorted(catalog.cat_dir().rglob("*"), reverse=True):          # the whole state dir is lost (tmp only)
+        os.remove(p) if p.is_file() else p.rmdir()
+    with pytest.raises(BackupError, match="restic dump"):
+        catalog.catalog_run()
+
+
+@needs_restic
+def test_alive_written_even_when_one_repo_is_unreadable(hub):
+    data, root, pdir = hub
+    make_repo(root / "nopass", pdir.parent / "elsewhere.pass", data)       # a repo with no hub-side password
+    assert catalog.catalog_run() == config.PROBLEM_EXIT
+    lines = catalog.catalog_path().read_text().splitlines(True)
+    assert any(ln.startswith("#ALIVE\t") for ln in lines)
+    hits = catalog.where(lines, "bob.txt")
+    assert hits and all(h["held_by"] for h in hits)                        # current backup is held, not "pruned"
