@@ -15,6 +15,16 @@ import uuid
 import pytest
 import psycopg
 
+# 3.0.0 test isolation, set BEFORE any HavnVard module is imported:
+#  * every test reads the generic tests/site.test.toml, never the operator's /etc/havnvard/site.toml;
+#  * database tests run ONLY against HAVNVARD_TEST_DSN (a scratch database you create; see tests/README.md).
+#    POSTGRES_URL is overridden for the whole session, so code under test that opens its own connection
+#    can never reach a production database by accident.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+os.environ["HAVNVARD_SITE"] = os.path.join(_HERE, "site.test.toml")
+TEST_DSN = os.environ.get("HAVNVARD_TEST_DSN", "")
+os.environ["POSTGRES_URL"] = TEST_DSN or "postgresql://no-test-db@127.0.0.1:1/unset"
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import crosshost_verify as cv  # noqa: E402
@@ -37,10 +47,12 @@ def connect_retry(autocommit=False, attempts=20, delay=1.0):
     """psycopg.connect that rides out a momentarily full connection table (the live DB shares ~100 slots with
     other services); a real outage still fails after ~attempts*delay seconds."""
     import time  # noqa: PLC0415
+    if not TEST_DSN:
+        pytest.skip("database test: set HAVNVARD_TEST_DSN to a scratch database (see tests/README.md)")
     last = None
     for _ in range(attempts):
         try:
-            return psycopg.connect(cv.get_dsn(), autocommit=autocommit)
+            return psycopg.connect(TEST_DSN, autocommit=autocommit)
         except psycopg.OperationalError as e:
             last = e
             time.sleep(delay)

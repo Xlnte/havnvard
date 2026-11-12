@@ -63,7 +63,7 @@ class FakeRepository:
 
 def settings(tmp_path):
     return SimpleNamespace(
-        hosts={"spark-20cf":SimpleNamespace(mode="local",ssh_target=None,scratch_dir=None)},
+        hosts={"server-1":SimpleNamespace(mode="local",ssh_target=None,scratch_dir=None)},
         batch_size=10,enqueue_page_size=10,lease_seconds=60,heartbeat_seconds=30,hash_timeout_seconds=30,
         remote_batch_timeout_seconds=30,remote_poll_seconds=1,remote_heartbeat_stale_seconds=5,auto_accept_mutable_score=90,
         stabilization_delay_hours=24,waitingroom_max_wait_seconds=1,waitingroom_retry_seconds=0,
@@ -72,7 +72,7 @@ def settings(tmp_path):
 
 def candidate_for(path,baseline_hash,baseline_mtime,baseline_size):
     st=os.stat(path)
-    return FileCandidate(1,"run-1","spark-20cf",str(path),st.st_ino,baseline_hash,None,baseline_mtime,baseline_size,False,True)
+    return FileCandidate(1,"run-1","server-1",str(path),st.st_ino,baseline_hash,None,baseline_mtime,baseline_size,False,True)
 
 
 def test_service_records_stable_match(tmp_path):
@@ -81,7 +81,7 @@ def test_service_records_stable_match(tmp_path):
     repo=FakeRepository(candidate_for(path,digest,st.st_mtime_ns,st.st_size))
     tg=Sink(); plane=Sink()
     service=VerificationService(repo,settings(tmp_path),tg,plane,WaitingRoomGate(None,None),Path("unused"))
-    summary=service.run("spark-20cf",Tier.A)
+    summary=service.run("server-1",Tier.A)
     assert summary.matched==1
     assert not tg.events
 
@@ -89,7 +89,7 @@ def test_service_records_stable_match(tmp_path):
 def test_immutable_frozen_metadata_alerts(tmp_path):
     path=tmp_path/"hostname"; path.write_text("new-host")
     st=path.stat()
-    candidate=FileCandidate(1,"run-1","spark-20cf","/etc/hostname",st.st_ino,"0"*64,None,st.st_mtime_ns,st.st_size,False,True)
+    candidate=FileCandidate(1,"run-1","server-1","/etc/hostname",st.st_ino,"0"*64,None,st.st_mtime_ns,st.st_size,False,True)
     repo=FakeRepository(candidate)
     tg=Sink(); plane=Sink()
     # Hash the temporary file while retaining the logical immutable path for classification.
@@ -99,7 +99,7 @@ def test_immutable_frozen_metadata_alerts(tmp_path):
     from havnvard_bitrot.classifier import RegistryPattern
     repo.mutable_patterns=lambda *_:[RegistryPattern(str(path),10,"immutable test path",False,"immutable")]
     service=VerificationService(repo,settings(tmp_path),tg,plane,WaitingRoomGate(None,None),Path("unused"))
-    summary=service.run("spark-20cf",Tier.A)
+    summary=service.run("server-1",Tier.A)
     assert summary.diverged==1
     assert any(event[0]=="possible_corruption" for event in tg.events)
 
@@ -111,7 +111,7 @@ def test_explicit_mutable_change_can_advance_baseline_and_queue_stabilization(tm
     repo=FakeRepository(candidate)
     tg=Sink(); plane=Sink()
     service=VerificationService(repo,settings(tmp_path),tg,plane,WaitingRoomGate(None,None),Path("unused"))
-    summary=service.run("spark-20cf",Tier.A)
+    summary=service.run("server-1",Tier.A)
     assert summary.accepted_drift==1
     _,classification,decision,kwargs=repo.recorded[0]
     assert classification.explicit_mutable_rule
@@ -125,5 +125,5 @@ def test_majority_against_candidate_prevents_mutable_auto_accept(tmp_path):
     candidate=candidate_for(path,old,st.st_mtime_ns-2_000_000_000,st.st_size-1)
     repo=FakeRepository(candidate,[CopyEvidence("live_host","nas",old),CopyEvidence("restic_snapshot","restic",old)])
     service=VerificationService(repo,settings(tmp_path),Sink(),Sink(),WaitingRoomGate(None,None),Path("unused"))
-    service.run("spark-20cf",Tier.A)
+    service.run("server-1",Tier.A)
     assert repo.recorded[0][3]["allow_baseline_accept"] is False

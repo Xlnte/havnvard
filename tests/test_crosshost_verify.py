@@ -42,7 +42,7 @@ test session (not per-test), because `diskaudit.files` is large enough
 (~8.6M rows) that `host ~ '^_test_'`/`LIKE` cleanup predicates force a
 sequential scan (no index covers this pattern) -- doing that once per session
 instead of 14x per-test is what keeps the suite fast. Synthetic rows use host
-names prefixed `_test_` (or the real `nas-ts453a` literal, only ever paired
+names prefixed `_test_` (or the real `nas-1` literal, only ever paired
 with a `_TEST_PATH_PREFIX`-tagged path -- see the match tests below for why)
 so they can never collide with real production data.
 """
@@ -71,12 +71,12 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Every synthetic row this suite ever writes carries EITHER a host prefixed
 # `_test_` (source-side hosts -- can never collide with a real host name:
-# spark-20cf/nas-ts453a/trigkey) OR, where production code hardcodes the
-# literal host `nas-ts453a` (see `_MATCH_INTEGRITY_*_SQL` in
+# server-1/nas-1/agent-1) OR, where production code hardcodes the
+# literal host `nas-1` (see `_MATCH_INTEGRITY_*_SQL` in
 # crosshost_verify.py -- NOT parameterized, there is only ever one real NAS),
 # a path under this distinctive prefix instead. That lets fixture teardown
 # safely delete "anything synthetic" via path OR host pattern without any
-# risk of matching real production nas-ts453a rows.
+# risk of matching real production nas-1 rows.
 _TEST_PATH_PREFIX = "/__test_crosshost_verify__/"
 
 
@@ -108,10 +108,13 @@ def conn():
     DELETE 14x (once per test) is what caused a prior full-suite run to blow
     past a 2-minute timeout. A single sweep at session end (below) picks up
     anything left behind instead."""
+    from conftest import TEST_DSN  # noqa: PLC0415
+    if not TEST_DSN:
+        pytest.skip("database test: set HAVNVARD_TEST_DSN to a scratch database (see tests/README.md)")
     try:
-        c = psycopg.connect(cv.get_dsn(), autocommit=False)
+        c = psycopg.connect(TEST_DSN, autocommit=False)
     except psycopg.OperationalError as e:
-        pytest.skip(f"diskaudit DB not reachable in this environment: {e}")
+        pytest.skip(f"test database not reachable: {e}")
         return
     yield c
     c.rollback()  # undoes anything NOT already committed by the code under test
@@ -128,8 +131,11 @@ def _cleanup_test_rows_after_session():
     test (`_uniq_host()`), so leftovers are inert -- they can never be
     mistaken for real data or collide with a future test."""
     yield
+    from conftest import TEST_DSN  # noqa: PLC0415
+    if not TEST_DSN:
+        return
     try:
-        c = psycopg.connect(cv.get_dsn(), autocommit=False)
+        c = psycopg.connect(TEST_DSN, autocommit=False)
     except psycopg.OperationalError:
         return
     try:
@@ -333,11 +339,11 @@ def test_hash_local_host_rehashes_on_content_change(conn, tmp_path, monkeypatch)
 
 def test_match_groups_same_hash_across_hosts_and_writes_integrity_match(conn):
     # `_MATCH_INTEGRITY_MATCH_SQL` hardcodes the destination host as the
-    # literal 'nas-ts453a' (not parameterized -- there is only ever one real
+    # literal 'nas-1' (not parameterized -- there is only ever one real
     # NAS in production), so the synthetic "NAS-side" row here MUST use that
     # real host name to be found at all. Safety: it's tagged with
     # _TEST_PATH_PREFIX so teardown can delete it without any risk of
-    # touching genuine nas-ts453a production rows (which never live under
+    # touching genuine nas-1 production rows (which never live under
     # that path).
     same_hash = "f" * 64
     source_path = _TEST_PATH_PREFIX + "data/report.pdf"
@@ -345,7 +351,7 @@ def test_match_groups_same_hash_across_hosts_and_writes_integrity_match(conn):
     source_host = _uniq_host("spark")
     scan_id = _make_scan_id(conn, source_host)
     _insert_file(conn, scan_id, source_host, source_path, size_bytes=42, content_sha256=same_hash)
-    _insert_file(conn, scan_id, "nas-ts453a", nas_path, size_bytes=42, content_sha256=same_hash)
+    _insert_file(conn, scan_id, "nas-1", nas_path, size_bytes=42, content_sha256=same_hash)
     conn.commit()
 
     stats = cv.run_match(conn, run_id=1, source_hosts=(source_host,))
@@ -532,7 +538,7 @@ def test_guard_rejects_new_unlisted_delete(tmp_path):
 
 @pytest.mark.parametrize("script", ["hash_batch.sh", "hash_stat_batch.sh"])
 def test_hash_batch_sh_has_no_delete_primitives_at_all(script):
-    """The remote hash scripts run on the NAS/trigkey against scanned files
+    """The remote hash scripts run on the NAS/agent machines against scanned files
     directly -- they must be even more conservative than the Python driver:
     never a delete/move primitive of any kind (cleanup of their own output
     files is handled by the Python driver issuing discrete `rm -f` over ssh
@@ -594,7 +600,7 @@ def test_scp_get_timeout_is_a_loud_failure_not_zero_hashes(monkeypatch):
     monkeypatch.setattr(cv, "_target_for_host",
                         lambda host: _FakeScpGetTimeoutTarget())
     with pytest.raises(RuntimeError, match="timed out"):
-        cv.hash_remote_host(_NoDbConn(), "trigkey", run_id=999999, min_size=1,
+        cv.hash_remote_host(_NoDbConn(), "agent-1", run_id=999999, min_size=1,
                             limit=None)
 
 

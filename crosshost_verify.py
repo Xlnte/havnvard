@@ -62,26 +62,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from heartbeat import HeartbeatThrottle, write_heartbeat  # noqa: E402
 
 # ---- DSN resolution -- same SoT + fallback order as scan.py/dedup.py ------
-_SOT_ENV = "/srv/forge/.secrets/prod/diskaudit.env"
-
-
-def _dsn_from_sot():
-    try:
-        with open(_SOT_ENV) as f:
-            for line in f:
-                if line.startswith("POSTGRES_URL="):
-                    return line.split("=", 1)[1].strip().strip('"').strip("'")
-    except OSError:
-        pass
-    return None
-
-
-def get_dsn() -> str:
-    return (
-        os.environ.get("POSTGRES_URL")
-        or _dsn_from_sot()
-        or "postgresql://ultra_crm@127.0.0.1:5432/ultra_crm"
-    )
+from havnvard_site import get_dsn  # noqa: E402,F401  (3.0.0: one shared lookup; see havnvard_site.py)
 
 
 # ---- candidate-set constants -----------------------------------------------
@@ -92,7 +73,10 @@ _HEX64_RE = re.compile(r"[0-9a-f]{64}")
 
 MIN_SIZE_DEFAULT = 1_048_576  # 1 MiB -- verified 2026-07-25 against production
 HASH_READ_BUFFER = 4 * 1024 * 1024  # matches dedup.py's content_hash() convention
-KNOWN_HOSTS = ("spark-20cf", "nas-ts453a", "trigkey")
+import havnvard_site as _site  # noqa: E402
+
+# 3.0.0: hosts are roles from the site file -- the local machine, the NAS, and remote agent machines.
+KNOWN_HOSTS = tuple(dict.fromkeys((_site.local_host(), _site.nas_host()) + _site.agent_hosts()))
 
 REPORTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reports")
 
@@ -400,8 +384,8 @@ _SSH_OPTS_COMMON = ["-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTime
 # NAS scratch dir -- MUST be real disk, never /tmp (64MB tmpfs shared with
 # live NAS system processes; a prior test writing ~40MB there caused real
 # ENOSPC failures -- see nas_native_crawl.sh / load_nas_inventory.py).
-NAS_SCRATCH_DIR = "/share/CACHEDEV1_DATA/.diskaudit_scratch"
-NAS_HOST_TOKEN_FILE = "/etc/forge/tokens/nas_backup.env"
+NAS_SCRATCH_DIR = _site.nas("scratch_dir") or _site.nas_share_base() + "/.diskaudit_scratch"
+NAS_HOST_TOKEN_FILE = _site.nas("backup_token_file") or "/etc/havnvard/nas_backup.env"
 # Intentionally DIFFERENT credential than load_nas_inventory.py's crawl path
 # (which uses /etc/forge/tokens/nas_admin.env, an admin-group account). This
 # tool uses the nas_backup account instead -- verified 2026-07-25 to have
@@ -411,14 +395,11 @@ NAS_HOST_TOKEN_FILE = "/etc/forge/tokens/nas_backup.env"
 
 # trigkey: normal Ubuntu box, passwordless sudo, real disk /tmp (no NAS-style
 # tmpfs constraint) -- reachable via plain key-based ssh, no sshpass needed.
-TRIGKEY_HOST = "trigkey"
-TRIGKEY_SSH_HOST = "100.94.77.97"
-TRIGKEY_SSH_KEY = os.path.expanduser("~/.ssh/id_rsa")
-TRIGKEY_SCRATCH_DIR = "/tmp/diskaudit_crosshost_scratch"
+# (3.0.0: one class per remote agent machine, settings from [agents.NAME] in the site file.)
 
 
 def _nas_backup_creds() -> tuple[str, str, str]:
-    """(user, host, password) from /etc/forge/tokens/nas_backup.env, root-owned.
+    """(user, host, password) from the NAS backup token file ([nas] backup_token_file), root-owned.
     Never inline these. Mirrors load_nas_inventory.py's `sudo cat` pattern,
     just against the backup token file instead of the admin one."""
     result = subprocess.run(
@@ -519,27 +500,30 @@ class _NasTarget(_RemoteHashTarget):
         return _with_sshpass(argv, self.password, timeout_sec)
 
 
-class _TrigkeyTarget(_RemoteHashTarget):
-    scratch_dir = TRIGKEY_SCRATCH_DIR
+class _AgentTarget(_RemoteHashTarget):
+    def __init__(self, name: str):
+        a = _site.agent(name)
+        self.scratch_dir = a["scratch_dir"]
+        self._key, self._dest = a["ssh_key"], f"{a['ssh_user']}@{a['ssh_host']}"
 
     def ssh(self, remote_cmd: str, timeout_sec: int | None = None) -> subprocess.CompletedProcess:
-        argv = ["ssh", "-i", TRIGKEY_SSH_KEY] + _SSH_OPTS_COMMON + [f"parker@{TRIGKEY_SSH_HOST}", remote_cmd]
+        argv = ["ssh", "-i", self._key] + _SSH_OPTS_COMMON + [self._dest, remote_cmd]
         return _run_with_timeout(argv, timeout_sec, capture_output=True, text=True)
 
     def scp_put(self, local_path: str, remote_path: str, timeout_sec: int | None = None) -> subprocess.CompletedProcess:
-        argv = ["scp", "-i", TRIGKEY_SSH_KEY] + _SSH_OPTS_COMMON + [local_path, f"parker@{TRIGKEY_SSH_HOST}:{remote_path}"]
+        argv = ["scp", "-i", self._key] + _SSH_OPTS_COMMON + [local_path, f"{self._dest}:{remote_path}"]
         return _run_with_timeout(argv, timeout_sec, capture_output=True, text=True)
 
     def scp_get(self, remote_path: str, local_path: str, timeout_sec: int | None = None) -> subprocess.CompletedProcess:
-        argv = ["scp", "-i", TRIGKEY_SSH_KEY] + _SSH_OPTS_COMMON + [f"parker@{TRIGKEY_SSH_HOST}:{remote_path}", local_path]
+        argv = ["scp", "-i", self._key] + _SSH_OPTS_COMMON + [f"{self._dest}:{remote_path}", local_path]
         return _run_with_timeout(argv, timeout_sec, capture_output=True, text=True)
 
 
 def _target_for_host(host: str) -> _RemoteHashTarget:
-    if host == "nas-ts453a":
+    if host == _site.nas_host():
         return _NasTarget()
-    if host == "trigkey":
-        return _TrigkeyTarget()
+    if host in _site.agent_hosts():
+        return _AgentTarget(host)
     raise ValueError(f"no remote hash target for host={host!r}")
 
 
@@ -647,7 +631,7 @@ def hash_remote_host(
                 )
 
             now = datetime.now(timezone.utc)
-            hash_source = "nas-native" if host == "nas-ts453a" else "trigkey-agent"
+            hash_source = "nas-native" if host == _site.nas_host() else "trigkey-agent"   # DB label for any remote agent (CHECK constraint)
             batch_hashed = 0
             with conn.cursor() as cur, open(local_hashes.name, encoding="utf-8", errors="surrogateescape") as hf:
                 for line in hf:
@@ -741,7 +725,7 @@ def cmd_hash(conn, args):
     print(f"[crosshost_verify] hash run_id={run_id} host={args.host} min_size={args.min_size} limit={args.limit}", file=sys.stderr)
 
     try:
-        if args.host == "spark-20cf":
+        if args.host == _site.local_host():
             stats = hash_local_host(conn, args.host, run_id, args.min_size, args.limit,
                                     reuse_stored=not args.no_reuse)
         else:
@@ -806,7 +790,7 @@ _MATCH_INTEGRITY_MATCH_SQL = """
     JOIN LATERAL (
         SELECT n.path, n.content_sha256
         FROM diskaudit.files n
-        WHERE n.host = 'nas-ts453a' AND n.still_exists AND n.content_sha256 = src.content_sha256
+        WHERE n.host = %(nas_host)s AND n.still_exists AND n.content_sha256 = src.content_sha256
         ORDER BY n.path
         LIMIT 1
     ) nas ON true
@@ -826,7 +810,7 @@ _MATCH_INTEGRITY_MISSING_SQL = """
     WHERE src.host = ANY(%(source_hosts)s) AND src.still_exists AND src.content_sha256 IS NOT NULL
       AND NOT EXISTS (
           SELECT 1 FROM diskaudit.files n
-          WHERE n.host = 'nas-ts453a' AND n.still_exists AND n.content_sha256 = src.content_sha256
+          WHERE n.host = %(nas_host)s AND n.still_exists AND n.content_sha256 = src.content_sha256
       )
 """
 
@@ -844,30 +828,31 @@ _MATCH_INTEGRITY_MISMATCH_SQL = """
            'stored'
     FROM diskaudit.files src
     JOIN diskaudit.files nas
-        ON nas.host = 'nas-ts453a' AND nas.still_exists
+        ON nas.host = %(nas_host)s AND nas.still_exists
        AND nas.size_bytes = src.size_bytes
        AND regexp_replace(nas.path, '^.*/', '') = regexp_replace(src.path, '^.*/', '')
     WHERE src.host = ANY(%(source_hosts)s) AND src.still_exists AND src.content_sha256 IS NOT NULL
       AND nas.content_sha256 IS NOT NULL AND nas.content_sha256 <> src.content_sha256
       AND NOT EXISTS (
           SELECT 1 FROM diskaudit.files n2
-          WHERE n2.host = 'nas-ts453a' AND n2.still_exists AND n2.content_sha256 = src.content_sha256
+          WHERE n2.host = %(nas_host)s AND n2.still_exists AND n2.content_sha256 = src.content_sha256
       )
 """
 
 
-def run_match(conn, run_id: int, source_hosts=("spark-20cf", "trigkey")):
+def run_match(conn, run_id: int, source_hosts=None):
+    source_hosts = tuple(source_hosts) if source_hosts else _site.source_hosts()
     with conn.cursor() as cur:
         cur.execute(_MATCH_GROUP_SQL)
         groups_touched = cur.rowcount
 
-        cur.execute(_MATCH_INTEGRITY_MATCH_SQL, {"source_hosts": list(source_hosts)})
+        cur.execute(_MATCH_INTEGRITY_MATCH_SQL, {"source_hosts": list(source_hosts), "nas_host": _site.nas_host()})
         n_match = cur.rowcount
 
-        cur.execute(_MATCH_INTEGRITY_MISSING_SQL, {"source_hosts": list(source_hosts)})
+        cur.execute(_MATCH_INTEGRITY_MISSING_SQL, {"source_hosts": list(source_hosts), "nas_host": _site.nas_host()})
         n_missing = cur.rowcount
 
-        cur.execute(_MATCH_INTEGRITY_MISMATCH_SQL, {"source_hosts": list(source_hosts)})
+        cur.execute(_MATCH_INTEGRITY_MISMATCH_SQL, {"source_hosts": list(source_hosts), "nas_host": _site.nas_host()})
         n_mismatch = cur.rowcount
     conn.commit()
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 from dataclasses import dataclass
 
 
@@ -44,18 +45,7 @@ class PathExclusion:
 # Shipped defaults. Overridable wholesale by INFRA126_EXCLUDE_PATH_PREFIXES so
 # the next deprecated home needs a config change, not a code change -- same
 # pattern as _default_hosts() above.
-DEFAULT_EXCLUSIONS: tuple[PathExclusion, ...] = (
-    PathExclusion(
-        prefix="/home/UltraOC/",
-        host="spark-20cf",
-        reason=(
-            "INFRA-281: deprecated UltraOC account home, mode 0750 owned by UltraOC; "
-            "the verifier runs as parker and cannot traverse it. Every baseline under "
-            "it hashes 'unreadable' and none has ever verified, so excluding it removes "
-            "error noise without losing any coverage."
-        ),
-    ),
-)
+DEFAULT_EXCLUSIONS: tuple[PathExclusion, ...] = ()   # 3.0.0: site-specific; set INFRA126_EXCLUDE_PATH_PREFIXES
 
 
 @dataclass(frozen=True)
@@ -84,25 +74,11 @@ class Settings:
 
 
 def _default_hosts() -> dict[str, HostConfig]:
-    return {
-        "spark-20cf": HostConfig("spark-20cf", "local", None, None),
-        # The NAS SSH server rejects publickey auth for the backup account, so
-        # this host must go through sshpass with the root-owned token file.
-        "nas-ts453a": HostConfig(
-            "nas-ts453a",
-            "remote",
-            "sparkbkup@nas-ts453a.tail5f354b.ts.net",
-            "/share/CACHEDEV1_DATA/.diskaudit_scratch/infra126",
-            auth="sshpass",
-            credentials_file="/etc/forge/tokens/nas_backup.env",
-        ),
-        "trigkey": HostConfig(
-            "trigkey",
-            "remote",
-            "parker@trigkey.tail5f354b.ts.net",
-            "/var/lib/havnvard/infra126",
-        ),
-    }
+    """Without INFRA126_HOSTS_JSON only this machine is verified (3.0.0: remote hosts are site settings).
+    A remote entry looks like {"nas-1": {"mode": "remote", "ssh_target": "backup@nas-1", "scratch_dir": "...",
+    "auth": "sshpass", "credentials_file": "/etc/havnvard/nas_backup.env"}}; see config/infra126.env.example."""
+    name = socket.gethostname()
+    return {name: HostConfig(name, "local", None, None)}
 
 
 def _env_bool(name: str, default: bool = False) -> bool:

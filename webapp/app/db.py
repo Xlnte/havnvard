@@ -1,6 +1,6 @@
-"""HavnVard UI — asyncpg pool against ultra_crm, schema diskaudit.
+"""HavnVard UI — asyncpg pool against the inventory database, schema diskaudit.
 
-POSTGRES_URL SoT (per CLAUDE.md): /srv/forge/.secrets/prod/diskaudit.env. Never inline the
+POSTGRES_URL comes from havnvard_site (env, or the site file's env_file). Never inline the
 credential, never log it. This app is strictly READ-ONLY against every
 diskaudit.* table/view -- it has no INSERT/UPDATE/DELETE path anywhere
 (matches the "never mutates a scanned file" constraint one layer up: it also
@@ -24,12 +24,8 @@ _SCHEMA_PROBE_TTL_S = 30.0
 
 @functools.lru_cache(maxsize=1)
 def db_url() -> str:
-    path, key = "/srv/forge/.secrets/prod/diskaudit.env", "POSTGRES_URL"
-    with open(path) as f:
-        for line in f:
-            if line.startswith(key + "="):
-                return line.split("=", 1)[1].strip().strip('"')
-    raise RuntimeError(f"{key} not found in {path}")
+    import havnvard_site  # noqa: PLC0415  (repo root is on sys.path; see webapp/app/config.py)
+    return havnvard_site.require_dsn()
 
 
 async def init_pool(min_size: int = 2, max_size: int = 10) -> asyncpg.Pool:

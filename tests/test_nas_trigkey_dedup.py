@@ -636,7 +636,7 @@ def test_db_unreachable_at_connect_alerts_once(monkeypatch):
     calls = []
     monkeypatch.setattr(nd, "_alertlib_db_down", lambda src, err: calls.append(src) or True)
     monkeypatch.setattr(nd, "_connect", lambda: (_ for _ in ()).throw(psycopg.OperationalError("refused")))
-    assert nd.main(["--host", "nas-ts453a"]) == nd.EXIT_DB_DOWN and calls == ["nas_trigkey_dedup"]
+    assert nd.main(["--host", "nas-1"]) == nd.EXIT_DB_DOWN and calls == ["nas_trigkey_dedup"]
 
 
 def test_sigterm_marks_run_failed(env, monkeypatch):
@@ -905,14 +905,14 @@ def test_report_identical_on_unchanged_data(env):
 
 def test_db_helper_refuses_real_host(gconn):
     with pytest.raises(RealHostWriteRefused):
-        gconn.cursor().execute("UPDATE diskaudit.files SET still_exists=false WHERE host='nas-ts453a'")
+        gconn.cursor().execute("UPDATE diskaudit.files SET still_exists=false WHERE host='nas-1'")
     with pytest.raises(RealHostWriteRefused):
-        gconn.cursor().execute("UPDATE diskaudit.files SET still_exists=false WHERE host=%s", ("nas-ts453a",))
+        gconn.cursor().execute("UPDATE diskaudit.files SET still_exists=false WHERE host=%s", ("nas-1",))
     with pytest.raises(RealHostWriteRefused):
-        gconn.cursor().executemany("INSERT INTO diskaudit.dedup_run_items (host) VALUES (%s)", [("_test_x",), (("spark-20cf",))])
+        gconn.cursor().executemany("INSERT INTO diskaudit.dedup_run_items (host) VALUES (%s)", [("_test_x",), (("server-1",))])
     gconn.rollback()
     with gconn.cursor() as cur:                                           # reads are allowed
-        cur.execute("SELECT count(*) FROM diskaudit.files WHERE host=%s", ("nas-ts453a",))
+        cur.execute("SELECT count(*) FROM diskaudit.files WHERE host=%s", ("nas-1",))
         assert cur.fetchone()[0] == 0                                     # ... and hit the EMPTY throwaway copy, not production
     with pytest.raises(AssertionError):
         GuardedConn(object(), "diskaudit")
@@ -923,9 +923,9 @@ def test_migration_is_idempotent_and_reconcile_clears_only_false_labels(nd_schem
     try:
         with open(os.path.join(conftest.MIGRATIONS, "20261109_diskaudit_nas_dedup_v3.sql"), encoding="utf-8") as f:
             admin.execute(conftest.rewrite(f.read(), nd_schema))           # applied a SECOND time: must be a no-op
-        scan = admin.execute(f"INSERT INTO {nd_schema}.scan_runs (host, status) VALUES ('nas-ts453a','completed') RETURNING scan_id").fetchone()[0]
+        scan = admin.execute(f"INSERT INTO {nd_schema}.scan_runs (host, status) VALUES ('nas-1','completed') RETURNING scan_id").fetchone()[0]
         ins = (f"INSERT INTO {nd_schema}.files (host, path, file_type, size_bytes, still_exists, first_seen_scan_id, last_seen_scan_id, "
-               f"duplicate_group_id, dedup_tool, content_sha256, mtime, hashed_at) VALUES ('nas-ts453a', %s, 'regular', 5, %s, {scan}, {scan}, "
+               f"duplicate_group_id, dedup_tool, content_sha256, mtime, hashed_at) VALUES ('nas-1', %s, 'regular', 5, %s, {scan}, {scan}, "
                f"'g', %s, %s, to_timestamp(%s), to_timestamp(%s))")
         admin.execute(ins, ("/r/vanished", False, nd.TOOL, "a" * 64, 100, 200))
         admin.execute(ins, ("/r/modified", True, nd.TOOL, "a" * 64, 300, 200))
@@ -933,7 +933,7 @@ def test_migration_is_idempotent_and_reconcile_clears_only_false_labels(nd_schem
         admin.execute(ins, ("/r/other-tool", False, "crosshost-sha256", "a" * 64, 100, 200))
         with open(os.path.join(conftest.MIGRATIONS, "20261109_diskaudit_nas_dedup_v3_reconcile.sql"), encoding="utf-8") as f:
             admin.execute(conftest.rewrite(f.read(), nd_schema))
-        left = dict(admin.execute(f"SELECT path, duplicate_group_id FROM {nd_schema}.files WHERE host='nas-ts453a'").fetchall())
+        left = dict(admin.execute(f"SELECT path, duplicate_group_id FROM {nd_schema}.files WHERE host='nas-1'").fetchall())
         assert left == {"/r/vanished": None, "/r/modified": None, "/r/ok": "g", "/r/other-tool": "g"}
         with open(os.path.join(conftest.MIGRATIONS, "20261109_diskaudit_nas_dedup_v3_indexes.sql"), encoding="utf-8") as f:
             idx_sql = f.read()

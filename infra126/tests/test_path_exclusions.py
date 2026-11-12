@@ -37,26 +37,26 @@ def _env(monkeypatch, value: str | None) -> None:
 
 # --- configuration, not a hardcoded path -------------------------------------
 
-def test_default_excludes_deprecated_ultraoc_home_on_spark_only(monkeypatch):
+def test_no_exclusions_by_default(monkeypatch):
+    """3.0.0: exclusions are site settings; the shipped default excludes nothing."""
     _env(monkeypatch, None)
-    exclusions = load_settings().exclude_path_prefixes
-    assert [(e.host, e.prefix) for e in exclusions] == [("spark-20cf", "/home/UltraOC/")]
-    assert "INFRA-281" in exclusions[0].reason
+    assert load_settings().exclude_path_prefixes == ()
+    assert DEFAULT_EXCLUSIONS == ()
 
 
 def test_env_override_replaces_defaults_and_supports_multiple_forms(monkeypatch):
-    _env(monkeypatch, "spark-20cf:/home/Deprecated/,/everywhere/cache/")
+    _env(monkeypatch, "server-1:/home/Deprecated/,/everywhere/cache/")
     exclusions = load_settings().exclude_path_prefixes
     assert [(e.host, e.prefix) for e in exclusions] == [
-        ("spark-20cf", "/home/Deprecated/"),
+        ("server-1", "/home/Deprecated/"),
         (None, "/everywhere/cache/"),
     ]
 
 
 def test_env_override_accepts_json_objects_with_reasons(monkeypatch):
-    _env(monkeypatch, json.dumps([{"host": "trigkey", "prefix": "/mnt/x/", "reason": "PLANE-1 why"}]))
+    _env(monkeypatch, json.dumps([{"host": "agent-1", "prefix": "/mnt/x/", "reason": "PLANE-1 why"}]))
     exclusion = load_settings().exclude_path_prefixes[0]
-    assert (exclusion.host, exclusion.prefix, exclusion.reason) == ("trigkey", "/mnt/x/", "PLANE-1 why")
+    assert (exclusion.host, exclusion.prefix, exclusion.reason) == ("agent-1", "/mnt/x/", "PLANE-1 why")
 
 
 def test_empty_value_disables_exclusions_but_unset_keeps_defaults(monkeypatch):
@@ -66,7 +66,7 @@ def test_empty_value_disables_exclusions_but_unset_keeps_defaults(monkeypatch):
     assert load_settings().exclude_path_prefixes == DEFAULT_EXCLUSIONS
 
 
-@pytest.mark.parametrize("bad", ["home/UltraOC/", "/", '["relative/path"]'])
+@pytest.mark.parametrize("bad", ["home/olduser/", "/", '["relative/path"]'])
 def test_unsafe_prefixes_are_rejected_loudly(monkeypatch, bad):
     _env(monkeypatch, bad)
     with pytest.raises(ValueError):
@@ -76,15 +76,16 @@ def test_unsafe_prefixes_are_rejected_loudly(monkeypatch, bad):
 # --- the SQL actually filters, per host --------------------------------------
 
 def test_exclusion_sql_is_host_scoped_and_parameterised():
-    fragment, params = exclusion_predicate_sql(DEFAULT_EXCLUSIONS, "spark-20cf")
+    exclusions = (PathExclusion("/home/olduser/", host="server-1", reason="unreadable old home"),)
+    fragment, params = exclusion_predicate_sql(exclusions, "server-1")
     assert fragment == "NOT (starts_with(f.path, %s))"
-    assert params == ["/home/UltraOC/"]
-    assert exclusion_predicate_sql(DEFAULT_EXCLUSIONS, "trigkey") == ("", [])
+    assert params == ["/home/olduser/"]
+    assert exclusion_predicate_sql(exclusions, "agent-1") == ("", [])
 
 
 def test_exclusion_sql_ors_multiple_prefixes():
-    exclusions = (PathExclusion("/a/"), PathExclusion("/b/", host="trigkey"))
-    fragment, params = exclusion_predicate_sql(exclusions, "trigkey")
+    exclusions = (PathExclusion("/a/"), PathExclusion("/b/", host="agent-1"))
+    fragment, params = exclusion_predicate_sql(exclusions, "agent-1")
     assert fragment.count("starts_with") == 2
     assert params == ["/a/", "/b/"]
 
@@ -124,11 +125,11 @@ def test_exclusions_are_reported_persisted_and_kept_out_of_the_error_tally(tmp_p
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     repo = FakeRepository(candidate_for(path, digest, st.st_mtime_ns, st.st_size))
     repo.exclusion_report = [{
-        "prefix": "/home/UltraOC/", "host": "spark-20cf", "reason": "INFRA-281 deprecated home",
+        "prefix": "/home/olduser/", "host": "server-1", "reason": "INFRA-281 deprecated home",
         "due_excluded": 34, "inventory_files": 60931, "baselined_files": 34, "ever_verified_files": 0,
     }]
     with caplog.at_level("INFO"):
-        summary = _service(tmp_path, repo).run("spark-20cf", Tier.A)
+        summary = _service(tmp_path, repo).run("server-1", Tier.A)
 
     assert summary.excluded_by_policy == 34
     assert summary.path_exclusions == repo.exclusion_report
@@ -137,7 +138,7 @@ def test_exclusions_are_reported_persisted_and_kept_out_of_the_error_tally(tmp_p
     assert repo.recorded_exclusions[1] == repo.exclusion_report, "must be persisted on the run row"
     logged = "\n".join(record.getMessage() for record in caplog.records)
     assert "PATH EXCLUDED BY POLICY" in logged
-    assert "/home/UltraOC/" in logged and "due_excluded=34" in logged
+    assert "/home/olduser/" in logged and "due_excluded=34" in logged
 
 
 def test_unreadable_file_still_counts_as_an_error(tmp_path):
@@ -150,7 +151,7 @@ def test_unreadable_file_still_counts_as_an_error(tmp_path):
     try:
         repo = FakeRepository(candidate_for(path, "0" * 64, st.st_mtime_ns, st.st_size))
         repo.record_result = lambda *a, **k: {"state": "unreadable", "alert": False}
-        summary = _service(tmp_path, repo).run("spark-20cf", Tier.A)
+        summary = _service(tmp_path, repo).run("server-1", Tier.A)
     finally:
         os.chmod(path, 0o600)
     assert summary.errors == 1

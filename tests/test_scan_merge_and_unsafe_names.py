@@ -122,14 +122,14 @@ def test_disappearance_never_crosses_into_a_like_lookalike_root(gconn):
     ("/run/media/parker/C", ["/run"]),
     ("/run", ["/run"]),
     ("/mnt/air/x", ["/mnt/air"]),
-    ("/home/parker", []),
+    ("/home/user", []),
     ("/runner", []),  # prefix match must respect path boundaries
 ])
 def test_explicit_root_waives_ancestor_default_excludes(root, waived):
-    eff, w = scan.effective_excludes(root, ["/home/parker/skip"])
+    eff, w = scan.effective_excludes(root, ["/home/user/skip"])
     assert w == waived
     assert all(p not in eff for p in waived)
-    assert "/home/parker/skip" in eff  # a deliberate --exclude is never waived
+    assert "/home/user/skip" in eff  # a deliberate --exclude is never waived
     assert not scan.is_excluded(root + "/sub/file", eff)
     for p in scan.DEFAULT_EXCLUDES:
         if p not in waived:
@@ -138,7 +138,7 @@ def test_explicit_root_waives_ancestor_default_excludes(root, waived):
 
 @pytest.mark.parametrize("argv", [
     ["--root", "/run/media/x/C", "--exclude", "/run"],      # a user --exclude is never waived
-    ["--root", "/home/parker/skip/sub", "--exclude", "/home/parker/skip"],
+    ["--root", "/home/user/skip/sub", "--exclude", "/home/user/skip"],
     ["--root", "/var/lib/docker/volumes"],                  # excluded path component
 ])
 def test_root_inside_an_exclude_is_refused_before_any_db_work(argv, monkeypatch):

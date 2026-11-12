@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import argparse
 import json
 import logging
@@ -86,9 +88,7 @@ def main() -> int:
         print(json.dumps(monitor_once(repository,tg_sink,plane_sink),default=str,indent=2))
         return 0
 
-    helper = Path(__file__).resolve().parents[2]/"bin"/"remote_hash_batch.sh"
-    if not helper.exists():
-        helper = Path("/srv/diskaudit/infra126/bin/remote_hash_batch.sh")
+    helper = Path(os.getenv("INFRA126_REMOTE_HELPER") or Path(__file__).resolve().parents[2]/"bin"/"remote_hash_batch.sh")
     service = VerificationService(
         repository,settings,tg_sink,plane_sink,
         WaitingRoomGate(settings.waitingroom_acquire_command,settings.waitingroom_release_command),

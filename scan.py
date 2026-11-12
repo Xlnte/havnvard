@@ -37,26 +37,7 @@ from heartbeat import HeartbeatThrottle, write_heartbeat  # noqa: E402
 from scan_guard import clear_stale_staging, refuse_if_locked  # noqa: E402
 
 # ---- DSN resolution — same SoT + fallback order as /srv/ultraops/cabinet-tools/_lib/pg_client.py
-_SOT_ENV = "/srv/forge/.secrets/prod/diskaudit.env"
-
-
-def _dsn_from_sot():
-    try:
-        with open(_SOT_ENV) as f:
-            for line in f:
-                if line.startswith("POSTGRES_URL="):
-                    return line.split("=", 1)[1].strip().strip('"').strip("'")
-    except OSError:
-        pass
-    return None
-
-
-def get_dsn() -> str:
-    return (
-        os.environ.get("POSTGRES_URL")
-        or _dsn_from_sot()
-        or "postgresql://ultra_crm@127.0.0.1:5432/ultra_crm"
-    )
+from havnvard_site import get_dsn  # noqa: E402,F401  (3.0.0: one shared lookup; see havnvard_site.py)
 
 
 # ---- statx(2) for birth time — Python's os.stat() does not expose this on Linux

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import re
 
-REAL_HOSTS = frozenset({"nas-ts453a", "trigkey", "spark-20cf", "air-2017", "acer-2020", "pafpad-linux", "pafpad-windows"})
+REAL_HOSTS = frozenset({"nas-1", "agent-1", "server-1", "laptop-2", "laptop-3", "desktop-1", "desktop-2"})  # tests/site.test.toml hosts + spares
 _WRITE_RE = re.compile(r"^\s*(UPDATE|INSERT|DELETE|COPY|MERGE|TRUNCATE)\b", re.I)
 
 

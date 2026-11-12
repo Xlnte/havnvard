@@ -14,7 +14,7 @@ Usage:
     havnvard_report.py --no-send       # collect + snapshot + print, do not send
 
 DSN: POSTGRES_URL (same SoT as scan.py/monitor.py). TG: AGENT_BOT_TOKEN +
-TG_PRESIDENT_CHAT (default -1003801720077).
+TG_PRESIDENT_CHAT (or [telegram] chat_id in the site file; no default).
 """
 from __future__ import annotations
 
@@ -26,37 +26,25 @@ from datetime import date
 import psycopg
 
 
-# ---- config (identical resolution to monitor.py) -------------------------
+# ---- config (3.0.0: everything site-specific comes from havnvard_site) ----
+import havnvard_site as _site  # noqa: E402
+
+
 def get_dsn() -> str:
-    dsn = os.environ.get("POSTGRES_URL")
-    if not dsn:
-        # SoT fallback: /srv/forge/.secrets/prod/diskaudit.env POSTGRES_URL
-        for line in open("/srv/forge/.secrets/prod/diskaudit.env"):
-            if line.startswith("POSTGRES_URL="):
-                dsn = line.split("=", 1)[1].strip().strip('"').strip("'")
-                break
-    if not dsn:
-        sys.exit("POSTGRES_URL not set")
-    return dsn
+    return _site.require_dsn()
 
 
 def tg_token() -> str:
-    tok = os.environ.get("AGENT_BOT_TOKEN")
-    if not tok:
-        for line in open("/srv/forge/.secrets/prod/diskaudit.env"):
-            if line.startswith("AGENT_BOT_TOKEN="):
-                tok = line.split("=", 1)[1].strip().strip('"').strip("'")
-                break
-    return tok or ""
+    return _site.secret_value("AGENT_BOT_TOKEN") or ""
 
 
-def tg_chat() -> int:
-    return int(os.environ.get("TG_PRESIDENT_CHAT", "-1003801720077"))
+def tg_chat() -> int | None:
+    v = _site.secret_value("TG_PRESIDENT_CHAT") or _site.section("telegram").get("chat_id")
+    return int(v) if v not in (None, "") else None
 
 
-# Caddy-fronted, HTTPS-only (http -> 400). Tailnet-only access.
-# Deep-link straight to the HavnVard (uid=diskaudit) dashboard, not Grafana home.
-DASHBOARD_URL = "https://spark-20cf.tail5f354b.ts.net:9452/d/diskaudit/diskaudit"
+# Optional deep link to a dashboard, shown at the end of the report ([ui] dashboard_url).
+DASHBOARD_URL = _site.ui("dashboard_url")
 
 
 # ---- snapshot table (created on first run) -------------------------------
@@ -119,17 +107,17 @@ def collect_metrics(conn) -> dict:
 
     cur.execute("select host, count(*), coalesce(sum(size_bytes),0) from diskaudit.files group by host")
     by_host = {r[0]: {"files": r[1], "bytes": r[2]} for r in cur.fetchall()}
-    m["spark"] = by_host.get("spark-20cf", {"files": 0, "bytes": 0})
-    m["nas"] = by_host.get("nas-ts453a", {"files": 0, "bytes": 0})
+    m["spark"] = by_host.get(_site.local_host(), {"files": 0, "bytes": 0})   # key kept: daily-metrics column names
+    m["nas"] = by_host.get(_site.nas_host(), {"files": 0, "bytes": 0})
     m["total_files"] = m["spark"]["files"] + m["nas"]["files"]
     m["total_bytes"] = m["spark"]["bytes"] + m["nas"]["bytes"]
 
     # top NAS shares
     cur.execute("""
-        select split_part(regexp_replace(path,'^/share/CACHEDEV1_DATA/',''),'/',1) share,
+        select split_part(regexp_replace(path, %s, ''),'/',1) share,
                count(*) files, coalesce(sum(size_bytes),0) bytes
-        from diskaudit.files where host='nas-ts453a'
-        group by 1 order by 3 desc nulls last limit 6""")
+        from diskaudit.files where host = %s
+        group by 1 order by 3 desc nulls last limit 6""", ("^" + _site.nas_share_base().rstrip("/") + "/", _site.nas_host()))
     m["nas_shares"] = [{"share": r[0], "files": r[1], "bytes": r[2]} for r in cur.fetchall()]
 
     # dedup totals (spark)
@@ -273,7 +261,8 @@ def render(m: dict, delta: dict) -> str:
     else:
         lines += ["", "📈 Deltas: baseline set — day-over-day starts next run (reclaimable Δ leads)."]
 
-    lines += ["", f"🔗 {DASHBOARD_URL}"]
+    if DASHBOARD_URL:
+        lines += ["", f"🔗 {DASHBOARD_URL}"]
     return "\n".join(lines)
 
 
@@ -305,6 +294,8 @@ def send_to_presi(text: str) -> dict:
     tok, chat = tg_token(), tg_chat()
     if not tok:
         raise SystemExit("AGENT_BOT_TOKEN not available")
+    if chat is None:
+        raise SystemExit("no Telegram chat configured (TG_PRESIDENT_CHAT or [telegram] chat_id)")
     body = _json.dumps({"chat_id": chat, "text": text, "disable_web_page_preview": True}).encode("utf-8")
     req = urllib.request.Request(f"https://api.telegram.org/bot{tok}/sendMessage",
                                  data=body, headers={"Content-Type": "application/json"}, method="POST")
@@ -381,8 +372,8 @@ def main():
     # (coordinated with the other five DB-dependent scripts), then exits 75.
     def _alertlib():
         try:
-            sys.path.insert(0, "/srv/alertlib")
-            import alertlib  # noqa: PLC0415
+            import havnvard_site as _hs  # noqa: PLC0415
+            alertlib = _hs.import_alertlib()
             return alertlib
         except Exception:  # noqa: BLE001
             return None

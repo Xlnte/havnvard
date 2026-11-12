@@ -103,26 +103,8 @@ def parse_rdfind_stats(stdout: str) -> dict:
         "duplicate_files_found": find(_RE_DUP_FILES),
     }
 
-_SOT_ENV = "/srv/forge/.secrets/prod/diskaudit.env"
-
-
-def _dsn_from_sot():
-    try:
-        with open(_SOT_ENV) as f:
-            for line in f:
-                if line.startswith("POSTGRES_URL="):
-                    return line.split("=", 1)[1].strip().strip('"').strip("'")
-    except OSError:
-        pass
-    return None
-
-
-def get_dsn() -> str:
-    return (
-        os.environ.get("POSTGRES_URL")
-        or _dsn_from_sot()
-        or "postgresql://ultra_crm@127.0.0.1:5432/ultra_crm"
-    )
+from havnvard_site import get_dsn  # noqa: E402,F401  (3.0.0: one shared lookup; see havnvard_site.py)
+from havnvard_site import local_host as _site_local_host  # noqa: E402
 
 
 def derive_scan_dirs(conn, host: str) -> list[str]:
@@ -627,7 +609,7 @@ def run_parallel(conn, host: str, dirs: list[str], n_workers: int, dedup_run_id)
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--host", default="spark-20cf")
+    ap.add_argument("--host", default=_site_local_host())
     ap.add_argument("--root", action="append", default=[], help="Explicit root dir(s) to scan (repeatable). If omitted, derives scope from diskaudit.files for --host.")
     ap.add_argument("--parallel", type=int, default=1, help="Number of concurrent rdfind workers. Default 1 = existing serial run_rdfind() path, unchanged. >1 uses run_parallel() (size-balanced buckets, one rdfind subprocess per bucket).")
     args = ap.parse_args()

@@ -63,27 +63,7 @@ import psycopg
 # ---- DSN resolution — same SoT + fallback order as scan.py / monitor.py / dedup.py. Duplicated
 # here (not imported from scan.py) so this script has zero import-chain coupling to the rest of
 # diskaudit — requirement #3 above: a clean, standalone CLI entrypoint.
-_SOT_ENV = "/srv/forge/.secrets/prod/diskaudit.env"
-
-
-def _dsn_from_sot():
-    try:
-        with open(_SOT_ENV) as f:
-            for line in f:
-                if line.startswith("POSTGRES_URL="):
-                    return line.split("=", 1)[1].strip().strip('"').strip("'")
-    except OSError:
-        pass
-    return None
-
-
-def get_dsn() -> str:
-    import os
-    return (
-        os.environ.get("POSTGRES_URL")
-        or _dsn_from_sot()
-        or "postgresql://ultra_crm@127.0.0.1:5432/ultra_crm"
-    )
+from havnvard_site import get_dsn  # noqa: E402,F401  (3.0.0: one shared lookup; see havnvard_site.py)
 
 
 # ---- bounded, explicit scope (see module docstring point 1) ----

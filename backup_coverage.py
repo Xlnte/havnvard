@@ -61,36 +61,26 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from crosshost_verify import get_dsn  # noqa: E402
 from heartbeat import write_heartbeat  # noqa: E402
 
-KNOWN_HOSTS = ("spark-20cf", "trigkey")  # hosts that NEED backup coverage;
-                                          # nas-ts453a is the destination, not a subject.
+import havnvard_site as _site  # noqa: E402  (3.0.0)
 
-NAS_ENV = "/etc/forge/tokens/nas_backup.env"
-RESTIC_PASSWORD_FILE = "/etc/forge/tokens/restic_backup.pass"
+KNOWN_HOSTS = _site.source_hosts()   # machines that NEED backup coverage; the NAS is the destination, not a subject
+NAS_HOST = _site.nas_host()
 
-# The 10 live restic backup targets (from /srv/ultraops/backup/restic-*.sh,
-# confirmed live 2026-07-25 via grep of each script's BACKUP_SRC). Repo name
-# is the last path segment of RESTIC_REPO (.../restic/<target>).
-# "helm-files" is a SPECIAL CASE: not a whole-directory backup, an explicit
-# allowlist of named files under /home/nemo (see restic-helm-files.sh) --
-# handled separately, not as a directory-prefix match.
-RESTIC_DIR_TARGETS = {
-    "agent-governance":   "/srv/ultraops/agent-governance",
-    "openclaw":           "/home/nemo/.openclaw",
-    "uohr":                "/srv/uohr",
-    "yt-ingestion":       "/srv/ultraops/yt-ingestion",
-    "yt-knowledge":       "/srv/yt-knowledge",
-    "paf-agent-system":   "/home/clip/paf-agent-system",
-    "agent-controller":   "/srv/ultraops/agent-controller",
-    "linkedin-agent":     "/srv/linkedin-agent",
-    "claude-inbox":       "/home/parker/claude-code-inbox",
-}
-RESTIC_HELM_FILES_ROOT = "/home/nemo"
-RESTIC_HELM_FILE_NAMES = (
-    "helm.conf", "helm-proxy.py", "helm-proxy-v2.py", "helm-routes.yaml",
-    "helm-routes.json", "helm-priorities.yaml", "helm-fetch-routes.yaml",
-    "helm-state.json", "HELM-README.md", "HELM-RESIDENCY.md",
-    "HELM-FORCED-MODEL.md",
-)
+# Legacy NAS-side restic repos (before HavnVard Backup 2.0). All site-specific, so all in the site file:
+#   [legacy_restic]
+#   nas_env = "/etc/havnvard/nas_backup.env"          # NAS_USER / NAS_HOST / NAS_PATH (read with sudo -n cat)
+#   password_file = "/etc/havnvard/restic_backup.pass"
+#   dir_targets = { app1 = "/srv/app1", docs = "/home/me/docs" }   # repo name -> backed-up directory
+#   file_list_target = "config-files"                  # optional: a repo holding an explicit list of files
+#   file_list_root = "/etc/myapp"
+#   file_list_names = ["a.conf", "b.yaml"]
+_LR = _site.section("legacy_restic")
+NAS_ENV = _LR.get("nas_env") or "/etc/havnvard/nas_backup.env"
+RESTIC_PASSWORD_FILE = _LR.get("password_file") or "/etc/havnvard/restic_backup.pass"
+RESTIC_DIR_TARGETS = dict(_LR.get("dir_targets") or {})
+RESTIC_FILE_LIST_TARGET = _LR.get("file_list_target") or ""
+RESTIC_HELM_FILES_ROOT = _LR.get("file_list_root") or ""
+RESTIC_HELM_FILE_NAMES = tuple(_LR.get("file_list_names") or ())
 
 MTIME_TOLERANCE = timedelta(minutes=2)
 
@@ -191,12 +181,14 @@ def cmd_classify(conn, host: str, limit: int | None) -> None:
     for target, root in RESTIC_DIR_TARGETS.items():
         restic_idx[target] = _restic_relpath_index(target, root)
     helm_files_idx = {os.path.join(RESTIC_HELM_FILES_ROOT, n) for n in RESTIC_HELM_FILE_NAMES}
-    helm_files_sizes = _restic_relpath_index("helm-files", RESTIC_HELM_FILES_ROOT)
+    helm_files_sizes = (_restic_relpath_index(RESTIC_FILE_LIST_TARGET, RESTIC_HELM_FILES_ROOT)
+                        if RESTIC_FILE_LIST_TARGET else {})
 
     hb("loading nas inventory for heuristic match")
     cur.execute(
         "SELECT path, size_bytes, mtime FROM diskaudit.files "
-        "WHERE host = 'nas-ts453a' AND still_exists AND file_type = 'regular' AND size_bytes IS NOT NULL"
+        "WHERE host = %s AND still_exists AND file_type = 'regular' AND size_bytes IS NOT NULL",
+        (NAS_HOST,),
     )
     nas_by_basize: dict[tuple[str, int], list] = {}
     for path, size_bytes, mtime in cur.fetchall():
@@ -251,7 +243,7 @@ def cmd_classify(conn, host: str, limit: int | None) -> None:
             # 2a. helm-files special case
             if path in helm_files_idx and helm_files_sizes.get(path) == size_bytes:
                 matched += 1
-                cp.write_row((host, path, size_bytes, inode, nlink, "BACKED_UP_UNVERIFIED", "restic_snapshot_listing", None, "nas-ts453a", path, "helm-files", coverage_run_id, None))
+                cp.write_row((host, path, size_bytes, inode, nlink, "BACKED_UP_UNVERIFIED", "restic_snapshot_listing", None, NAS_HOST, path, RESTIC_FILE_LIST_TARGET, coverage_run_id, None))
                 continue
 
             # 2b. restic directory targets
@@ -263,7 +255,7 @@ def cmd_classify(conn, host: str, limit: int | None) -> None:
                     break
             if found_restic:
                 matched += 1
-                cp.write_row((host, path, size_bytes, inode, nlink, "BACKED_UP_UNVERIFIED", "restic_snapshot_listing", None, "nas-ts453a", path, found_restic, coverage_run_id, None))
+                cp.write_row((host, path, size_bytes, inode, nlink, "BACKED_UP_UNVERIFIED", "restic_snapshot_listing", None, NAS_HOST, path, found_restic, coverage_run_id, None))
                 continue
 
             # 3. heuristic basename+size (+mtime tolerance) match against NAS inventory
@@ -277,7 +269,7 @@ def cmd_classify(conn, host: str, limit: int | None) -> None:
                             best = (cand_path, cand_mtime)
                             break
                 matched += 1
-                cp.write_row((host, path, size_bytes, inode, nlink, "BACKED_UP_UNVERIFIED", "path_size_mtime", None, "nas-ts453a", best[0], None, coverage_run_id, "basename+size heuristic; bkup_spark is NOT a literal path mirror (verified 2026-07-25)"))
+                cp.write_row((host, path, size_bytes, inode, nlink, "BACKED_UP_UNVERIFIED", "path_size_mtime", None, NAS_HOST, best[0], None, coverage_run_id, "basename+size heuristic; bkup_spark is NOT a literal path mirror (verified 2026-07-25)"))
                 continue
 
             # 4. no match anywhere
@@ -368,7 +360,7 @@ def cmd_verify(conn, host: str, limit: int | None) -> None:
         SET classification = 'BACKED_UP_VERIFIED',
             match_method = 'hash_proven',
             checked_at = now(),
-            matched_nas_host = 'nas-ts453a',
+            matched_nas_host = %s,
             matched_nas_path = ic.nas_path,
             run_id = %s,
             notes = COALESCE(bc.notes || '; ', '') || 'promoted via existing integrity_checks match verdict'
@@ -379,7 +371,7 @@ def cmd_verify(conn, host: str, limit: int | None) -> None:
           AND ic.spark_host = bc.host
           AND ic.spark_path = bc.path
     """
-    cur.execute(q, (run_id, host))
+    cur.execute(q, (NAS_HOST, run_id, host))
     promoted = cur.rowcount
     conn.commit()
 

@@ -48,23 +48,12 @@ log = logging.getLogger("weekly_prescab_review")
 
 # ---- DSN resolution — same pattern as monitor.py/scan.py ----
 
-_SOT_ENV = "/srv/forge/.secrets/prod/diskaudit.env"
-
-
-def _dsn_from_sot() -> str:
-    try:
-        with open(_SOT_ENV) as f:
-            for line in f:
-                if line.startswith("POSTGRES_URL="):
-                    return line.split("=", 1)[1].strip().strip('"')
-    except OSError:
-        pass
-    raise RuntimeError(f"no POSTGRES_URL in {_SOT_ENV}")
+import havnvard_site as _site  # noqa: E402  (3.0.0)
 
 
 def get_dsn() -> str:
-    """Resolve CRM DSN: env → SoT /srv/forge/.secrets/prod/diskaudit.env."""
-    return os.environ.get("CRM_DB_DSN") or _dsn_from_sot()
+    """CRM_DB_DSN if set, else the HavnVard site database (never a guessed default)."""
+    return os.environ.get("CRM_DB_DSN") or _site.require_dsn()
 
 
 # ---- Database queries ----

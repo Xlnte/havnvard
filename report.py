@@ -43,20 +43,11 @@ from datetime import datetime, timezone
 # small shared helpers
 # ---------------------------------------------------------------------------
 
-_APP_PREFIXES = [
-    ("/srv/ultraops/crm", "CRM"),
-    ("/srv/linkedin-agent", "LinkedIn agent"),
-    ("/srv/ultraops/neuroflow", "Neuroflow/TGNF"),
-    ("/srv/vp-dispatcher", "PRESCAB"),
-    ("/srv/diskaudit", "HavnVard (diskaudit) itself"),
-    ("/srv/ultraops", "ultraops (other)"),
-    ("/srv/forge", "FORGE"),
-    ("/home/clip/.paperclip", "Paperclip [DEPRECATED]"),
-    ("/home/clip", "clip user files"),
-    ("/home/nemo/.openclaw", "OpenClaw"),
-    ("/home/nemo", "nemo user files"),
-    ("/home/parker/runbooks", "runbooks"),
-    ("/home/parker", "parker user files"),
+import havnvard_site as _site  # noqa: E402  (3.0.0)
+
+# Path prefix -> owning-app label for reports. Site data ([report] app_prefixes = [["/srv/app1", "App 1"], ...]);
+# the generic entries below always apply after the site's own. Longest/most specific prefixes first.
+_APP_PREFIXES = [tuple(p) for p in (_site.section("report").get("app_prefixes") or [])] + [
     ("/var/lib/postgresql", "PostgreSQL data files (live DB -- do not touch)"),
     ("/var/lib/docker", "Docker"),
     ("/var/lib/snapd", "snapd/snap packages"),

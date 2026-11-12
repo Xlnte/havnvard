@@ -7,10 +7,20 @@ the separate, not-yet-built P5/FERJA authorized cleanup process.
 """
 from __future__ import annotations
 
+import os
+import sys
+
+# The repo root holds havnvard_site.py (site settings shared with the scan/dedup tools). Appended, never inserted
+# first, so it cannot shadow an installed package.
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _ROOT not in sys.path:
+    sys.path.append(_ROOT)
+import havnvard_site as _site  # noqa: E402
+
 # App bind. Internal loopback only; Caddy fronts the Tailnet-only public bind.
 APP_HOST = "127.0.0.1"
 APP_PORT = 9108
-PUBLIC_URL = "https://spark-20cf.tail5f354b.ts.net:9457"
+PUBLIC_URL = _site.ui("public_url", f"http://{APP_HOST}:{APP_PORT}")
 
 # Pagination.
 DEFAULT_PAGE_SIZE = 50
@@ -20,8 +30,7 @@ MAX_PAGE_SIZE = 200
 # filter/sort", not a full unbounded dump of an 8.5M-row table).
 EXPORT_ROW_CAP = 50_000
 
-# Hosts each view operates over. DEDUP covers all three scanned devices; CLEANUP
-# and BACKUP are scoped to Spark + trigkey only (the NAS is the backup target,
-# not itself a cleanup/backup candidate) -- per the owner's exact wording.
-ALL_HOSTS = ("spark-20cf", "trigkey", "nas-ts453a")
-SOURCE_HOSTS = ("spark-20cf", "trigkey")
+# Hosts each view operates over (site file [hosts]). DEDUP covers every scanned device; CLEANUP and BACKUP
+# cover the source machines only (the NAS is the backup target, not itself a cleanup/backup candidate).
+ALL_HOSTS = _site.all_hosts()
+SOURCE_HOSTS = _site.source_hosts()

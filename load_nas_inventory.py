@@ -63,10 +63,12 @@ from scan_guard import clear_stale_staging, refuse_if_locked  # noqa: E402
 import stat as statmod
 
 # ---- NAS connection facts ----
-NAS_HOST = "nas-ts453a"
-NAS_SHARE_BASE = "/share/CACHEDEV1_DATA"
+import havnvard_site as _site  # noqa: E402  (3.0.0)
+
+NAS_HOST = _site.nas_host()
+NAS_SHARE_BASE = _site.nas_share_base()
 NAS_SCRATCH_DIR = f"{NAS_SHARE_BASE}/.diskaudit_scratch"
-NAS_TOKEN_FILE = "/etc/forge/tokens/nas_admin.env"
+NAS_TOKEN_FILE = _site.nas("admin_token_file") or "/etc/havnvard/nas_admin.env"
 # Never touch /etc/forge/tokens/nas_backup.env -- unrelated production credential
 # used by spark-backup-db.sh, explicitly off-limits per this project's scope.
 

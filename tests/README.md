@@ -15,7 +15,7 @@ transactions, the NAS-dedup tests do not touch production at all).
 * `conftest.py::nd_schema` creates a per-session schema `diskaudit_t_<hex>` from `LIKE diskaudit.<table> INCLUDING ALL` copies of the live
   table shapes (no data) plus the 1.4.0 migration (unchanged in 1.4.1) applied to it, and drops it at the end. Production gets no test rows and no DDL.
 * `_dbguard.py::GuardedConn` rewrites every `diskaudit.` reference to that schema, so code under test physically cannot reach a production
-  table through it, and ALSO refuses any write naming a real host (`nas-ts453a`, `trigkey`, `spark-20cf`, ...). Synthetic hosts are `_test_*`.
+  table through it, and ALSO refuses any write naming a real host (the hosts in tests/site.test.toml). Synthetic hosts are `_test_*`.
 * `_fake_target.py::FakeTarget` runs the real `hash_stat_batch.sh` locally; no real SSH, no NAS.
 * The crosshost tests keep their own convention (`_test_` hosts on the live schema, session-end sweep) and are unchanged.
 | `test_backup_core.py`, `test_backup_restic.py` | HavnVard Backup (`backup/`, 2.0.0): config, enrol (idempotent, no secret printed), hub install runs nothing, disk guard, client run, health + alerts, drill (incl. silent corruption), prune, NAS copy, offsite repair/flag. Tmp dirs, local restic repos, local-path rclone remotes; never the live DB, hub or NAS. |

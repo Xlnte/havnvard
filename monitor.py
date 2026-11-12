@@ -47,55 +47,26 @@ import psycopg
 
 # ---- DSN resolution — identical to scan.py / dedup.py get_dsn(), copied not
 # reimported (heartbeat.py is the only intentionally shared module so far).
-_SOT_ENV = "/srv/forge/.secrets/prod/diskaudit.env"
-
-
-def _dsn_from_sot():
-    try:
-        with open(_SOT_ENV) as f:
-            for line in f:
-                if line.startswith("POSTGRES_URL="):
-                    return line.split("=", 1)[1].strip().strip('"').strip("'")
-    except OSError:
-        pass
-    return None
-
-
-def get_dsn() -> str:
-    return (
-        os.environ.get("POSTGRES_URL")
-        or _dsn_from_sot()
-        or "postgresql://ultra_crm@127.0.0.1:5432/ultra_crm"
-    )
+from havnvard_site import get_dsn  # noqa: E402,F401  (3.0.0: one shared lookup; see havnvard_site.py)
 
 
 # ---- Telegram — direct HTTPS POST via urllib (requests is not installed in
 # this venv: only psycopg[binary] is in requirements.txt/checked at runtime
-# below). Deliberately NOT importing /srv/ultraops/crm/tg_bot.py -- that module
-# is a large stateful production bot with its own dedup-claim/psycopg2
+# below). Deliberately NOT importing a full Telegram bot -- that would be
+# a large stateful bot with its own dedup-claim/psycopg2
 # machinery meant for a different purpose; this is a minimal standalone POST.
-_SOT_ENV_TOKEN = "/srv/forge/.secrets/prod/diskaudit.env"
-
-
-def _env_from_sot(key: str):
-    try:
-        with open(_SOT_ENV_TOKEN) as f:
-            for line in f:
-                if line.startswith(f"{key}="):
-                    return line.split("=", 1)[1].strip().strip('"').strip("'")
-    except OSError:
-        pass
-    return None
+import havnvard_site as _site  # noqa: E402  (3.0.0: token and chat id come from env or the site's env_file)
 
 
 def get_bot_token() -> str | None:
-    return os.environ.get("AGENT_BOT_TOKEN") or _env_from_sot("AGENT_BOT_TOKEN")
+    return _site.secret_value("AGENT_BOT_TOKEN")
 
 
-def get_chat_id() -> int:
-    # Matches the /srv/ultraops/crm/tg_bot.py convention exactly: env override
-    # TG_PRESIDENT_CHAT, default -1003801720077 (the PRESIDENT group).
-    return int(os.environ.get("TG_PRESIDENT_CHAT", "-1003801720077"))
+def get_chat_id() -> int | None:
+    """TG_PRESIDENT_CHAT from env or the site's env_file, else [telegram] chat_id in the site file. No built-in
+    default: an unconfigured chat means the alert is NOT sent, and send_telegram() says so."""
+    v = _site.secret_value("TG_PRESIDENT_CHAT") or _site.section("telegram").get("chat_id")
+    return int(v) if v not in (None, "") else None
 
 
 def _esc(s) -> str:
@@ -114,10 +85,14 @@ def send_telegram(text: str, test_mode: bool) -> bool:
     naturally results in a retry next monitor cycle instead of a silent miss."""
     token = get_bot_token()
     if not token:
-        print("[monitor] ERROR: AGENT_BOT_TOKEN not set and not found in "
-              f"{_SOT_ENV_TOKEN} -- cannot send Telegram alert", file=sys.stderr)
+        print("[monitor] ERROR: AGENT_BOT_TOKEN not set (env or the site env_file) "
+              "-- cannot send Telegram alert", file=sys.stderr)
         return False
     chat_id = get_chat_id()
+    if chat_id is None:
+        print("[monitor] ERROR: no Telegram chat configured (TG_PRESIDENT_CHAT or [telegram] chat_id) "
+              "-- cannot send Telegram alert", file=sys.stderr)
+        return False
     if test_mode:
         text = "[TEST] " + text
     payload = {
@@ -365,8 +340,8 @@ def mark_alerted(conn, alert: dict):
 # monitor never dies because the helper is missing.
 def _alertlib():
     try:
-        sys.path.insert(0, "/srv/alertlib")
-        import alertlib  # noqa: PLC0415
+        import havnvard_site as _hs  # noqa: PLC0415
+        alertlib = _hs.import_alertlib()
         return alertlib
     except Exception:  # noqa: BLE001
         return None

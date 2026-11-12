@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""diskaudit — within-host dedup for nas-ts453a and trigkey (HavnVard 1.4.0).
+"""diskaudit — within-host dedup for the NAS and remote agent machines (HavnVard 1.4.0).
 
 Finds files with IDENTICAL CONTENT on one host. Its output feeds an operator
 quarantine script that moves files, so the two failures this tool exists to
@@ -27,7 +27,7 @@ deletes, moves or renames a scanned file):
      in scope are cleared. A failed or partial (--limit) run publishes nothing.
 
 Usage:
-    nas_trigkey_dedup.py --host nas-ts453a [--path DIR] [--exclude DIR]... [--limit N]
+    nas_trigkey_dedup.py --host NAS_HOST [--path DIR] [--exclude DIR]... [--limit N]
                          [--batch-size 500] [--batch-bytes 4294967296] [--assumed-mbps 20]
     nas_trigkey_dedup.py --export RUN_ID [--format csv|json]       # reproducible snapshot export
 
@@ -36,7 +36,7 @@ Exit codes: 0 completed | 2 run failed | 3 database unreachable | 4 refused
 
 Run supervised, never bare background:
     systemd-run --unit=havnvard-nas-dedup --uid=parker --working-directory=/srv/diskaudit \\
-        /srv/diskaudit/.venv/bin/python3 nas_trigkey_dedup.py --host nas-ts453a \\
+        .venv/bin/python3 nas_trigkey_dedup.py --host NAS_HOST \\
         --exclude /share/CACHEDEV1_DATA/bkup_spark
 """
 from __future__ import annotations
@@ -68,8 +68,9 @@ from crosshost_verify import (  # noqa: E402
 )
 from heartbeat import write_heartbeat  # noqa: E402
 import nas_dedup_core as core  # noqa: E402
+import havnvard_site as _site  # noqa: E402  (3.0.0)
 
-KNOWN_HOSTS = ("nas-ts453a", "trigkey")
+KNOWN_HOSTS = (_site.nas_host(),) + _site.agent_hosts()   # 3.0.0: the NAS and remote agent machines
 HASH_STAT_SCRIPT_LOCAL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hash_stat_batch.sh")
 HASH_STAT_SCRIPT_NAME = "hash_stat_batch.sh"
 HEARTBEAT_INTERVAL_S = 15.0
@@ -101,7 +102,7 @@ def _log(host, run_id, stage, msg):
 
 
 def _hash_source(host: str) -> str:
-    return "trigkey-agent" if host == "trigkey" else "nas-native"   # files_hash_source_check values
+    return "nas-native" if host == _site.nas_host() else "trigkey-agent"   # files_hash_source_check values (DB labels)
 
 
 def _safe_text(s: str) -> str:
@@ -992,8 +993,8 @@ def export_snapshot(conn, run_id: int, fmt: str = "csv") -> str:
 def _alertlib_db_down(source: str, err) -> bool:
     """One deduped 'database unreachable' alert via alertlib (HV-REQ-20). Never raises."""
     try:
-        sys.path.insert(0, "/srv/alertlib")
-        import alertlib  # noqa: PLC0415
+        import havnvard_site as _hs  # noqa: PLC0415
+        alertlib = _hs.import_alertlib()
         return bool(alertlib.db_down(source, err))
     except (ImportError, OSError, AttributeError, TypeError) as e:
         print(f"[nas_trigkey_dedup] WARN: alertlib.db_down unavailable: {e}", file=sys.stderr)

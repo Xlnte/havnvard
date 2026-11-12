@@ -31,17 +31,14 @@ from datetime import datetime, timezone
 import psycopg2
 import psycopg2.extras
 
-OUT = "/srv/ultraops/helm-status/havnvard-cleanup.html"
-ENV = "/srv/forge/.secrets/prod/diskaudit.env"
+import havnvard_site as _site  # noqa: E402  (3.0.0)
+
+OUT = os.environ.get("HAVNVARD_CLEANUP_PAGE") or _site.section("ui").get("cleanup_page") or "havnvard-cleanup.html"
 TOP_N = 400
 
 
 def dsn() -> str:
-    with open(ENV) as fh:
-        for line in fh:
-            if line.startswith("POSTGRES_URL="):
-                return line.split("=", 1)[1].strip()
-    raise RuntimeError("POSTGRES_URL not found in " + ENV)
+    return _site.require_dsn()
 
 
 # Groups with >1 DISTINCT INODE are the only ones where deleting anything frees

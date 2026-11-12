@@ -9,7 +9,7 @@ def test_log_with_real_metadata_change_is_mutable():
 
 
 def test_sqlite_is_mutable_when_written():
-    result = classify_divergence("/home/parker/app.sqlite",1_000_000_000,2_000_000_000,10,20)
+    result = classify_divergence("/home/user/app.sqlite",1_000_000_000,2_000_000_000,10,20)
     assert result.score == 98
     assert result.explicit_mutable_rule
     assert result.auto_accept_baseline
@@ -30,7 +30,7 @@ def test_immutable_path_remains_suspicious_even_if_metadata_changed():
 
 
 def test_unknown_file_with_changed_mtime_and_size_is_likely_legitimate():
-    result = classify_divergence("/home/parker/notes.txt",1_000_000_000,2_000_000_000,10,20)
+    result = classify_divergence("/home/user/notes.txt",1_000_000_000,2_000_000_000,10,20)
     assert result.score == 90
     assert not result.auto_accept_baseline  # only explicit mutable rules auto-advance baseline
 

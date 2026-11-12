@@ -6,8 +6,8 @@ Wants=network-online.target
 [Service]
 User=parker
 Group=parker
-WorkingDirectory=/srv/ultraops/diskaudit/webapp
-ExecStart=/home/parker/mambaforge/bin/python3 -m uvicorn app.main:app --host 127.0.0.1 --port 9108
+WorkingDirectory=/opt/havnvard/webapp
+ExecStart=/opt/havnvard/.venv/bin/python3 -m uvicorn app.main:app --host 127.0.0.1 --port 9108
 Restart=always
 RestartSec=5
 

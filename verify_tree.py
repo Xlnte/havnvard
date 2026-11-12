@@ -47,7 +47,7 @@ EXIT_USAGE = 2
 EXIT_NOT_VERIFIED = 3
 EXIT_CANARY = 4
 
-NAS_HOST = "nas-ts453a"
+NAS_HOST = cv._site.nas_host()   # 3.0.0: from the site file
 # Measured 20261110 01:10: NAS sha256sum 36.7 MB/s (7.05 GiB / 201.5 s) under a concurrent
 # HavnVard dedup run. The timeout assumes a floor 3.7x slower than that.
 NAS_HASH_FLOOR_BPS = 10_000_000
@@ -508,8 +508,8 @@ def _alarm(text: str) -> None:
     """Canary failure = the safety check is broken. Deduped TG PRESI alert via alertlib
     (canonical); a missing alertlib is printed loudly, never swallowed silently."""
     try:
-        sys.path.insert(0, "/srv/alertlib")
-        import alertlib  # noqa: PLC0415
+        import havnvard_site as _hs  # noqa: PLC0415
+        alertlib = _hs.import_alertlib()
         alertlib.fire("havnvard-verify-tree-canary", f"HavnVard verify_tree: {text}", 3600,
                       source="verify_tree", severity="critical")
     except Exception as e:  # noqa: BLE001 -- reported, and the exit code is already 4
@@ -637,7 +637,7 @@ def main(argv=None) -> int:
     v.add_argument("--local", required=True)
     v.add_argument("--nas-path", required=True)
     v.add_argument("--purpose", required=True)
-    v.add_argument("--local-host", default="spark-20cf")
+    v.add_argument("--local-host", default=cv._site.local_host())
     v.add_argument("--nas-host", default=NAS_HOST, help=argparse.SUPPRESS)
     m = sub.add_parser("mark-deleted")
     m.add_argument("--run-id", type=int, required=True)

@@ -28,7 +28,7 @@ def test_remote_wait_terminates_stale_heartbeat(monkeypatch):
 class FakeTransport:
     """Records every transport call so tests can assert routing and ordering."""
 
-    def __init__(self,target="sparkbkup@nas-ts453a.tail5f354b.ts.net",launch_stdout="4242\n"):
+    def __init__(self,target="backup@nas-1.example",launch_stdout="4242\n"):
         self.target=target
         self.calls=[]
         self.launch_stdout=launch_stdout
@@ -52,7 +52,7 @@ class FakeTransport:
 
 
 def _candidates():
-    return [FileCandidate(1,"run-1","nas-ts453a","/data/file",7,"0"*64,None,5,10,False,True)]
+    return [FileCandidate(1,"run-1","nas-1","/data/file",7,"0"*64,None,5,10,False,True)]
 
 
 def _hasher(transport,tmp_path):
@@ -90,7 +90,7 @@ def test_launch_command_wraps_backgrounding_in_a_subshell(tmp_path):
     # `cmdA && nohup cmdB &` backgrounds the ENTIRE `&&` chain as one async
     # job -- over an ssh pipe (no pty) this blocks the local client until
     # that whole job (including the long-running hash script) exits, not
-    # just until the pid is recorded. Confirmed live against trigkey: the
+    # just until the pid is recorded. Confirmed live against agent-1: the
     # launch ssh call hung to its 60s timeout despite `< /dev/null`. Fix:
     # the backgrounding step must be its own `( ... )` subshell so that
     # subshell (not the long-running job) is what finishes immediately.
@@ -110,7 +110,7 @@ def test_launch_command_wraps_backgrounding_in_a_subshell(tmp_path):
 
 
 def test_launch_command_falls_back_when_nohup_is_missing(tmp_path):
-    # QNAP QTS's busybox ash (nas-ts453a) has no `nohup` binary at all --
+    # QNAP QTS's busybox ash (nas-1) has no `nohup` binary at all --
     # confirmed live: "sh: nohup: command not found", which silently drops
     # the whole background job (stdout.log came back empty, no done/heartbeat
     # ever written). setsid IS present on QTS, so detect availability on the
@@ -173,25 +173,25 @@ def test_transport_defaults_to_pubkey_when_not_injected(monkeypatch,tmp_path):
     helper.write_text("#!/bin/sh\n",encoding="utf-8")
     hasher=RemoteBatchHasher(helper,timeout_seconds=100,poll_seconds=0,heartbeat_stale_seconds=5)
 
-    transport=hasher._transport_for("parker@trigkey")
+    transport=hasher._transport_for("havnvard@agent-1")
     assert isinstance(transport,PubkeySshTransport)
-    assert transport.target=="parker@trigkey"
+    assert transport.target=="havnvard@agent-1"
 
-    job=hasher.launch("parker@trigkey","/scratch/infra126","run-1",_candidates())
+    job=hasher.launch("havnvard@agent-1","/scratch/infra126","run-1",_candidates())
 
-    assert job.ssh_target=="parker@trigkey"
+    assert job.ssh_target=="havnvard@agent-1"
     assert job.pid==99
     assert calls[0][0][0]=="ssh"
     assert calls[0][1]["stdin"] is subprocess.DEVNULL
 
 
 def test_recovery_command_pubkey_shape_is_preserved(tmp_path):
-    hasher=RemoteBatchHasher(tmp_path/"helper",transport=PubkeySshTransport("parker@trigkey"))
-    job=RemoteJob("parker@trigkey","/scratch/run",123,"/scratch/run/results","/scratch/run/heartbeat","tok-1")
+    hasher=RemoteBatchHasher(tmp_path/"helper",transport=PubkeySshTransport("havnvard@agent-1"))
+    job=RemoteJob("havnvard@agent-1","/scratch/run",123,"/scratch/run/results","/scratch/run/heartbeat","tok-1")
 
     command=hasher.recovery_command(job)
 
-    assert command.startswith("ssh parker@trigkey ")
+    assert command.startswith("ssh havnvard@agent-1 ")
     assert "/scratch/run/token" in command
     assert "tok-1" in command
     assert "kill 123" in command
