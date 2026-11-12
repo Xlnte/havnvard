@@ -123,7 +123,7 @@ risks:
     crosshost_verify.py never attempts a sudo-read fallback for LOCAL (server-1) hashing, only
     for the remote (agent-1) path in hash_batch.sh -- server-1's ~1,934 unreadable candidate
     files (verified 2026-07-25) are predominantly live PostgreSQL WAL/base files (should not be
-    read out from under a running DB anyway) and another user's (clip) permission-restricted home
+    read out from under a running DB anyway) and another user's permission-restricted home
     directory; left as an accepted gap, not escalated, and reported as "unverified" rather than
     "missing" in the NAS integrity report.
   - >-

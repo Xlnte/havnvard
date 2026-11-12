@@ -1,5 +1,5 @@
 [Unit]
-Description=HavnVard — NAS within-host SHA-256 dedup (nas-1, weekly; bkup_server excluded until the operator decides)
+Description=HavnVard — NAS within-host SHA-256 dedup (nas-1, weekly; set [nas] backup_tree_prefix so backup replicas are never the keeper)
 Documentation=file:///home/user/runbooks/20261109-havnvard-nas-dedup/20261109_ARCHITECTURE.md
 After=network-online.target postgresql.service
 Wants=network-online.target

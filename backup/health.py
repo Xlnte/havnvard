@@ -48,7 +48,7 @@ def collect(now: float | None = None) -> list[tuple[str, bool, str]]:
                 res.append(("hub repos", False, f"no restic repositories found under {root}"))
             from .catalog import catalog_snapshot_ids
             skip = frozenset(catalog_snapshot_ids())
-            archives = set(h.get("archive_repos", []))   # 2.2.5: one-time archives (e.g. ultrageo-2023): no age limit
+            archives = set(h.get("archive_repos", []))   # 2.2.5: one-time archives (e.g. an old-laptop-2023 archive): no age limit
             for r in repos:
                 age = _newest_snapshot_age_h(r, now, skip)
                 if age is None:

@@ -486,15 +486,12 @@ Tests: `pytest tests/test_backup_core.py tests/test_backup_restic.py tests/test_
 
 ## GitHub notes
 
-Independent git repo (`/opt/havnvard`), not part of the
-`spark-fleet` monorepo. Branch as of this doc: `havnvard-presi-report-20260719`.
-Docs land on their own `docs/` branch and merge back per normal review.
+Independent git repo. Changes land on a branch and merge to `main` after review; releases are tagged `vX.Y.Z`.
 
 ## Operator notes
 
 - This repo also has an **older pointer-style runbook convention** (see table
-  below) that pointed at `/home/user/runbooks/<name>/README.md` +
-  `/mnt/air/spark/runbooks/` mirror. That convention predates the 2026-07-20
+  below) that pointed at `/home/user/runbooks/<name>/README.md` files. That convention predates the 2026-07-20
   THOTH-hand-off standard (CLAUDE.md §10) and this file now carries the real
   operational content directly, per the current per-app runbook standard —
   the pointer table below is kept as a historical index into those detailed
@@ -509,9 +506,7 @@ Docs land on their own `docs/` branch and merge back per normal review.
 | `20260718-diskaudit-prescab-weekly-review` | Weekly PRESCAB operational review dispatch |
 | `20260718-havnvard-restic-migration` | Phase 2 — restic-based backup engine, per-target build process |
 
-Full paths: `/home/user/runbooks/<name>/README.md`, mirrored to
-`/home/user/spark/runbooks/`. Design doc:
-`/home/user/.claude/plans/witty-swinging-shore.md`.
+These design runbooks are the authors' private notes and are not part of this repository.
 
 - **As of this audit (2026-07-25), another agent has in-flight, uncommitted
   work on this branch** (`havnvard_report.py`, `heartbeat.py`, `monitor.py`

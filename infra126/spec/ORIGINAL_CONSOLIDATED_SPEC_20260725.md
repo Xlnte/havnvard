@@ -495,8 +495,8 @@ Client agents on Windows/iOS/Android, each uploading file metadata + optional co
 
 #### V+2C: Abandoned Software Detection (Original Differentiator)
 
-Detect files/dirs that are orphaned specifically because a module was decommissioned (deprecated `paperclip-instance.tar.gz`,
-removed `clip` user home, etc.), not just "large and cold."
+Detect files/dirs that are orphaned specifically because a module was decommissioned (a deprecated app's archive,
+a removed user's home, etc.), not just "large and cold."
 
 ---
 

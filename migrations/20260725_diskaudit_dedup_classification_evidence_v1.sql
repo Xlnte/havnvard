@@ -52,7 +52,7 @@ END $$;
 --   @Recycle (33 files)   — QNAP-managed recycle bin (system-managed, not raw user delete)
 --   @Recently-Snapshot (27 files) — QNAP snapshot cache directory
 --   bkup_server (778,687 files, 946GB) — deliberate server app/DB backup archives, already
---   named/registered per-app in this same table (crm, oldapp, linkedin-agent, ...);
+--   named/registered per-app in this same table (app-a, app-b, ...);
 --   classified 'application' at the share level rather than duplicating every app name.
 INSERT INTO diskaudit.critical_patterns (pattern, label, source, category) VALUES
     ('%/.qpkg/%',               'QNAP app-package install directory (QTS-managed)',            'manual', 'os_system'),
@@ -104,8 +104,8 @@ INSERT INTO diskaudit.file_category_patterns (pattern, category, label, source) 
     ('/share/CACHEDEV1_DATA/Web/%',        'user_data', 'NAS Web share', 'manual'),
     ('/home/alice/%',  'user_data', 'server alice home directory', 'manual'),
     ('/home/bob/%',    'user_data', 'server bob home directory', 'manual'),
-    ('/home/carol/%',    'user_data', 'server clip home directory', 'manual'),
-    ('/home/dave/%', 'user_data', 'server sandbox home directory', 'manual')
+    ('/home/carol/%',    'user_data', 'server carol home directory', 'manual'),
+    ('/home/dave/%', 'user_data', 'server dave home directory', 'manual')
 ON CONFLICT (pattern, category) DO NOTHING;
 
 COMMIT;

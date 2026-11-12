@@ -2,7 +2,7 @@
 -- Date: 2026-07-17 · Owner: the operator · Plan: witty-swinging-shore.md · Plane: INFRA-97
 --
 -- write_groups() was doing one UPDATE per file (1.8M individual round-trips on the
--- /srv/ultraops test -- confirmed ~22 of the 78 total minutes, a real, measured cost).
+-- /srv/apps test -- confirmed ~22 of the 78 total minutes, a real, measured cost).
 -- Fix: same COPY-into-staging + set-based UPDATE...FROM pattern scan.py already uses.
 
 BEGIN;

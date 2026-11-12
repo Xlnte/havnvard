@@ -222,7 +222,8 @@ crontab only and logs the skip. Add your
 own rules with plain `INSERT`s afterwards.
 
 `migrations/` is the change history of the original deployment (see `migrations/README.md`); a new site does not run
-it. Maintainers regenerate the baseline after a schema change with `scripts/make_baseline_schema.py`, which refuses to
+it. Maintainers regenerate the baseline after a schema change with `scripts/make_baseline_schema.py` (pass
+`--site-names <your private names file>`; see `migrations/README.md`), which refuses to
 write a file that still names a private host.
 
 ## Dashboard
@@ -237,7 +238,6 @@ Grafana: `https://server-1.example.ts.net:9452/d/diskaudit/diskaudit`
 - NAS side (nas-1, not a local dependency but must be documented): BusyBox v1.24.1 multi-call binary providing `find`/`stat`/`xargs` (no GNU-only flags like `-printf` or `xargs -d`/`-a`), invoked via bash 3.2.57 in sh-compat mode (NOT BusyBox ash). No Python or package manager on the NAS.
 - Database: PostgreSQL, schema `diskaudit` in database `havnvard` at `127.0.0.1:5432`. Credentials source-of-truth: `/etc/havnvard/havnvard.env` `POSTGRES_URL`.
 - Systemd: `diskaudit-*` units (`.service`+`.timer` pairs) for scheduling: scan, nas-crawl, nas-dedup, monitor, classification-refresh, load-bearing-refresh, prescab-review.
-- Planned future addition: `restic` (install latest ARM64 GitHub release binary directly, NOT the apt package which is a stale 0.16.4 predating the 0.18.0 chunk-shuffling fix) — for an upcoming backup-migration phase, not yet installed.
 
 ## Hard constraint
 
@@ -252,8 +252,9 @@ digest read back from `diskaudit.files` (`basis='stored'`, crosshost `match`) ne
 
 ## Credits
 
-HavnVard is glue and safety rules around excellent open-source tools. It does not copy their code; it runs them or
-imports them as ordinary dependencies, under their own licenses.
+HavnVard is glue and safety rules around excellent open-source tools. It runs them or imports them as ordinary
+dependencies, under their own licenses. The one file shipped inside this repository is htmx (`webapp/app/static/htmx.min.js`),
+with its license beside it and in `NOTICE`.
 
 | Project | What HavnVard uses it for | License |
 |---|---|---|
@@ -264,8 +265,11 @@ imports them as ordinary dependencies, under their own licenses.
 | [psycopg](https://github.com/psycopg/psycopg) | Python access to PostgreSQL | LGPL-3.0 |
 | [rdfind](https://github.com/pauldreik/rdfind) | Fast duplicate finding on Linux hosts (run as a separate program) | GPL-2.0-or-later |
 | [BusyBox](https://busybox.net/) | `find`, `stat` and `sha256sum` on the NAS (the NAS's own copy; nothing installed) | GPL-2.0 |
-| [FastAPI](https://github.com/fastapi/fastapi), [Uvicorn](https://github.com/encode/uvicorn) | The web pages | MIT, BSD-3-Clause |
+| [FastAPI](https://github.com/fastapi/fastapi), [Uvicorn](https://github.com/Kludex/uvicorn) | The web pages | MIT, BSD-3-Clause |
 | [Jinja2](https://github.com/pallets/jinja), [MarkupSafe](https://github.com/pallets/markupsafe) | Page templates | BSD-3-Clause |
+| [htmx](https://github.com/bigskysoftware/htmx) 1.9.10 | Live-updating web pages (copy included) | BSD-2-Clause |
+| [Flask](https://github.com/pallets/flask) | Optional: the bit-rot verification pages (`infra126/web/`) | BSD-3-Clause |
+| [OpenSSH](https://www.openssh.com/), [rsync](https://rsync.samba.org/), [sshpass](https://sourceforge.net/projects/sshpass/) | Reaching the NAS and remote machines; copying files (run as separate programs) | BSD, GPL-3.0, GPL-2.0 |
 | [asyncpg](https://github.com/MagicStack/asyncpg) | Database access for the web pages | Apache-2.0 |
 | [pytest](https://github.com/pytest-dev/pytest) | The test suite | MIT |
 | [Tailscale](https://tailscale.com/) | Optional: the private network between machines (the setup above) | BSD-3-Clause (client) |

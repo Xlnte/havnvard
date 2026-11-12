@@ -71,7 +71,7 @@ from havnvard_site import get_dsn  # noqa: E402,F401  (3.0.0: one shared lookup;
 SYSTEMD_GLOB = "/etc/systemd/system/*.service"  # non-recursive, explicit — no find(1), no walk
 # Explicit, hand-maintained list — the only two users that own scheduled work on this box per
 # CLAUDE.md (Part II, USER ARCHITECTURE). Deliberately NOT an iteration over every system/passwd
-# user: clip and olduser are deprecated accounts, sandbox is isolated-testing-only, and iterating
+# user: deprecated and test-only accounts are left out on purpose, and iterating
 # blindly over all accounts is exactly the unbounded-scan pattern this script must avoid.
 import havnvard_site as _site  # noqa: E402  (3.0.0)
 

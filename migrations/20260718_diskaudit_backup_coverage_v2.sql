@@ -16,7 +16,7 @@
 --
 -- 1. Current critical_patterns seeding (37 rows, from thoth.census + /srv/backups/%) is
 --    FAR broader than "important config files" -- two patterns alone
---    (/srv/ultraops/heimdall%, /srv/backups/%) each match ~2.6-2.7M rows, and the full
+--    (/srv/apps/crawler%, /srv/backups/%) each match ~2.6-2.7M rows, and the full
 --    critical set is ~5.3M of the table's ~11.4M rows (~46%). This is real, measured data,
 --    not a guess (see runbook). That means "one row per critical file" is inherently a
 --    multi-million-row result set today -- no amount of indexing changes that, since the
