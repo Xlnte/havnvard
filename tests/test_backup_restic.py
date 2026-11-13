@@ -58,21 +58,37 @@ def test_drill_nothing_comparable_is_not_a_pass_and_unknown_device_errors(hubenv
 
 
 @needs_restic
-def test_prune_applies_retention_and_dry_run_changes_nothing(hubenv):
+def test_prune_needs_rule_owner_key_and_exact_confirmation_and_keeps_archive(hubenv, monkeypatch, capsys):
+    """3.2.0 never-delete: no rule, no owner key, hub's stored key, bad device or wrong text -> nothing deleted.
+    The archive-tagged snapshot is the OLDEST, so only --keep-tag can save it (review FIX-NOW 1)."""
     tmp, data, root, pdir = hubenv
-    count = lambda: len(json.loads(restic(root / "dev1", pdir / "dev1.pass", "snapshots", "--json")))  # noqa: E731
-    assert count() == 3
-    assert prune.prune({"keep_daily": 1}, dry_run=True) == 0 and count() == 3
-    assert prune.prune({"keep_daily": 1, "keep_weekly": 0, "keep_monthly": 0}) == 0 and count() == 1
-
-
-def test_prune_refuses_without_passwords_and_bad_retention(hubenv):
-    tmp, data, root, pdir = hubenv
-    with pytest.raises(BackupError):
-        prune.retention({"keep_daily": 0, "keep_weekly": 0, "keep_monthly": 0})
-    (pdir / "dev1.pass").rename(tmp / "moved.pass")
-    with pytest.raises(BackupError):
-        prune.prune({})
+    repo, hubpw = root / "dev1", pdir / "dev1.pass"
+    oldest = sorted(json.loads(restic(repo, hubpw, "snapshots", "--json")), key=lambda s: s["time"])[0]["id"]
+    restic(repo, hubpw, "tag", "--add", "archive", oldest)
+    oldest = next(s["id"] for s in json.loads(restic(repo, hubpw, "snapshots", "--json")) if "archive" in (s.get("tags") or []))
+    snaps = lambda: json.loads(restic(repo, hubpw, "snapshots", "--json"))  # noqa: E731
+    owner = tmp / "owner.pass"
+    owner.write_text(hubpw.read_text())                                  # owner's own copy (password manager)
+    with pytest.raises(BackupError, match="no keep rule"):
+        prune.prune("dev1", {}, str(owner), confirm="x")
+    with pytest.raises(BackupError, match="owner-key"):
+        prune.prune("dev1", {"keep_daily": 1}, None)
+    with pytest.raises(BackupError, match="not the hub's stored"):
+        prune.prune("dev1", {"keep_daily": 1}, str(hubpw))
+    with pytest.raises(BackupError, match="bad device"):
+        prune.prune("../dev1", {"keep_daily": 1}, str(owner))
+    assert prune.prune("dev1", {"keep_last": 9, "keep_daily": 1}, str(owner), dry_run=True) == 0 and len(snaps()) == 3
+    assert prune.prune("dev1", {"keep_daily": 1}, str(owner), confirm="yes") == config.PROBLEM_EXIT
+    assert 'must be exactly: "DELETE FROM dev1 1 SNAPSHOTS BY RULE keep_daily=1"' in capsys.readouterr().out
+    monkeypatch.setattr(prune.sys.stdin, "isatty", lambda: False)
+    assert prune.prune("dev1", {"keep_daily": 1}, str(owner), ask=lambda _: pytest.fail("no tty: never ask")) == config.PROBLEM_EXIT
+    assert len(snaps()) == 3
+    assert prune.prune("dev1", {"keep_daily": 1}, str(owner), confirm="DELETE FROM dev1 1 SNAPSHOTS BY RULE keep_daily=1") == 0
+    left = snaps()
+    assert len(left) == 2 and any(s["id"] == oldest for s in left)      # archive survived although oldest
+    # control: the same rule WITHOUT --keep-tag would have removed it
+    plain = json.loads(restic(repo, hubpw, "forget", "--dry-run", "--json", "--keep-daily=1", "--group-by", "host,paths"))
+    assert any(s["id"] == oldest for g in plain for s in (g.get("remove") or []))
 
 
 def test_oldest_lock_age(tmp_path):

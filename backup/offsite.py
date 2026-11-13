@@ -15,8 +15,11 @@ from __future__ import annotations
 
 import datetime as dt
 import fcntl
+import hashlib
 import json
 import re
+import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -57,7 +60,12 @@ class _Run:
         self.flag_path = self.st / f"offsite-{name}.flagged"
         self.tries_path = self.st / f"offsite-{name}.tries"
         self.hold_path = self.st / f"offsite-{name}.hold"
-        for p in (self.flag_path, self.tries_path):
+        self.orphans_path = self.st / f"offsite-{name}.orphans-ok"
+        self.bwlimit = bwlimit
+        self.orphan_left = int(config.load().get("offsite_settings", {}).get("orphan_check_bytes", 2 * 1024**3))
+        self.orphans_deferred = 0
+        self.orphans_ok: set[str] | None = None
+        for p in (self.flag_path, self.tries_path, self.orphans_path):
             p.touch()
         self.start = time.monotonic()
         self.max_seconds = max_seconds
@@ -106,7 +114,7 @@ class _Run:
             try:
                 hs = (self.hub / repo / rel).stat().st_size
             except OSError:
-                self.log(f"{repo}/{rel}: stat failed on hub, skipped (not deleted)")   # review R1
+                self._orphan(repo, rel, ds)   # review R1: never deleted; 3.2.0: checked once, damage flagged
                 continue
             if ds < hs:
                 if self.delete_offsite(repo, rel):
@@ -116,6 +124,53 @@ class _Run:
         if n:
             self.log(f"{repo}: removed {n} half-written file(s)")
         return n
+
+    def _orphan(self, repo: str, rel: str, size: int) -> None:
+        """A mirror file the hub no longer has (the owner deleted snapshots on the hub). The mirror copy is now the
+        only one, so it is checked ONCE against its own name (restic names data/index/snapshots/keys files by their
+        SHA-256) and recorded. A damaged copy (e.g. an upload cut off just before the hub prune) cannot be resent:
+        it is FLAGGED, which health alerts on, and kept (never deleted); `restic repair packs` on the mirror salvages it.
+        Bounded (review FULL FIX-NOW 5): at most `orphan_check_bytes` per run (default 2 GiB; `orphan_check_bytes` under [offsite_settings] in backup.toml),
+        only while the run's time budget lasts, at the run's --bwlimit; the rest is checked on later runs."""
+        k = f"{repo}/{rel}"
+        if self.orphans_ok is None:
+            self.orphans_ok = set(self.orphans_path.read_text().splitlines())
+        if not rel.startswith(HASHED_DIRS) or k in self.orphans_ok:
+            return
+        if size > self.orphan_left or self.left() <= self.min_left:
+            self.orphans_deferred += 1
+            return
+        self.orphan_left -= size
+        with tempfile.TemporaryFile() as errf:
+            proc = subprocess.Popen([self.rclone, "cat", "--bwlimit", self.bwlimit, f"{self.dst_root}/{repo}/{rel}"],
+                                    stdout=subprocess.PIPE, stderr=errf)
+            h = hashlib.sha256()
+            for chunk in iter(lambda: proc.stdout.read(1 << 20), b""):
+                h.update(chunk)
+            rc = proc.wait()
+            errf.seek(0)
+            err = errf.read().decode(errors="replace")
+        if rc != 0:
+            fails = sum(1 for ln in self.tries_path.read_text().splitlines() if ln.startswith(f"orphan:{k} "))
+            with open(self.tries_path, "a") as f:
+                f.write(f"orphan:{k} {fails + 1}\n")
+            if fails + 1 >= MAX_TRIES and rel not in self.flagged(repo):
+                with open(self.flag_path, "a") as f:
+                    f.write(k + "\n")
+                self.log(f"FLAGGED {k}: mirror-only copy unreadable {MAX_TRIES} times ({err.strip()[-120:]}); kept")
+            else:
+                self.log(f"{k}: hub copy gone and the mirror copy could not be read ({err.strip()[-120:]}); will retry")
+            return
+        if h.hexdigest() == Path(rel).name:
+            with open(self.orphans_path, "a") as f:
+                f.write(k + "\n")
+            self.orphans_ok.add(k)
+            return
+        if rel not in self.flagged(repo):
+            with open(self.flag_path, "a") as f:
+                f.write(k + "\n")
+        self.log(f"FLAGGED {k}: DAMAGED on the mirror and the hub copy is gone (hub deleted it); kept, not deleted. "
+                 "Run `restic repair packs` on the mirror repository")
 
     def _larger(self, repo: str, rel: str, ds: int, hs: int) -> int:
         k = f"{repo}/{rel}"
@@ -222,6 +277,8 @@ def _run_target(nm: str, remote: str, hub: Path, max_seconds: int, bwlimit: str)
         nf = len(o.flagged(r))
         total_flagged += nf
         o.log(f"OK-FLAGGED {r} ({nf} flagged file(s) not offsite; operator to review)" if nf else f"OK  {r}")
+    if o.orphans_deferred:
+        o.log(f"{o.orphans_deferred} mirror-only file(s) not checked yet (byte or time budget); later runs continue")
     o.log(f"=== offsite {nm} end rc={rc} flagged={total_flagged} ran {int(time.monotonic() - o.start)}s ===")
     sp = st / f"offsite-{nm}.status.json"
     try:

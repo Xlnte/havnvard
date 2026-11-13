@@ -38,7 +38,7 @@ python -m backup enroll <device-name> --paths <folders...> [--excludes generic|m
 `systemctl --user kill -s HUP restic-hub.service` there. Then tell the user, in plain words: **"Save
 `~/.config/havnvard/restic.pass` in your password manager now; without it these backups cannot be read."** Offer to
 open the file path for them; do not display its contents. Copy the file to the hub as
-`~/.config/havnvard/hub-passwords/<device-name>.pass` (mode 600) so the hub can prune; use scp, not chat. (The NAS copy needs no password: it mirrors encrypted files.)
+`~/.config/havnvard/hub-passwords/<device-name>.pass` (mode 600) so the hub can name backups and run restore drills (never to delete: deleting needs the owner's own copy via --owner-key); use scp, not chat. (The NAS copy needs no password: it mirrors encrypted files.)
 
 ## 5. First backup and timer
 `python -m backup client-run --init`, expect exit 0 or 3 (3 = some files unreadable, snapshot saved). Then install the

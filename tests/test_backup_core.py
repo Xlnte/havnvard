@@ -72,6 +72,8 @@ def test_hub_install_renders_and_runs_nothing(tmp_path, monkeypatch):
     assert "--append-only --private-repos" in svc and "--listen 127.0.0.1:8000" in svc
     assert any("loopback" in ln or "this machine only" in ln for ln in lines)
     assert config.load()["hub_local"]["repo_root"] == str((tmp_path / "repos").resolve())
+    assert not list((tmp_path / "o").glob("*prune*"))                       # 3.2.0: nothing deletes on a schedule
+    assert "havnvard-hub-prune.timer" not in " ".join(ln for ln in lines if not ln.startswith("#"))
 
 
 def test_diskguard_df_failure_alerts_and_exits_1(tmp_path, env, monkeypatch):
