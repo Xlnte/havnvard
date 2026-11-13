@@ -1,6 +1,6 @@
 name: HavnVard
 display_name: HavnVard — Storage Assurance (Whole-Disk File Inventory)
-version: 3.1.1
+version: 3.2.0
 license: Apache-2.0
 type: scheduled-scanner
 status: active
@@ -91,7 +91,7 @@ risks:
     delete/move guard test still passes because no os.remove / rm -f / os.replace appears in backup/.
   - >-
     HavnVard Backup 2.0.0: the hub keeps a copy of each device's repo password (hub-passwords/DEVICE.pass, mode 600)
-    so it can prune, drill and copy to the NAS. Anyone with the hub account can read every device's backups.
+    so it can name backups and drill (3.2.0: never to delete; deletion needs the owner's own copy via --owner-key). Anyone with the hub account can read every device's backups.
   - >-
     v1 gap: externally-killed runs (tool timeout, pkill, OOM) leave scan_runs.status='running'
     forever — no signal handler yet; manual UPDATE required (documented in runbook)

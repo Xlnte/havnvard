@@ -17,7 +17,7 @@ diskaudit.backup_runs for two independent conditions and alerts to Telegram
 
 diskaudit.backup_runs (run_type='restic_backup' in heartbeat.py) is a lightweight
 sibling of scan_runs/dedup_runs added for the havnvard-restic-* systemd timers
-(daily backup + weekly forget/prune). Same status/last_heartbeat_at/current_stage/
+(daily backup; the weekly forget/prune timers are disabled since 3.2.0, INFRA-571). Same status/last_heartbeat_at/current_stage/
 alerted_at columns, same STALE/ERROR semantics, no per-worker table (backups don't
 fan out) -- see check_stale()/check_errors() below. Plane INFRA-98.
 

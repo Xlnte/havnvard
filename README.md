@@ -2,7 +2,7 @@
 
 **Know that every file you care about is backed up, prove the backups restore, and find any file in any backup.**
 HavnVard is a self-hosted storage-assurance toolkit for a home or small-office fleet: a few Linux machines, a NAS and
-a cloud account. Version 3.1.1.
+a cloud account. Version 3.2.0.
 
 > **Absolute rule: HavnVard never deletes, moves or overwrites a scanned file.** Every "duplicate", "stale" or
 > "not backed up" result is a report for you to read. Deleting anything is always your decision, made by hand.
@@ -50,7 +50,7 @@ Everything that differs between installations lives in one TOML file: `/etc/havn
 It names your hosts (the local machine, the NAS, remote "agent" machines), the database env file, the NAS and the
 optional alert/report integrations. **It never holds a password:** it names the files that hold them.
 
-## Known limits in 3.1.1
+## Known limits in 3.2.0
 
 * `migrations/` is the change history of the original deployment, not an install path; new sites use
   `schema/baseline.sql` (see "Database").
@@ -60,7 +60,10 @@ optional alert/report integrations. **It never holds a password:** it names the 
 ## Install HavnVard Backup
 
 HavnVard Backup (2.0.0) turns restic into a HavnVard feature: one always-on **hub** keeps an encrypted, append-only
-repository per device; the hub prunes, copies to a NAS and uploads to any cloud storage rclone supports.
+repository per device; the hub copies to a NAS and uploads to any cloud storage rclone supports.
+**Long-term storage (3.2.0):** nothing is ever deleted from a backup unless its owner orders it. There is no
+automatic clean-up; `prune` needs a rule, the owner's own password file and a typed confirmation, and never removes
+snapshots tagged `archive`.
 Everything is `python -m backup ...` (Python 3.11+, standard library only). **Nothing here runs sudo or installs a
 service for you: the tool writes the unit files to `./out/` and prints the commands for you (or your Claude) to run.**
 To let Claude drive the install, tell it: "set up HavnVard Backup, follow CLAUDE_SETUP.md".
@@ -80,7 +83,7 @@ To let Claude drive the install, tell it: "set up HavnVard Backup, follow CLAUDE
 ```bash
 python -m backup hub install --repo-root /data/restic-hub --listen <hub LAN or Tailscale address> --port 8000
 ```
-Renders the append-only rest-server unit and the disk guard, health and prune timers into `./out/` and prints the
+Renders the append-only rest-server unit and the disk guard, health and catalog timers (no prune timer: nothing is deleted on a schedule) into `./out/` and prints the
 install commands. The disk guard stops the hub below 100 GB free and restarts it at 125 GB, so a backup can never fill
 the disk. `--listen` defaults to loopback, which no other device can reach.
 
@@ -97,8 +100,8 @@ password). Then `python -m backup client-run --init` makes the first backup. `--
 Alerts: `[alerts] command = ["your-notifier"]` in `~/.config/havnvard/backup.toml` (any program; key and text arrive in
 `HAVNVARD_ALERT_KEY`/`HAVNVARD_ALERT_TEXT`), or `[alerts] alertlib_path = "/path/to/alertlib"` if you run alertlib.
 
-### 3. Hub-side passwords (so the hub can prune and copy)
-Append-only devices cannot delete or prune. For the hub to do that, copy each device's `restic.pass` to the hub as
+### 3. Hub-side passwords (so the hub can name backups and run drills)
+Append-only devices cannot delete. For the hub to read each repo (catalog, restore drills), copy each device's `restic.pass` to the hub as
 `~/.config/havnvard/hub-passwords/<device>.pass` (mode 600, over SSH or by hand; never by chat).
 
 ### 4. Offsite copy to any rclone remote (on the hub)
@@ -122,7 +125,9 @@ step is printed. `nas-copy` mirrors the already-encrypted repo files (no passwor
 ### 6. Watch it and prove it
 ```bash
 python -m backup health          # snapshot age (> 26 h), last job, hub and NAS free space, offsite; non-zero on any problem
-python -m backup prune           # hub only; default keep 7 daily, 4 weekly (no monthly; the operator 20261111); --dry-run first
+python -m backup prune my-laptop --keep-monthly 12 --owner-key ~/my-laptop.pass   # hub only, owner's order only: no default rule,
+                                 # shows what would go, then asks you to type "DELETE FROM my-laptop <N> SNAPSHOTS BY RULE keep_monthly=12";
+                                 # archive-tagged snapshots always kept; the hub's stored password is refused
 python -m backup restore-drill my-laptop   # restores 20 random files, full SHA-256 compare, prints X/Y matched
 python -m backup coverage-sync my-laptop    # mark files BACKED_UP_UNVERIFIED (never VERIFIED: a listing is not a hash check) when the latest snapshot holds the same path+size+mtime
 python -m backup not-backed-up --host agent-1 --by folder --limit 25   # biggest NOT backed-up folders (or --by type)
@@ -135,6 +140,25 @@ resolves the alert locally; a failed ssh or unreadable output is itself an alert
 
 Alerts go through the shared `alertlib`; if it cannot be reached `health` says `ALERT NOT SENT` and still exits non-zero.
 **A device is not backed up until `restore-drill` prints all files matched.**
+
+### Long-term storage: offload, pull back, find, delete on purpose (3.2.0)
+Nothing is ever deleted from a backup unless its owner orders it. New backups use 64 MiB pack files, so no file in a
+repository comes near 4 GB; an interrupted upload (Wi-Fi drop) is resent on the next run.
+```bash
+python -m backup offload ~/Photos/2019        # archive + read EVERY file back, SHA-256; prints X/Y VERIFIED + the list.
+                                              # HavnVard deletes nothing; you delete the VERIFIED files yourself
+python -m backup find tax2021                 # every backed-up version of a file
+python -m backup pullback ~/Docs/tax2021.pdf ~/Docs/notes.txt   # space-separated; newest backup holding each
+python -m backup pullback --date 2026-11-13                     # everything offloaded that day
+python -m backup pullback --date 2026-11-13 --vanished          # everything that disappeared that day
+python -m backup pullback --from my-laptop --key-file ~/laptop.pass --login-file ~/laptop-login.pass ~/Photos --target ~/restored
+python -m backup forget-before my-laptop 2020-01-01 --owner-key ~/laptop.pass   # hub; shows the list, asks for exact text
+python -m backup forget-after  my-laptop 2026-11-01 --owner-key ~/laptop.pass
+```
+`pullback` never overwrites: an existing identical file is left alone; an existing different file is kept and the backed-up
+copy is written next to it as `NAME_pullback-YYYYMMDD-HHMM.EXT`. Archive snapshots survive every keep rule and every
+`forget-*` unless `--include-archive` (which the typed text then names). The NAS and offsite copies are copy-only, so
+they still hold (and restore) snapshots the hub deleted. Offload records need `migrations/20261113_diskaudit_archive_offload_v1.sql`.
 
 ### Restore one file
 ```bash

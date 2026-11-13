@@ -85,7 +85,7 @@ sudo systemctl start havnvard-presi-report.service        # daily TG report now 
 
 # Restic backup targets (Phase 2, LIVE — see INFRASTRUCTURE section)
 sudo systemctl start havnvard-restic-<target>.service
-sudo systemctl start havnvard-restic-<target>-retention.service
+# (3.2.0: the -retention timers are disabled; never start them, they delete without the owner's order)
 
 # Enable/disable a timer (rare — these are meant to stay enabled)
 sudo systemctl disable --now diskaudit-scan.timer
@@ -264,9 +264,9 @@ rest.
 - No explicit retention/pruning logic found in this repo for `diskaudit.files`
   itself — rows are never dropped, only marked `still_exists=false` when a
   file disappears between scans (append-only history by design).
-- Restic backups (Phase 2, below) DO have retention: a paired
-  `havnvard-restic-<target>-retention.service`/`.timer` runs `forget`+`prune`
-  weekly per target.
+- Restic backups (Phase 2, below): the paired
+  `havnvard-restic-<target>-retention.service`/`.timer` (`forget`+`prune`)
+  is DISABLED since 3.2.0 (INFRA-571): nothing is deleted without the owner's order.
 
 ### Services / timers (confirmed live via `systemctl list-timers --all`, 2026-07-25)
 
@@ -284,7 +284,7 @@ Core diskaudit (all root-owned, all `active`/`waiting`):
 
 Restic backup engine (Phase 2 — **LIVE, not "planned" as older README/module.yaml
 text says** — see discrepancy note below), 10 targets, each with a daily
-backup timer + weekly retention timer (20 timer units total): app-a,
+backup timer (the paired weekly retention timers are disabled since 3.2.0: they deleted without the owner's order): app-a,
 app-b, app-c, config-files, app-d, app-e,
 app-f, app-g, app-h, app-i. Scripts live in the
 sibling repo `/srv/apps/backup/` (group `uo-ai`), invoked from
@@ -308,7 +308,7 @@ is stale — see discrepancies below).
 ### Backup behavior
 Restic Phase 2 (this is a HavnVard-adjacent but distinct capability — it
 backs up **other** app directories, not the disk-inventory data itself):
-daily `restic backup` per target → weekly `forget --keep-* && prune`. All
+daily `restic backup` per target (the weekly `forget`/`prune` timers are disabled since 3.2.0). All
 runs logged via `backup_heartbeat_cli.py` into `diskaudit.backup_runs`
 (`run_type`/`backup_job`, `host`, `status`, heartbeat), monitored by the same
 `monitor.py` STALE/ERROR logic used for scan/dedup runs (Plane INFRA-98).
@@ -419,7 +419,7 @@ state `~/.local/state/havnvard/` (last job, offsite logs/flag/tries/hold files, 
 | Offsite feed (DESKTOP-1) | `~/.local/bin/havnvard-hub-pull` (repo `scripts/havnvard_hub_pull.sh`) runs as `ExecStartPre` of `restic-hub-offsite.service` | copies new settled files from the agent-1 hub into `~/restic-hub` (add only, snapshots last, never locks); log `~/.local/state/havnvard-hub-pull.log`; INFRA-547 |
 | Which backup holds a file | `python -m backup where bob.txt [--device the server] [--catalog FILE]` | 0 found, 1 not in any backup. Without the hub: `restic dump <catalog snapshot> <path>` from any repo (hub, NAS, Internxt), then `grep` |
 | Not backed up | `python -m backup not-backed-up [--host H] [--by type\|folder] [--limit N]` | |
-| Prune | `python -m backup prune --dry-run` then without | runs on the hub only |
+| Prune (owner only) | `python -m backup prune DEVICE --keep-monthly N --owner-key FILE` | hub only; shows the list, asks for the exact text; archive kept. 3.2.0: no prune timer; on upgrade run `systemctl --user disable --now havnvard-hub-prune.timer` |
 | Prove a device | `python -m backup restore-drill DEVICE` | all files must match |
 | Lost device password | not recoverable; restore the password from the password manager | |
 

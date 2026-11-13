@@ -163,6 +163,25 @@ SET default_tablespace = '';
 SET default_table_access_method = heap;
 
 --
+-- Name: archive_offload; Type: TABLE; Schema: diskaudit; Owner: -
+--
+
+CREATE TABLE diskaudit.archive_offload (
+    host text NOT NULL,
+    folder text NOT NULL,
+    path text NOT NULL,
+    size_bytes bigint,
+    sha256 text,
+    status text NOT NULL,
+    snapshot_id text NOT NULL,
+    archive_tag text NOT NULL,
+    offloaded_at timestamp with time zone NOT NULL,
+    recorded_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT archive_offload_status_check CHECK ((status = ANY (ARRAY['VERIFIED'::text, 'MISMATCH'::text, 'CHANGED'::text, 'MISSING_IN_SNAPSHOT'::text])))
+);
+
+
+--
 -- Name: backup_coverage; Type: TABLE; Schema: diskaudit; Owner: -
 --
 
@@ -1973,6 +1992,14 @@ ALTER TABLE ONLY diskaudit.infra126_critical_paths ALTER COLUMN critical_path_id
 --
 
 ALTER TABLE ONLY diskaudit.mutable_file_registry ALTER COLUMN registry_id SET DEFAULT nextval('diskaudit.mutable_file_registry_registry_id_seq'::regclass);
+
+
+--
+-- Name: archive_offload archive_offload_pkey; Type: CONSTRAINT; Schema: diskaudit; Owner: -
+--
+
+ALTER TABLE ONLY diskaudit.archive_offload
+    ADD CONSTRAINT archive_offload_pkey PRIMARY KEY (host, snapshot_id, path);
 
 
 --

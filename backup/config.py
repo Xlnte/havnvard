@@ -2,7 +2,7 @@
 
 backup.toml  non-secret settings        restic.pass  restic repo password (600)
 rest.pass    hub (rest-server) login password (600)
-hub-passwords/DEVICE.pass  hub-side copies of device repo passwords, for prune and hub-side drills (600); nas-copy needs none
+hub-passwords/DEVICE.pass  hub-side copies of device repo passwords, for catalog and hub-side drills (600); never accepted for deletion (prune/forget-* need --owner-key); nas-copy needs none
 """
 from __future__ import annotations
 

@@ -115,6 +115,31 @@ def client_env(cfg: dict) -> tuple[dict, dict]:
     return env, dev
 
 
+PACK_MIB = 64   # 3.2.0 (owner decision): every pack file ~64 MiB, so no repo file comes near 4 GB
+
+
+def pack_size(dev: dict) -> int:
+    v = int(dev.get("pack_size_mib", PACK_MIB))
+    if not 4 <= v <= 128:
+        raise BackupError(f"pack_size_mib {v} must be 4..128 (restic's limit is 128 MiB)")
+    return v
+
+
+def backup_cmd(restic: str, dev: dict, paths: list[str], tags: tuple[str, ...] = ("auto",),
+               json_out: bool = False) -> list[str]:
+    """The one restic backup command line (timer runs and offload share it)."""
+    cmd = [restic, "backup", "--one-file-system", "--exclude-caches",
+           "--exclude-file", str(config.config_dir() / "excludes.txt"),
+           "--pack-size", str(pack_size(dev)), "--host", dev["name"]]
+    for t in tags:
+        cmd += ["--tag", t]
+    if dev.get("limit_upload_kib"):
+        cmd += ["--limit-upload", str(dev["limit_upload_kib"])]
+    if json_out:
+        cmd.append("--json")
+    return cmd + list(paths)
+
+
 def write_last(rc: int, device: str, note: str = "") -> None:
     d = config.state_dir()
     d.mkdir(parents=True, exist_ok=True)
@@ -144,13 +169,7 @@ def client_run(init: bool = False, hour: int | None = None) -> int:
         elif probe.returncode != 0:
             write_last(probe.returncode, dev["name"], "hub unreachable or wrong password")
             raise BackupError(f"cannot open repository (rc {probe.returncode}): {probe.stderr.strip()[-300:]}")
-    cmd = [restic, "backup", "--one-file-system", "--exclude-caches",
-           "--exclude-file", str(config.config_dir() / "excludes.txt"),
-           "--tag", "auto", "--host", dev["name"]]
-    if dev.get("limit_upload_kib"):
-        cmd += ["--limit-upload", str(dev["limit_upload_kib"])]
-    cmd += dev["paths"]
-    r = run(cmd, env=env)
+    r = run(backup_cmd(restic, dev, dev["paths"]), env=env)
     print(r.stdout[-2000:], end="")
     if r.returncode not in (0, 3):
         print(r.stderr[-1000:])

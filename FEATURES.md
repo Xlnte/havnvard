@@ -29,7 +29,7 @@ delete/move decision is yours (the operator's) alone, made by reading these repo
 | Cross-host content-hash verification | **PARTIAL** (new, in flight on this branch, 2026-07-25) | `python crosshost_verify.py candidates \| hash \| match \| report` |
 | HavnVard Backup: hub install, enrol a device, client backup (restic, append-only) | **WORKING** (2.0.0) | `python -m backup hub install \| hub set \| enroll \| client-run` |
 | HavnVard Backup: offsite to any rclone remote (optional crypt), NAS second copy | **WORKING** (2.0.0) | `python -m backup offsite add \| offsite run \| nas-target \| nas-copy` |
-| HavnVard Backup: health (stale snapshot, job result, free space), prune, restore drill | **WORKING** (2.0.0) | `python -m backup health \| prune \| restore-drill DEVICE` |
+| HavnVard Backup: health (stale snapshot, job result, free space), owner-ordered prune (no automatic deletion, 3.2.0), restore drill | **WORKING** (3.2.0) | `python -m backup health \| prune \| restore-drill DEVICE` |
 | File-status classification (active/load-bearing/stale/possibly-obsolete/orphaned) | **WORKING** | query `diskaudit.v_file_status` / `diskaudit.mv_file_status` |
 | Load-bearing override (protect cold-but-live infra files) | **WORKING** | `python refresh_load_bearing_paths.py` |
 | Backup-coverage check (critical_patterns-scoped) | **WORKING** | query `diskaudit.v_backup_coverage` |
@@ -387,7 +387,9 @@ PRESCAB.
 
 ## 12. Restic backup engine (Phase 2) — WORKING
 
-**What it does:** Daily `restic backup` + weekly `forget`/`prune` for **10
+> **3.2.0 (INFRA-571): the weekly `forget`/`prune` retention timers are DISABLED** (they broke the never-delete rule). To disable them on a site that still has them: `systemctl list-unit-files --no-legend 'havnvard-restic-*-retention.timer' | awk '{print $1}' | xargs -r sudo systemctl disable --now`. Backups keep running; deletion is only `prune`/`forget-before`/`forget-after` on the owner's order.
+
+**What it does:** Daily `restic backup` (no automatic forget/prune since 3.2.0) for **10
 other the server app directories** (app-a, app-b,
 app-c, config-files, app-d, app-e, app-f, app-g,
 app-h, app-i) — a genuinely separate capability from the
@@ -395,7 +397,7 @@ disk-inventory scan itself, living under this app's systemd namespace and
 sharing its `backup_runs`/monitor infrastructure. **This is documented
 elsewhere in this repo (`module.yaml`, `README.md`) as "planned, not yet
 installed" — that's stale.** `restic 0.19.1` is confirmed installed and all
-20 timers (10 backup + 10 retention) are active.
+10 backup timers are active; the 10 retention timers are disabled (3.2.0).
 
 **Why you'd use it:** Real backup coverage for other app directories, with
 restic's own dedup/compression/encryption, verified independently of the
@@ -404,7 +406,6 @@ disk-inventory scan.
 **Command:**
 ```bash
 sudo systemctl start havnvard-restic-app-e.service            # one-off backup now
-sudo systemctl start havnvard-restic-app-e-retention.service  # one-off forget+prune now
 journalctl -u havnvard-restic-app-e.service -n 50              # check result
 ```
 
@@ -561,14 +562,18 @@ BACKED_UP_VERIFIED from snapshots, the "not backed up" report, bit-rot re-hash s
 
 | Command | What it does | Failure behaviour |
 |---|---|---|
-| `hub install` | Renders the append-only rest-server unit, disk guard, health and prune timers; prints install commands | Runs no sudo or systemctl |
+| `hub install` | Renders the append-only rest-server unit, disk guard, health and catalog timers (no prune timer since 3.2.0); prints install commands | Runs no sudo or systemctl |
 | `hub set HOST[:PORT]` | Writes the hub address to `~/.config/havnvard/backup.toml` | Rejects bad addresses |
 | `enroll DEVICE --paths ...` | Random password files (600, never printed, never overwritten), excludes, client timer; prints the hub `.htpasswd` hash line | Exit 2 on bad name or missing path |
 | `client-run [--init]` | One backup (what the timer runs); exit code is restic's (3 = some files unreadable, snapshot saved) | Hub unreachable or wrong password: exit 2, recorded for `health` |
 | `offsite add / run` | Copy-only upload of the encrypted repos to any rclone remote; data before snapshots; flag-after-3-resends | 0 done, 75 time budget used, 2 failure |
 | `nas-target`, `nas-copy` | SMB mount unit; mirror of every hub repo's encrypted files to the NAS (no passwords on the hub) | Refuses to write if the share is not mounted |
 | `health` | Snapshot age > 26 h, last job, hub and NAS free space (< 500 GB), offsite recency and flagged files, via alertlib | Exit 1 problem, 2 could not check |
-| `prune` | Hub-side forget + prune (default 7 daily, 4 weekly (no monthly; the operator 20261111)); stale locks cleared only if older than N hours | Exit 1 if any repo failed |
+| `offload FOLDER [--no-db]` | Device: backup tagged `archive` + `archive-YYYYMMDD` (64 MiB packs), every file read back with `restic dump` and SHA-256 compared with the live file; manifest in `~/.local/state/havnvard/offload/` + `diskaudit.archive_offload` rows; prints X/Y VERIFIED. Deletes nothing: the owner deletes VERIFIED files | Exit 1 if any file not VERIFIED or the DB record failed |
+| `pullback FILE... \| --date D [--vanished] [--folder F] \| --snapshot ID` | Restores files; `--target DIR` (default original place); `--from DEVICE --key-file F [--login-file F]` onto any device, read only. Never overwrites: identical existing file left alone, different one kept and the backup copy written as `NAME_pullback-YYYYMMDD-HHMM.EXT`; restored files hash-checked against the offload manifest | Exit 1 on a manifest mismatch, 2 if nothing matches |
+| `find PATTERN` | Every backed-up version of a file; on a device without the hub catalog it reads the newest catalog copy from its own repo | Exit 1 not found |
+| `forget-before DEVICE DATE` / `forget-after DEVICE DATE` | Hub: owner deletes snapshots taken before / on-or-after a date: `--owner-key`, full list, exact typed text; archive kept unless `--include-archive` | Exit 1 not confirmed |
+| `prune DEVICE` | Hub-side forget + prune for one device on the owner's order: no default rule, `--owner-key` (hub's stored copy refused), dry-run list then exact typed text; `--keep-tag archive` always; no timer (3.2.0) | Exit 1 not confirmed or failed, 2 refused |
 | `health --json` | Same checks as one JSON object `{ok, exit_code, checks[]}`; exit 2 with `{error}` if it cannot run | 2.1.0 |
 | `health-relay --ssh HOST` | On the server: runs the hub's `health --json --no-alert` over ssh, alerts via local alertlib; ssh failure or bad output = alert | 2.1.0; `--render-units DIR` writes the hourly timer |
 | `coverage-sync DEVICE` | Latest restic snapshot listing vs `diskaudit.backup_coverage`: same path+size+mtime -> BACKED_UP_UNVERIFIED (a listing is not a hash check; VERIFIED needs SHA-256) | 2.1.0; needs migration `20261111_diskaudit_restic_coverage_v1.sql`; run after `backup_coverage.py classify`; listing match, not a SHA-256 compare |
