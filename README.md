@@ -147,6 +147,22 @@ restic snapshots && restic restore latest --target /tmp/restore --include /home/
 HavnVard Backup 2.0 installs nothing on phones. Put phone data in a folder that a backed-up computer receives (for
 example with Syncthing, Immich or a cable copy) and include that folder in `--paths`.
 
+**Full install guide, Android (Syncthing-Fork) and iPad (idevicebackup2 on plug-in):
+[`docs/20261112_PHONES_AND_TABLETS.md`](docs/20261112_PHONES_AND_TABLETS.md).** Read its warnings first.
+Your mileage may vary. In short:
+
+- ⚠️ **Android with lots of file movement: consider SEND ONLY from the phone to the HavnVard hub, and set the
+  matching folders on the hub the same way (one hub folder per phone folder, Receive Only).** One-way flow means
+  nothing done on the hub can change or delete files on the phone. Send Only does not stop a phone-side delete
+  reaching the hub: restic snapshots are what bring a deleted file back.
+- ⚠️ **Set Num Connections to 6** in the phone's **Web GUI** (Syncthing-Fork ☰ → Web GUI → Actions → Advanced →
+  Devices → hub). It is not on the app's device screen. Set the same on the hub. Measured here: 1 connection
+  10.8 MiB/s, 4 connections 19.5 MiB/s.
+- ⚠️ **If you set run conditions (Wi-Fi only and/or while charging), use FORCE START (ignore run conditions)** for
+  the big first sync, then turn it off again. Otherwise syncing silently stops whenever a condition is not met.
+- ⚠️ **Playing with the Advanced settings is like handling dynamite: do so cautiously.** One change at a time, note
+  the old value, pause a folder before experimenting. No undo.
+
 ## Files
 
 | File | Purpose |
