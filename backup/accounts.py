@@ -1,6 +1,6 @@
 """HavnVard accounts (3.3.0; INFRA-579 registration, INFRA-575 company-owned files).
 
-PAF rulings 20261113-14 this module enforces:
+Owner rulings 20261113-14 this module enforces:
 * The company (or household) owns the files. One store per company, opened by a STORE KEY the admin holds. The store key
   is generated at the first registration, shown ONCE (recovery kit) and never kept: only its SHA-256 fingerprint is
   stored, so the admin proves they hold it (`store_key_matches`) and uses it for `restic key add` (see `adopt_repo`).
@@ -8,7 +8,7 @@ PAF rulings 20261113-14 this module enforces:
 * The first account on a new hub is the admin; it needs the one-time setup code printed on the hub's console.
   After that, registration is by invite only.
 * Who owns which file (`can_read` / `filter_paths`): ownership rules by path COMPONENT prefix, the device's primary
-  user, files an admin released to them. A folder marked shared is owned by the PC's administrator (PAF 20261114:
+  user, files an admin released to them. A folder marked shared is owned by the PC's administrator (owner ruling 20261114:
   "nobody owns a shared folder; the administrator of that PC owns it"). NOT YET ENFORCED in 3.3.0: no page or command
   shows or pulls files through the hub yet (users restore with their computer's own restic key), so nothing calls it.
 * Disable: every session revoked at once, the check-in token of every computer the user is primary user of revoked,
@@ -672,7 +672,7 @@ class Accounts:
         finally:
             con.close()
 
-    # ---------- force-open (PAF rulings 20261114) ----------
+    # ---------- force-open (Owner rulings 20261114) ----------
     def force_open(self, actor: int, target: int, reason: str, typed_email: str, mailer=None, ip: str | None = None,
                    ua: str | None = None) -> dict:
         """The admin opens a user's files by forcing a password reset.
@@ -755,7 +755,7 @@ class Accounts:
     def admin_reset(self, actor: int, target: int, reason: str | None = None, ip: str | None = None,
                     ua: str | None = None, mailer=None) -> dict:
         """A 'forgot my password' reset issued by the admin. Every admin-issued reset carries the mandatory notice
-        (F2, PAF: "the admin forces a password reset"); there is no silent kind. Only a USER account of the admin's
+        (F2, owner ruling: "the admin forces a password reset"); there is no silent kind. Only a USER account of the admin's
         own company (F3). Allowed while a notice is pending (D1): it then adds to that notice. The user's current
         password stops working (it is kept only as the proof that opens the notice); the code works for 24 h, ends
         every older code, and must be redeemed by the user (never from an administrator's session, D1).
@@ -1069,7 +1069,7 @@ class Accounts:
         self._rule(actor, device, prefix, user, False)
 
     def mark_shared(self, actor: int, device: str, prefix: str) -> None:
-        """A shared folder: nobody owns it; the PC's administrator does (PAF 20261114)."""
+        """A shared folder: nobody owns it; the PC's administrator does (owner ruling 20261114)."""
         self._rule(actor, device, prefix, None, True)
 
     def release(self, actor: int, from_user: int, to_user: int, device: str, prefix: str) -> None:

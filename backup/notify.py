@@ -1,4 +1,4 @@
-"""A popup on the computer's screen that stays until the person clicks OK (3.3.0, PAF 20261114).
+"""A popup on the computer's screen that stays until the person clicks OK (3.3.0, owner ruling 20261114).
 
 Used when a pullback cannot put files somewhere (a folder it cannot create or write). The popup has no time-out: it
 stays until someone clicks it away. It is launched DETACHED, so the pullback never waits for the click.

@@ -3,7 +3,7 @@
 Computers check in every few minutes and ask "am I due?" (`checkin`), so a change on the Schedules page takes effect at
 the next check-in without logging in to the laptop. Modes:
 * interval       - every N minutes, counted from the last run's START
-* constant_loop  - the next run starts `min_gap_s` after the last one ENDS; run lengths are recorded (PAF 20261113).
+* constant_loop  - the next run starts `min_gap_s` after the last one ENDS; run lengths are recorded (owner ruling 20261113).
                    After failures the gap doubles (2x, 4x ...) up to 60 min, so a broken run never loops hot.
 * manual         - runs only when started by hand
 * paused         - never due

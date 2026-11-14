@@ -358,7 +358,7 @@ def test_pullback_snapshot_honours_the_file_list_infra578(dev, capsys):
 
 @needs_restic
 def test_pullback_twice_writes_one_PULLBACK_copy(dev, capsys):
-    """PAF 20261114: a different same-name file is never overwritten; the copy is NAME_PULLBACK-STAMP.EXT, and a
+    """owner ruling 20261114: a different same-name file is never overwritten; the copy is NAME_PULLBACK-STAMP.EXT, and a
     second pullback of the same backed-up file finds that copy instead of writing an identical _2."""
     tmp, repo, pw, owner, photos = dev
     restic(repo, pw, "backup", str(photos))

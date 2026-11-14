@@ -412,7 +412,7 @@ def earlier_copy(path: Path, digest: str, size: int) -> Path | None:
 
 def renamed(path: Path, stamp: str, is_dir: bool = False) -> Path:
     """report.pdf -> report_PULLBACK-20261113-0130.pdf (then _2, _3 ... if that exists too): PULLBACK in capitals,
-    the extension stays last (PAF 20261114). Folders keep no suffix split."""
+    the extension stays last (owner ruling 20261114). Folders keep no suffix split."""
     stem, ext = (path.stem, path.suffix) if (path.suffix and path.stem and not is_dir) else (path.name, "")
     n = 1
     while True:

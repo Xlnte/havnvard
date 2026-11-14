@@ -1,4 +1,4 @@
-"""HavnVard 3.3.0 pullback challenges (PAF 20261114): identical file, same name different content, missing deep and
+"""HavnVard 3.3.0 pullback challenges (owner ruling 20261114): identical file, same name different content, missing deep and
 empty folders, and a folder that cannot be created or written -> the run carries on, exits 1, lists every item, and
 raises one popup (stays until clicked) plus one hub notice per blocked folder.
 
