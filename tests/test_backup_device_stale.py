@@ -369,3 +369,21 @@ def test_real_restic_repo_with_a_stopped_stream(tmp_path, monkeypatch):
     bad = _bad(health.collect())
     assert set(bad) == {"device dev1"}, bad
     assert str(b) in bad["device dev1"] and "1 of 2 stream(s)" in bad["device dev1"]
+
+
+@pytest.mark.parametrize("bad", [0, 1, "yes"])
+def test_check_streams_rejects_non_bool_values(tmp_path, monkeypatch, bad):
+    """0 == False and 1 == True in Python: they must be a config problem, not silently accepted."""
+    _hub(tmp_path)
+    _health(check_streams=bad)
+    _lister(monkeypatch, {"dev1": [_snap("h", ["/a"], 1)], "dev2": [_snap("h", ["/a"], 1)]})
+    assert "health config" in _bad(health.collect(now=NOW))
+
+
+def test_bad_per_device_setting_is_a_config_problem(tmp_path, monkeypatch):
+    _hub(tmp_path)
+    _health(devices={"dev1": {"stale_hours": -5}})
+    _lister(monkeypatch, {"dev1": [_snap("h", ["/a"], 1)], "dev2": [_snap("h", ["/a"], 1)]})
+    bad = _bad(health.collect(now=NOW))
+    assert "stale_hours" in bad["health config"]
+    assert not any(k.startswith("stream check") for k in bad)

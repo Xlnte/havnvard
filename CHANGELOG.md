@@ -4,6 +4,10 @@ Older releases are described in `FEATURES.md` and `docs/*_RELEASE_*.md`.
 
 ## 3.3.3 (20261114)
 
+- Review fix (INFRA-549): `check_streams` accepts only `true`, `false` or `"auto"` (`0` and `1` were accepted as `false`/`true`);
+  a bad per-device setting is reported as a `health config` problem, not as "cannot read the backups"; README notes the
+  copy lag for devices that reach the hub through a daily copy.
+
 - `health` checks **every backup stream of every device** (INFRA-549). A stream is restic's host + paths grouping; one
   repository can hold many (a server backing up its home folder and each app folder separately). Where the hub holds the
   device's hub-side password, `health` reads the snapshot list (`restic snapshots --json --no-lock --no-cache`, read-only)
