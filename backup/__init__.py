@@ -4,4 +4,4 @@ Standard library only. Never runs sudo or systemctl to install anything: units a
 rendered to an output directory and the install commands are printed. Secrets live
 under ~/.config/havnvard/ and are never printed or committed.
 """
-__version__ = "3.3.0"
+__version__ = "3.3.1"
