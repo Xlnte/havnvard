@@ -372,3 +372,25 @@ def test_pullback_twice_writes_one_PULLBACK_copy(dev, capsys):
     assert (tgt / f.lstrip("/")).read_text() == "edited locally\n"
     assert sorted(p.name for p in d.iterdir()) == ["notes.txt", "notes_PULLBACK-20261114-0201.txt"]
     assert "already pulled back earlier" in capsys.readouterr().out
+
+
+@needs_restic
+def test_vanished_finds_files_created_and_deleted_the_same_day(dev):
+    """Live 20261114: 500 files created 15:00 and deleted 15:05 on one day were invisible to --vanished, which only
+    compared the last backup before the day with the last one in it. Every backup of the day is now compared in turn."""
+    tmp, repo, pw, owner, photos = dev
+    restic(repo, pw, "backup", "--time", "2026-11-10 12:00:00", str(photos))
+    day = photos / "made-today"
+    day.mkdir()
+    (day / "a.txt").write_text("made and lost the same day\n")
+    restic(repo, pw, "backup", "--time", "2026-11-11 09:00:00", "--exclude", "notes.txt", str(photos))  # notes gone ...
+    restic(repo, pw, "backup", "--time", "2026-11-11 18:00:00", "--exclude", "a.txt", str(photos))     # ... and back
+    env = {"RESTIC_REPOSITORY": str(repo), "RESTIC_PASSWORD_FILE": str(pw)}
+    snaps = archive.catalog.data_snapshots(archive.catalog.snapshots("restic", env))
+    jobs = archive.vanished_jobs("restic", env, snaps, dt.date(2026, 11, 11))
+    gone = sorted(p for _, ps in jobs for p in ps)
+    assert gone == [str(day / "a.txt")]
+    tgt = tmp / "back"
+    tgt.mkdir()
+    assert archive.pullback(date="2026-11-11", gone_mode=True, target=str(tgt)) == 0
+    assert (tgt / str(day / "a.txt").lstrip("/")).read_text() == "made and lost the same day\n"

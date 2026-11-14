@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import csv
 import datetime as dt
+import errno
 import hashlib
 import json
 import os
@@ -284,32 +285,64 @@ def snapshot_files(restic: str, env: dict, snap_id: str, incs: list[str]) -> tup
     return files, special
 
 
-def vanished(restic: str, env: dict, snaps: list[dict], day: dt.date) -> tuple[dict, list[str]]:
-    """(snapshot to restore from, file paths that disappeared during `day`). Only regular backups are compared
-    (no archive/offload snapshots), and only snapshots of the same host and the same backup paths (review FIX-NOW 4).
-    after = last regular backup during the day, else the first after it; before = last matching backup before it."""
-    s0, s1 = _start(day), _start(day + dt.timedelta(days=1))
-    reg = [s for s in snaps if ARCHIVE not in (s.get("tags") or [])]
-    during = [s for s in reg if s0 <= _when(s["time"]) < s1]
-    later = [s for s in reg if _when(s["time"]) >= s1]
-    after = during[-1] if during else (later[0] if later else None)
-    same = (lambda s: (s.get("hostname"), sorted(s.get("paths", []))) == (after.get("hostname"), sorted(after.get("paths", [])))) if after else None
-    before = [s for s in reg if _when(s["time"]) < s0 and same(s)] if after else []
-    if not before or not after:
-        raise BackupError(f"--vanished needs a regular backup before {day} and one during or after it with the same "
-                          f"host and folders; found {len(before)} before, {'one' if after else 'none'} during/after")
-    r = run([restic, "diff", "--json", before[-1]["id"], after["id"]], env=env)
+def _removed(restic: str, env: dict, a: dict, b: dict) -> tuple[list[str], list[str]]:
+    """(file paths removed, file paths added) from snapshot a to snapshot b (`restic diff --json`)."""
+    r = run([restic, "diff", "--json", a["id"], b["id"]], env=env)
     if r.returncode != 0:
         raise BackupError(f"restic diff failed rc={r.returncode}: {r.stderr.strip()[-300:]}")
-    gone = []
+    gone, added = [], []
     for ln in r.stdout.splitlines():
         try:
             o = json.loads(ln)
         except ValueError:
             continue
-        if o.get("message_type") == "change" and o.get("modifier") == "-" and not o["path"].endswith("/"):
-            gone.append(o["path"])
-    return before[-1], gone
+        if o.get("message_type") == "change" and not o["path"].endswith("/"):
+            if o.get("modifier") == "-":
+                gone.append(o["path"])
+            elif o.get("modifier") == "+":
+                added.append(o["path"])
+    return gone, added
+
+
+def vanished_jobs(restic: str, env: dict, snaps: list[dict], day: dt.date) -> list[tuple[dict, list[str]]]:
+    """[(snapshot to restore from, file paths)] for everything that disappeared during `day` and is still gone at the
+    end of it. Every regular backup of the day is compared with the one before it (live 20261114: files created and
+    deleted the same day were missed when only the last backup before the day was compared with the last one in it).
+    Only regular backups (no archive/offload), same host and same backup paths (review FIX-NOW 4). Each file comes back
+    from the last backup that still held it."""
+    s0, s1 = _start(day), _start(day + dt.timedelta(days=1))
+    reg = [s for s in snaps if ARCHIVE not in (s.get("tags") or [])]
+    during = [s for s in reg if s0 <= _when(s["time"]) < s1]
+    later = [s for s in reg if _when(s["time"]) >= s1]
+    after = during[-1] if during else (later[0] if later else None)
+    key = (lambda s: (s.get("hostname"), sorted(s.get("paths", []))))
+    same = [s for s in reg if after and key(s) == key(after)]
+    before = [s for s in same if _when(s["time"]) < s0]
+    chain = before[-1:] + [s for s in same if s0 <= _when(s["time"]) < s1] + ([] if during else [after] if after else [])
+    if not before or len(chain) < 2:
+        raise BackupError(f"--vanished needs a regular backup before {day} and one during or after it with the same "
+                          f"host and folders; found {len(before)} before, {'one' if after else 'none'} during/after")
+    gone: dict[str, dict] = {}
+    for a, b in zip(chain, chain[1:]):
+        rem, add = _removed(restic, env, a, b)
+        for p in add:
+            gone.pop(p, None)                          # came back later the same day: not vanished
+        for p in rem:
+            gone[p] = a
+    jobs: dict[str, tuple[dict, list[str]]] = {}
+    for p, s in gone.items():
+        jobs.setdefault(s["id"], (s, []))[1].append(p)
+    return [(s, sorted(ps)) for s, ps in jobs.values()]
+
+
+def vanished(restic: str, env: dict, snaps: list[dict], day: dt.date) -> tuple[dict, list[str]]:
+    """Compatibility view of vanished_jobs: (the earliest source snapshot, every vanished path)."""
+    jobs = vanished_jobs(restic, env, snaps, day)
+    if not jobs:
+        s0 = _start(day)
+        reg = [s for s in snaps if ARCHIVE not in (s.get("tags") or []) and _when(s["time"]) < s0]
+        return (reg[-1] if reg else {}), []
+    return jobs[0][0], sorted(p for _, ps in jobs for p in ps)
 
 
 def _under(path: str, folder: str | None) -> bool:
@@ -341,9 +374,8 @@ def plan(restic: str, env: dict, date: str | None, paths: list[str], version: st
         raise BackupError("pullback needs FILES, --date or --snapshot")
     day = _day(date)
     if gone_mode:
-        src, gone = vanished(restic, env, snaps, day)
-        gone = [g for g in gone if _under(g, folder)]
-        return [(src, gone)] if gone else []
+        jobs = [(s, [g for g in ps if _under(g, folder)]) for s, ps in vanished_jobs(restic, env, snaps, day)]
+        return [(s, ps) for s, ps in jobs if ps]
     tag = f"{ARCHIVE}-{day:%Y%m%d}"
     hits = [s for s in snaps if tag in (s.get("tags") or [])]
     if not hits:
@@ -394,6 +426,32 @@ def _dest(tgt: Path, p: str) -> Path:
     return tgt / p.lstrip("/") if tgt != Path("/") else Path(p)
 
 
+# A place we may not write: permission, a read-only disk, a folder owned by another user. Everything else (disk full,
+# I/O error) stays a hard failure of that include path, as before.
+_REFUSED = {errno.EACCES, errno.EPERM, errno.EROFS}
+
+
+def _why(e: OSError) -> str:
+    if e.errno == errno.EROFS:
+        return "the disk or share is read-only"
+    return "permission denied (the folder is read-only or belongs to another user)"
+
+
+class _Blocked(Exception):
+    """A folder refused us. Carries the folder that refused; the writer has already recorded it."""
+
+
+def blocked_text(folder: str, why: str, items: list[str], target: str) -> str:
+    """The popup / hub notice text for one folder that refused files: plain words, which folder, why, what to do."""
+    shown = "\n".join(f"  {p}" for p in items[:10]) + (f"\n  ... and {len(items) - 10} more" if len(items) > 10 else "")
+    return (f"HavnVard could not put back {len(items)} item(s) into this folder:\n\n  {folder}\n\n"
+            f"Why: {why}.\n\nNot put back:\n{shown}\n\n"
+            "Nothing on this computer was changed or deleted, and your backup still holds these files.\n"
+            "What to do: ask the owner of that folder (or your administrator) to let you write there and run the "
+            "pullback again, or pull back into a folder you own with --target "
+            f"(this run used --target {target}).")
+
+
 class _Writer:
     """Writes backed-up files onto the device without ever changing what is there."""
 
@@ -404,6 +462,15 @@ class _Writer:
         self.new, self.same, self.side, self.partial, self.links, self.special = [], 0, [], [], 0, 0
         self.earlier: list[tuple[str, str]] = []  # (existing different file, earlier PULLBACK copy that already matches)
         self.hashes: dict[str, str] = {}         # source path -> SHA-256 of what was written / found identical
+        # folder that refused us -> {"why", "items": destination paths not placed}; insertion order = first seen
+        self.blocked: dict[str, dict] = {}
+        self.unplaced: set[str] = set()          # source paths (files) not written because a folder refused them
+
+    def _refuse(self, folder: Path, item: Path, e: OSError) -> _Blocked:
+        b = self.blocked.setdefault(str(folder), {"why": _why(e), "items": []})
+        if str(item) not in b["items"]:
+            b["items"].append(str(item))
+        return _Blocked(str(folder))
 
     def _apply(self, p: Path) -> Path:
         for k in sorted(self.redirect, key=lambda x: len(str(x)), reverse=True):
@@ -424,16 +491,34 @@ class _Writer:
                     cur = nxt
                     continue
                 alt = renamed(nxt, self.stamp, is_dir=True)
-                os.mkdir(alt)
+                try:
+                    os.mkdir(alt)
+                except OSError as e:
+                    if e.errno in _REFUSED:
+                        raise self._refuse(cur, alt, e) from e
+                    raise
                 self.redirect[nxt] = alt
                 self.new_dirs[alt] = None
                 self.side.append((str(nxt), str(alt)))
                 cur = alt
             else:
-                os.mkdir(nxt)
+                try:
+                    os.mkdir(nxt)
+                except OSError as e:
+                    if e.errno in _REFUSED:                # cur refused us: record it, the caller carries on
+                        raise self._refuse(cur, nxt, e) from e
+                    raise
                 self.new_dirs[nxt] = None
                 cur = nxt
         return cur
+
+    def put_dir(self, src: str, mode: int, mtime: float) -> None:
+        """A folder in the backup (empty ones too). A folder that refuses us is recorded, never fatal."""
+        try:
+            self.mkdirs(_dest(self.tgt, src))
+        except _Blocked:
+            return
+        self.dir_meta(src, mode, mtime)
 
     def dir_meta(self, src: str, mode: int, mtime: float) -> None:
         d = self._apply(_dest(self.tgt, src))
@@ -460,11 +545,32 @@ class _Writer:
             os.utime(path, (mtime, mtime))
         return h.hexdigest()
 
+    @staticmethod
+    def _drain(reader) -> None:
+        """Read and drop the bytes of a file we cannot place, so restic is never left blocked on a full pipe."""
+        if reader is not None:
+            for _ in iter(lambda: reader.read(1 << 20), b""):
+                pass
+
     def put_file(self, src: str, reader, size: int, mode: int, mtime: float) -> None:
+        """Every outcome is recorded: new, identical (left alone), different (kept + NAME_PULLBACK copy), or not
+        placed because a folder refused us (listed; the rest of the pullback carries on)."""
         dest = _dest(self.tgt, src)
+        try:
+            self._put_file(src, dest, reader, size, mode, mtime)
+        except _Blocked:
+            self.unplaced.add(src)
+            self._drain(reader)
+
+    def _put_file(self, src: str, dest: Path, reader, size: int, mode: int, mtime: float) -> None:
         d = self.mkdirs(dest.parent) / dest.name
         if not os.path.lexists(d):
-            self.hashes[src] = self._write_new(d, reader, size, mode, mtime)
+            try:
+                self.hashes[src] = self._write_new(d, reader, size, mode, mtime)
+            except OSError as e:
+                if e.errno in _REFUSED and not os.path.lexists(d):   # the folder exists but will not take files
+                    raise self._refuse(d.parent, d, e) from e
+                raise
             self.new.append(str(d))
             return
         if d.is_file() and not d.is_symlink():
@@ -489,6 +595,10 @@ class _Writer:
         alt = renamed(d, self.stamp)
         try:
             self.hashes[src] = self._write_new(alt, reader, size, mode, mtime)
+        except OSError as e:
+            if e.errno in _REFUSED and not os.path.lexists(alt):
+                raise self._refuse(d.parent, alt, e) from e
+            raise
         finally:
             if reader is not None and getattr(reader, "name", None) == str(self.scratch / "spool"):
                 reader.close()
@@ -496,10 +606,18 @@ class _Writer:
 
     def put_link(self, src: str, target: str) -> None:
         dest = _dest(self.tgt, src)
-        d = self.mkdirs(dest.parent) / dest.name
-        if not os.path.lexists(d):
-            os.symlink(target, d)
-            self.links += 1
+        try:
+            d = self.mkdirs(dest.parent) / dest.name
+            if not os.path.lexists(d):
+                try:
+                    os.symlink(target, d)
+                except OSError as e:
+                    if e.errno in _REFUSED:
+                        raise self._refuse(d.parent, d, e) from e
+                    raise
+                self.links += 1
+        except _Blocked:
+            pass
 
     def finish(self) -> None:
         for d, meta in sorted(self.new_dirs.items(), key=lambda kv: len(kv[0].parts), reverse=True):  # deepest first
@@ -537,8 +655,7 @@ def _stream_into(w: _Writer, restic: str, env: dict, snap_id: str, inc: str, nod
                         if src in special:
                             w.special += 1
                         elif m.isdir():
-                            w.mkdirs(_dest(w.tgt, src))
-                            w.dir_meta(src, m.mode, m.mtime)
+                            w.put_dir(src, m.mode, m.mtime)
                         elif m.isreg():
                             w.put_file(src, tf.extractfile(m), m.size, m.mode, m.mtime)
                         elif m.issym():
@@ -557,10 +674,14 @@ def _stream_into(w: _Writer, restic: str, env: dict, snap_id: str, inc: str, nod
 def pullback(date: str | None = None, paths: list[str] | None = None, version: str | None = None,
              folder: str | None = None, gone_mode: bool = False, target: str = "/",
              from_device: str | None = None, key_file: str | None = None, login_file: str | None = None,
-             snapshot: str | None = None, now: dt.datetime | None = None) -> int:
+             snapshot: str | None = None, now: dt.datetime | None = None, notifier=None, hub_notice=None) -> int:
     """Never changes anything that exists: an identical file is left alone; a different one stays and the backed-up
     copy is written next to it as NAME_PULLBACK-YYYYMMDD-HHMM.EXT; a file where a folder belongs stays and the folder
-    is written as NAME_PULLBACK-YYYYMMDD-HHMM/. Every expected file is accounted for, or the exit is 1."""
+    is written as NAME_PULLBACK-YYYYMMDD-HHMM/. Every expected file is accounted for, or the exit is 1.
+    A folder that cannot be created or written (permission, read-only, owned by another user) never stops the run:
+    everything else is still put back, every item not placed is listed, the exit is 1, and for EACH such folder a
+    popup stays on the screen until clicked (`notifier`, default notify.popup) and a notice is left on the hub page
+    until someone dismisses it (`hub_notice`, default checkin.report_notice)."""
     restic = restic_bin()
     env = other_env(prune.check_device(from_device), key_file, login_file) if from_device else device_env()[0]
     if snapshot:
@@ -612,7 +733,8 @@ def pullback(date: str | None = None, paths: list[str] | None = None, version: s
             w.finish()
         except OSError as e:
             failed.append(("folder modes", str(e)))
-    missing = sorted(set(expected) - set(w.hashes))
+    blocked_src = w.unplaced
+    missing = sorted(set(expected) - set(w.hashes) - blocked_src)
     print(f"pullback: {len(w.new)} restored, {w.same} already there and identical (left alone), "
           f"{len(w.side)} already there but different (kept; backed-up copy written next to it)"
           + (f", {w.links} symlink(s)" if w.links else "")
@@ -621,7 +743,8 @@ def pullback(date: str | None = None, paths: list[str] | None = None, version: s
         print(f"  KEPT {orig}  ->  backed-up copy: {alt}")
     for orig, prev in w.earlier:
         print(f"  KEPT {orig}  (backed-up copy already pulled back earlier: {prev})")
-    print(f"pullback: {len(expected) - len(missing)}/{len(expected)} files accounted for; "
+    print(f"pullback: {len(expected) - len(missing) - len(blocked_src & set(expected))}/{len(expected)} files "
+          "accounted for; "
           f"{checked - len(bad)}/{checked} SHA-256 match the offload manifest"
           + ("" if checked else " (no offload manifest for these files; restic checked its own hashes)"))
     for p in missing:
@@ -632,7 +755,37 @@ def pullback(date: str | None = None, paths: list[str] | None = None, version: s
         print(f"  MISMATCH {b}")
     for inc, why in failed:
         print(f"  FAILED {inc}: {why}")
-    return 0 if not (bad or missing or w.partial or failed) else config.PROBLEM_EXIT
+    if w.blocked:
+        _report_blocked(w, str(tgt), notifier, hub_notice)
+    return 0 if not (bad or missing or w.partial or failed or w.blocked) else config.PROBLEM_EXIT
+
+
+def _report_blocked(w: _Writer, target: str, notifier, hub_notice) -> None:
+    """Folders that refused files: listed, one popup per folder (stays until clicked), one hub notice per folder.
+    Whatever cannot be shown or sent is said on stderr; never silent."""
+    import sys
+    from . import notify
+    if notifier is None:
+        notifier = notify.popup
+    if hub_notice is None:
+        from .checkin import report_notice as hub_notice
+    n = sum(len(b["items"]) for b in w.blocked.values())
+    print(f"pullback: {n} item(s) could NOT be put back: {len(w.blocked)} folder(s) refused them "
+          "(nothing there was changed)")
+    for folder, b in w.blocked.items():
+        print(f"  BLOCKED folder {folder}: {b['why']}")
+        for item in b["items"]:
+            print(f"    COULD NOT PLACE {item}")
+        text = blocked_text(folder, b["why"], b["items"], target)
+        shown = notifier(notify.TITLE, text)
+        if shown.get("shown"):
+            print(f"  popup shown ({shown.get('how')}); it stays until someone clicks OK")
+        else:
+            print(f"havnvard pullback: NO POPUP for {folder}: {shown.get('how')}", file=sys.stderr)
+        sent = hub_notice("pullback_blocked", text)
+        print(f"  hub notice: {sent}")
+        if not str(sent).startswith("sent"):
+            print(f"havnvard pullback: hub notice for {folder} not sent: {sent}", file=sys.stderr)
 
 
 # ---------- find ----------
