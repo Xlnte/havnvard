@@ -99,7 +99,7 @@ def test_fn1_wording_never_says_the_generated_password_opens_the_notice(db, tmp_
 
 def test_f2_admin_reset_carries_the_mandatory_notice_and_an_admin_session_cannot_redeem_it(db):
     a, adm, u, _ = db
-    code = a.admin_reset(adm, u, ip="100.64.0.1", ua="AdminBrowser/1")
+    code = a.admin_reset(adm, u, ip="100.64.0.1", ua="AdminBrowser/1")["code"]
     assert a.account(u)["must_ack_force_open"] == 1                            # P1: no silent reset
     issued = [x for x in a.audit_rows() if x["action"] == "password.reset_issued"][0]
     assert json.loads(issued["detail"])["ip"] == "100.64.0.1"
@@ -130,8 +130,8 @@ def test_f2_p2_force_open_code_cannot_be_used_by_the_admin_to_ack_and_old_codes_
     24 h is refused."""
     a, adm, u, _ = db
     a.force_open(adm, u, "audit", "al@example.com", mailer=Mail())
-    c1 = a.admin_reset(adm, u)                                                 # D1: allowed while a notice is pending
-    c2 = a.admin_reset(adm, u)
+    c1 = a.admin_reset(adm, u)["code"]                                                 # D1: allowed while a notice is pending
+    c2 = a.admin_reset(adm, u)["code"]
     with pytest.raises(BackupError, match="replaced"):
         a.set_password_with_reset(c1, "first code is dead")
     con = sqlite3.connect(a.path)
@@ -145,7 +145,7 @@ def test_f2_p2_force_open_code_cannot_be_used_by_the_admin_to_ack_and_old_codes_
 def test_d1_user_who_forgot_the_old_password_gets_out_with_a_reset_code(db):
     a, adm, u, _ = db
     a.force_open(adm, u, "legal hold", "al@example.com", mailer=Mail())
-    code = a.admin_reset(adm, u, reason="Al forgot the old password")
+    code = a.admin_reset(adm, u, reason="Al forgot the old password")["code"]
     t = a.set_password_with_reset(code, "brand new and mine")
     text = a.notice(u)["text"]
     assert "Reason: legal hold" in text and "Reason: Al forgot the old password" in text   # both, nothing hidden
@@ -170,7 +170,7 @@ def test_f2_web_reset_from_an_admin_browser_is_refused_and_me_shows_reset_histor
     assert h["Location"] == "/ack"
     al.post("/ack", {"step": "ack", "understand": "yes"})
     _, _, page = al.req("GET", "/me")
-    assert "reset by an administrator 1 time(s)" in page and "forgot it" in page
+    assert "reset your password 1 time(s)" in page and "forgot it" in page
     # no reset button for admins (F3)
     _, _, page = boss.req("GET", "/admin/users")
     assert page.count("value='reset'") == 1
@@ -608,6 +608,7 @@ def test_fn5_modes_and_times_are_set_on_the_open_fd_never_by_path(tmp_path, monk
 
 def test_fn5_as_root_setuid_and_setgid_are_dropped(tmp_path, monkeypatch):
     monkeypatch.setattr(archive, "_euid", lambda: 0)
+    monkeypatch.setattr(archive, "_root_unsafe", lambda p: False)               # pretend root owns tmp (R2 test below)
     w = archive._Writer(tmp_path, "20261114-0300", tmp_path)
     w.put_file("/suid", io.BytesIO(b"#!/bin/sh\n"), 10, 0o6755, 0)
     assert stat.S_IMODE((tmp_path / "suid").stat().st_mode) == 0o755
@@ -626,6 +627,139 @@ def test_fn5_a_folder_link_out_of_the_target_is_a_blocked_folder_never_followed(
     root_tgt = archive._Writer(Path("/"), "20261114-0300", tmp_path)
     monkeypatch.setattr(archive, "_euid", lambda: 0)
     monkeypatch.setattr(archive, "_uid_of", lambda p, follow: 0 if follow else 1000)
+    monkeypatch.setattr(archive, "_root_unsafe", lambda p: False)               # isolate the LINK_OUT rule
     src = str(tgt / "x" / "job2")
     root_tgt.put_file(src, io.BytesIO(b"evil\n"), 5, 0o644, 0)
     assert list(outside.iterdir()) == [] and root_tgt.unplaced == {src}
+
+
+# =====================================================================================================================
+# Round 2 (Opus re-review 20261114: R1, R2, R3). Proof script rv2/poc2.py probes D and E are R1's tests.
+# =====================================================================================================================
+
+def test_r1_probe_d_a_kept_reset_code_dies_when_the_user_finishes_with_the_old_password(db):
+    a, adm, u, _ = db
+    code = a.admin_reset(adm, u)["code"]                                        # the admin keeps it
+    s = a.login("al@example.com", PW)
+    a.ack_warning(s["token"])
+    a.set_own_password(s["token"], "al's very own one")
+    with pytest.raises(BackupError, match="used, expired"):
+        a.set_password_with_reset(code, "admin takes over now")                 # was: a silent FULL session
+    assert a.login("al@example.com", "al's very own one")["scope"] == "full"
+
+
+def test_r1_probe_e_force_open_and_disable_end_outstanding_codes(db):
+    a, adm, u, _ = db
+    code = a.admin_reset(adm, u)["code"]
+    a.force_open(adm, u, "audit", "al@example.com", mailer=Mail())
+    with pytest.raises(BackupError, match="used, expired"):
+        a.set_password_with_reset(code, "pre force-open code")
+    code2 = a.admin_reset(adm, u)["code"]
+    a.disable(adm, u, "quit")
+    a.enable(adm, u)
+    with pytest.raises(BackupError, match="used, expired"):
+        a.set_password_with_reset(code2, "code from before the disable")
+
+
+def test_r1_a_code_never_gives_a_full_session_without_the_notice(db):
+    """Even a code that is somehow still valid when no notice is pending leads to a NEW notice, never a full session."""
+    a, adm, u, _ = db
+    code = a.admin_reset(adm, u, reason="forgot")["code"]
+    con = sqlite3.connect(a.path)                                                # simulate: notice already cleared
+    con.execute("UPDATE account SET must_ack_force_open=0, must_set_password=0 WHERE id=?", (u,))
+    con.execute("UPDATE force_open SET acked_at='2026-11-14T00:00:00+00:00'")
+    con.commit()
+    con.close()
+    r = a.set_password_with_reset(code, "whoever holds it")
+    assert r["must_ack"] is True and a.session(r["token"])["scope"] == "notice"
+    with pytest.raises(BackupError, match="acknowledge"):
+        a.require_ready(r["token"])
+    hist = a.reset_history(u)
+    assert len(hist) == 2 and hist[-1]["acked_at"] is None and "was redeemed" in hist[-1]["reason"]
+
+
+def test_r3a_me_lists_every_reset_and_how_it_was_acknowledged_for_good(db):
+    a, adm, u, _ = db
+    a.force_open(adm, u, "legal hold", "al@example.com", mailer=Mail())
+    s = a.login("al@example.com", PW)
+    a.ack_warning(s["token"], ip="100.64.0.5", ua="AlLaptop")
+    a.set_own_password(s["token"], "al after hold!!")
+    code = a.admin_reset(adm, u, reason="forgot again")["code"]
+    t = a.set_password_with_reset(code, "someone with the code", ip="100.64.9.9", ua="PrivateWindow")
+    a.ack_warning(t["token"], ip="100.64.9.9", ua="PrivateWindow")
+    w = hubweb.App(a)
+    c = Client(w)
+    c.req("POST", "/login", {"email": "al@example.com", "password": "someone with the code"})
+    _, _, page = c.req("GET", "/me")
+    assert "reset your password 2 time(s)" in page
+    assert "force-open: accessed all your files" in page and "legal hold" in page and "forgot again" in page
+    assert "with your old password from 100.64.0.5 (AlLaptop)" in page
+    assert "with a reset code from 100.64.9.9 (PrivateWindow)" in page
+    assert "code given to the admin (no mail configured)" in page
+
+
+def test_r3b_with_mail_configured_codes_and_passwords_go_only_to_the_user(db):
+    a, adm, u, _ = db
+    mail = Mail("sent")
+    r = a.admin_reset(adm, u, reason="forgot", mailer=mail)
+    assert r["code"] is None and r["code_delivery"].startswith("emailed to the user only")
+    to, _subj, body = mail.sent[-1]
+    code = body.split("Your reset code (works for 24 hours, only once): ")[1].split()[0]
+    assert to == "al@example.com" and a.set_password_with_reset(code, "al from the email")["must_ack"] is True
+    f = a.force_open(adm, u, "audit", "al@example.com", mailer=mail)
+    assert f["new_password"] is None and "Generated password" in mail.sent[-1][2]
+    failed = a.admin_reset(adm, u, mailer=Mail("failed: SMTPConnectError: down"))
+    assert failed["code"] is None and "FAILED" in failed["code_delivery"]       # never falls back to the admin
+    shown = a.admin_reset(adm, u, mailer=Mail("not configured"))
+    assert shown["code"] and shown["code_delivery"] == "code given to the admin (no mail configured)"
+    assert [h["code_delivery"].split(" ")[0] for h in a.reset_history(u)] == ["emailed", "emailed", "email", "code"]
+    assert any(x["action"] == "password.reset_code_delivery" for x in a.audit_rows())
+
+
+def test_r3c_gated_page_says_exactly_what_is_true(db):
+    a, adm, u, _ = db
+    r = a.force_open(adm, u, "audit", "al@example.com", mailer=Mail())
+    c = Client(hubweb.App(a))
+    c.req("POST", "/login", {"email": "al@example.com", "password": r["new_password"]})
+    _, _, page = c.req("GET", "/ack")
+    assert "cannot hide or clear" not in page
+    assert "may have seen it too" in page and "cannot acknowledge it or set a password" in page
+    assert "kept on your page for good" in page
+
+
+def test_r2_as_root_a_folder_another_user_controls_is_blocked_and_never_written(tmp_path, monkeypatch):
+    """Scenario: root pulls back into /home/al/proj; al owns it and could swap a sub-folder for a link to /etc/cron.d
+    between the check and the write. As root nothing is written into a folder root does not control."""
+    tgt, outside = tmp_path / "home-al", tmp_path / "etc-cron.d"
+    tgt.mkdir()
+    outside.mkdir()
+    monkeypatch.setattr(archive, "_euid", lambda: 0)
+    swapped = []
+    real_write = archive._Writer._write_new
+
+    def swap_then_write(self, path, *a, **k):                                   # the attacker's swap, mid-run
+        d = path.parent
+        if d != outside and not d.is_symlink():
+            d.rename(d.with_name(d.name + ".moved"))
+            d.symlink_to(outside)
+            swapped.append(d)
+        return real_write(self, path, *a, **k)
+    monkeypatch.setattr(archive._Writer, "_write_new", swap_then_write)
+    w = archive._Writer(tgt, "20261114-0300", tmp_path)
+    w.put_file("/x/job", io.BytesIO(b"* * * * * root evil\n"), 20, 0o644, 0)
+    assert list(outside.iterdir()) == [] and swapped == []                      # never reached the write
+    assert w.unplaced == {"/x/job"}
+    (b,) = w.blocked.values()
+    assert b["why"] == archive.ROOT_FOREIGN
+    # root-owned but group-writable: also refused; root-owned 755: written
+    monkeypatch.setattr(archive._Writer, "_write_new", real_write)
+    monkeypatch.setattr(archive, "_uid_of", lambda p, follow: 0)
+    monkeypatch.setattr(archive, "_mode_of", lambda p, follow: stat.S_IFDIR | 0o775)
+    w2 = archive._Writer(tgt, "20261114-0300", tmp_path)
+    w2.put_file("/y/f", io.BytesIO(b"x"), 1, 0o644, 0)
+    assert w2.unplaced == {"/y/f"}
+    monkeypatch.setattr(archive, "_mode_of", lambda p, follow: stat.S_IFDIR | 0o755)
+    w3 = archive._Writer(tgt, "20261114-0300", tmp_path)
+    w3.put_file("/z/f", io.BytesIO(b"x"), 1, 0o644, 0)
+    assert (tgt / "z" / "f").read_bytes() == b"x" and not w3.unplaced
+    assert stat.S_IMODE((tgt / "z").stat().st_mode) & 0o022 == 0

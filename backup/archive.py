@@ -450,6 +450,27 @@ def _uid_of(p: Path, follow: bool) -> int:
     return (os.stat(p) if follow else os.lstat(p)).st_uid
 
 
+ROOT_FOREIGN = ("another user controls this folder (not owned by root, or group/other-writable); as root HavnVard "
+                "does not write into it: run the pullback as that user, or use --target")
+
+
+def _mode_of(p: Path, follow: bool) -> int:
+    return (os.stat(p) if follow else os.lstat(p)).st_mode
+
+
+def _root_unsafe(p: Path) -> bool:
+    """R2 (option c): as root, a folder on the way is safe only when root owns it (and the link to it, if any) and
+    nobody else can write it. Otherwise its owner could swap a sub-folder for a link mid-run, so it is a blocked
+    folder. (The race-free dir_fd walk is FILEd.)"""
+    try:
+        for follow in (False, True):
+            if _uid_of(p, follow) != 0:
+                return True
+        return bool(_mode_of(p, True) & 0o022)
+    except OSError:
+        return True
+
+
 def _safe_mode(mode: int) -> int:
     """FN-5: as root, never create a setuid/setgid file or folder (root would own it)."""
     mode &= 0o7777
@@ -505,17 +526,22 @@ class _Writer:
         d = self._apply(d)
         anchor = Path(d.anchor)
         cur = anchor
+        root = _euid() == 0
+        if root and _root_unsafe(cur):
+            raise self._refuse(cur, cur, ROOT_FOREIGN)
         for part in d.relative_to(anchor).parts:
             nxt = cur / part
             if os.path.lexists(nxt):
                 if nxt.is_dir():
                     if nxt.is_symlink() and self._link_escapes(nxt):
                         raise self._refuse(nxt, nxt, LINK_OUT)   # FN-5: listed as blocked, never followed
+                    if root and _root_unsafe(nxt):
+                        raise self._refuse(nxt, nxt, ROOT_FOREIGN)   # R2: never write where a user can swap a link
                     cur = nxt
                     continue
                 alt = renamed(nxt, self.stamp, is_dir=True)
                 try:
-                    os.mkdir(alt)
+                    os.mkdir(alt, 0o755 if root else 0o777)
                 except OSError as e:
                     if e.errno in _REFUSED:
                         raise self._refuse(cur, alt, e) from e
@@ -526,7 +552,7 @@ class _Writer:
                 cur = alt
             else:
                 try:
-                    os.mkdir(nxt)
+                    os.mkdir(nxt, 0o755 if root else 0o777)   # as root never group/other-writable, even at umask 0
                 except OSError as e:
                     if e.errno in _REFUSED:                # cur refused us: record it, the caller carries on
                         raise self._refuse(cur, nxt, e) from e
