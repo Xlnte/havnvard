@@ -18,5 +18,7 @@ Older releases are described in `FEATURES.md` and `docs/*_RELEASE_*.md`.
   checks too:** they now alert under `havnvard-offsite-stale` only. `health` exit code and JSON `ok`/`exit_code` are
   unchanged (still 1 for any problem, offsite included); `health-relay` resolves the main key and exits 1 when only
   offsite checks fail.
+- `health-relay` exits 2 (not 1) when an offsite alert could not be raised, the same rule as the main key: an alert
+  that was not sent is a relay failure, never a plain "problem reported".
 - Why: after a hub move, the desktop uploader kept uploading the retired hub's folder and later nothing at all, while
   `health` on the new hub stayed green because it only knew offsite targets it runs itself.

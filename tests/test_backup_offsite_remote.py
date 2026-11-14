@@ -247,6 +247,18 @@ def test_relay_resolves_offsite_key_only_when_offsite_checks_pass(env):
     assert (f"{health.OFFSITE_KEY}-hub", "RESOLVED") in env
 
 
+@pytest.mark.parametrize("device_ok", [True, False])
+def test_relay_exits_2_when_the_offsite_alert_cannot_be_sent(env, monkeypatch, capsys, device_ok):
+    """R2 (re-review 52ed43c): an offsite alert that could not be raised is a relay failure (2), never a plain 1,
+    whether or not the main key also has a problem."""
+    monkeypatch.setattr(alerts, "fire", lambda k, t, c=0: (False, "no channel") if "offsite" in k else (True, "sent"))
+    out = json.dumps({"ok": False, "exit_code": 1, "checks": [
+        {"name": "snapshot age dev1", "ok": device_ok, "detail": "1 h" if device_ok else "30 h"},
+        {"name": "offsite desk dev2", "ok": False, "detail": "never fully uploaded"}]})
+    assert relay.relay("hub", "python3", "havnvard", _runner(1, out)) == config.ERROR_EXIT
+    assert f"ALERT NOT SENT ({health.OFFSITE_KEY}-hub)" in capsys.readouterr().out
+
+
 def test_relay_failure_never_resolves_the_offsite_key(env):
     relay.relay("hub", "python3", "havnvard", _runner(255, ""))
     assert not any(k == f"{health.OFFSITE_KEY}-hub" and v == "RESOLVED" for k, v in env)
