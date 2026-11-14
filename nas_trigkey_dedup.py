@@ -30,6 +30,11 @@ Usage:
     nas_trigkey_dedup.py --host NAS_HOST [--path DIR] [--exclude DIR]... [--limit N]
                          [--batch-size 500] [--batch-bytes 4294967296] [--assumed-mbps 20]
     nas_trigkey_dedup.py --export RUN_ID [--format csv|json]       # reproducible snapshot export
+    nas_trigkey_dedup.py --host NAS_HOST [--path DIR] --dry-run     # plan only: read-only, no run row, no ssh
+    nas_trigkey_dedup.py --host NAS_HOST [--path DIR] --publish-only  # groups from fresh digests, no ssh (G5)
+
+Default is a LIVE run: it reads files on the host (read-only) and writes ONLY database rows (digests, groups,
+labels). It never deletes, moves or renames a file, so --dry-run is opt-in, not the default.
 
 Exit codes: 0 completed | 2 run failed | 3 database unreachable | 4 refused
 (a whole-host run is already active) | 143/130 terminated by SIGTERM/SIGINT.
@@ -645,7 +650,8 @@ _PUBLISH_STEPS = [
         JOIN diskaudit.dedup_digest_bindings b ON b.host = f.host AND b.path = f.path
         WHERE f.host = %(host)s AND f.still_exists AND f.file_type = 'regular' AND f.size_bytes > 0
           AND {_SCOPE_PRED} AND {_EXCL_PRED} AND f.path !~ %(unsafe_re)s
-          AND b.sha256 = f.content_sha256 AND b.size_bytes = f.size_bytes AND b.mtime = f.mtime AND b.st_ino = f.inode""",
+          AND b.sha256 = f.content_sha256 AND b.size_bytes = f.size_bytes AND b.mtime = f.mtime AND b.st_ino = f.inode
+          AND b.bound_at >= f.mtime + make_interval(secs => %(racy_s)s)""",
      "all"),
     ("""CREATE TEMP TABLE _nd_grp (group_id text PRIMARY KEY, size_bytes bigint, identity_count integer,
           member_count integer, n_sizes integer) ON COMMIT DROP""", None),
@@ -656,10 +662,11 @@ _PUBLISH_STEPS = [
 ]
 
 
-def _publish(ctx: RunCtx, scope, excludes, code_version, considered, zero_byte, reused) -> dict:
+def _publish(ctx: RunCtx, scope, excludes, code_version, considered, zero_byte, reused, note: str = "") -> dict:
     conn, host, run_id = ctx.conn, ctx.host, ctx.run_id
     params = {**_scope_params(host, scope, excludes), "recycle": core.RECYCLE_REGEX, "backup_like": core.BACKUP_TREE_LIKE,
-              "unsafe_re": core.UNSAFE_PATH_REGEX, "run_id": run_id, "code_version": code_version}
+              "unsafe_re": core.UNSAFE_PATH_REGEX, "run_id": run_id, "code_version": code_version,
+              "racy_s": core.RACY_MARGIN_S}
     conn.commit()
     with conn.transaction():
         with conn.cursor() as cur:
@@ -740,7 +747,7 @@ def _publish(ctx: RunCtx, scope, excludes, code_version, considered, zero_byte, 
                     {_GROUP_COUNTS_SQL}, {_ITEM_COUNTS_SQL}
                 WHERE dedup_run_id = %(run_id)s""",
                         {**params, "considered": considered, "zero": zero_byte, "reused": reused, "tf": ctx.transport_failures,
-                         "retries": ctx.retries, "raw": f"published; stale labels cleared in scope: {cleared}"})
+                         "retries": ctx.retries, "raw": f"{note}published; stale labels cleared in scope: {cleared}"})
             cur.execute("SELECT duplicate_groups_found, duplicate_files_found, bytes_reclaimable "
                         "FROM diskaudit.dedup_runs WHERE dedup_run_id = %s", (run_id,))
             groups, files, reclaim = cur.fetchone()
@@ -765,7 +772,7 @@ def _setup_remote(ctx: RunCtx):
         raise RunFailed(f"could not scp {HASH_STAT_SCRIPT_NAME} to {ctx.host}: rc={r.returncode} {r.stderr[:200]}")
 
 
-def run_dedup(ctx: RunCtx, scope, excludes, limit, batch_size, batch_bytes, code_version) -> dict:
+def run_dedup(ctx: RunCtx, scope, excludes, limit, batch_size, batch_bytes, code_version, publish_only=False) -> dict:
     conn, host, run_id = ctx.conn, ctx.host, ctx.run_id
     _note(ctx, "planning", f"loading candidates (scope={scope or 'whole host'}, exclude={excludes or 'none'})")
     cands, bindings, rows_in_scope, zero_byte = _load_candidates(conn, host, scope, excludes)
@@ -800,6 +807,10 @@ def run_dedup(ctx: RunCtx, scope, excludes, limit, batch_size, batch_bytes, code
           f"{zero_byte} zero-byte excluded, {len(unsafe_items)} unsafe paths")
 
     batches = core.plan_batches(to_hash, batch_size, batch_bytes) + core.plan_stat_batches(plan.inherit_only)
+    if publish_only:                      # G5: no remote I/O; groups come only from digests that are already fresh
+        _log(host, run_id, "publish-only", f"skipping {len(to_hash)} representatives to hash and "
+             f"{sum(len(w.siblings) for w in plan.inherit_only)} sibling stat-checks (no ssh/scp)")
+        batches = []
     stragglers: list[str] = []
     if batches:
         _setup_remote(ctx)
@@ -823,9 +834,24 @@ def run_dedup(ctx: RunCtx, scope, excludes, limit, batch_size, batch_bytes, code
 
     ctx.progress.set_stage("publishing")
     write_heartbeat(conn, "dedup", run_id, host, "publishing", note="recomputing groups from fresh digests")
-    stats = _publish(ctx, scope, excludes, code_version, considered, zero_byte, plan.reused)
+    stats = _publish(ctx, scope, excludes, code_version, considered, zero_byte, plan.reused,
+                     note="publish-only (no hashing); " if publish_only else "")
     stats.update(published=True, considered=considered)
     return stats
+
+
+def plan_only(conn, host, scope, excludes, limit) -> dict:
+    """--dry-run: what a run WOULD do, from the inventory alone. Read-only SQL; no run row, no item rows,
+    no binding, no label, no ssh/scp. Freshness is judged exactly as a real run judges it."""
+    cands, bindings, rows_in_scope, zero_byte = _load_candidates(conn, host, scope, list(excludes))
+    safe = [c for c in cands if not core.classify_path(c.path)]
+    plan = core.plan_hash_work(safe, bindings)
+    to_hash = plan.to_hash[:limit] if limit else plan.to_hash
+    return {"host": host, "scope": scope, "excludes": list(excludes), "rows_in_scope": rows_in_scope,
+            "zero_byte_excluded": zero_byte, "candidates": len(cands), "unsafe_paths": len(cands) - len(safe),
+            "to_hash": len(to_hash), "to_hash_bytes": sum(w.size_bytes for w in to_hash),
+            "sibling_stat_checks": sum(len(w.siblings) for w in plan.inherit_only), "reused": plan.reused,
+            "is_partial": bool(limit)}
 
 
 def _prune_old_items(conn):
@@ -838,9 +864,12 @@ def _prune_old_items(conn):
 
 def run_once(conn, host, *, scope=None, excludes=(), limit=None, batch_size=core.DEFAULT_BATCH_SIZE,
              batch_bytes=core.DEFAULT_BATCH_BYTES, assumed_mbps=core.DEFAULT_ASSUMED_MBPS, target=None,
-             conn_factory=None, heartbeat_interval=HEARTBEAT_INTERVAL_S, code_version=None):
+             conn_factory=None, heartbeat_interval=HEARTBEAT_INTERVAL_S, code_version=None, publish_only=False):
     """_start_run -> run_dedup -> publish/_finish_run. Returns (run_id, status). A RunFailed or any
-    unexpected error ends the run 'failed' (status returned); Terminated is recorded then re-raised."""
+    unexpected error ends the run 'failed' (status returned); Terminated is recorded then re-raised.
+    publish_only (G5): skip all hashing and publish groups from the digests already fresh (no remote I/O)."""
+    if publish_only and limit:
+        raise ValueError("--publish-only cannot be combined with --limit (a partial run publishes nothing)")
     code_version = code_version or _code_version()
     excludes = list(excludes)
     conn_factory = conn_factory or (lambda: psycopg.connect(get_dsn(), autocommit=False))
@@ -850,7 +879,7 @@ def run_once(conn, host, *, scope=None, excludes=(), limit=None, batch_size=core
     hb = HeartbeatThread(conn_factory, run_id, host, ctx.progress, heartbeat_interval)
     hb.start()
     try:
-        stats = run_dedup(ctx, scope, excludes, limit, batch_size, batch_bytes, code_version)
+        stats = run_dedup(ctx, scope, excludes, limit, batch_size, batch_bytes, code_version, publish_only)
         _log(host, run_id, "done", f"status=completed stats={stats}")
         return run_id, "completed"
     except Terminated:
@@ -1009,10 +1038,12 @@ def _connect():
     return psycopg.connect(get_dsn(), autocommit=False, connect_timeout=15)
 
 
-def main(argv=None) -> int:
+def _build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--host")
-    ap.add_argument("--path", help="absolute directory: run only on files at/below it (directory boundary)")
+    ap.add_argument("--path", "--path-prefix", dest="path",
+                    help="absolute directory: hash and group only files at/below it (directory boundary; the size "
+                         "prefilter stays host-wide). --path-prefix is an alias (INFRA-520 G4)")
     ap.add_argument("--exclude", action="append", default=[], help="absolute directory left out of hashing, grouping and clearing (repeatable)")
     ap.add_argument("--limit", type=int, default=None, help="hash only the first N representatives; PARTIAL run, publishes nothing")
     ap.add_argument("--batch-size", type=int, default=core.DEFAULT_BATCH_SIZE)
@@ -1020,7 +1051,21 @@ def main(argv=None) -> int:
     ap.add_argument("--assumed-mbps", type=float, default=core.DEFAULT_ASSUMED_MBPS)
     ap.add_argument("--export", type=int, metavar="RUN_ID", help="print the snapshot of RUN_ID and exit")
     ap.add_argument("--format", choices=("csv", "json"), default="csv")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="print the plan (candidates, files/bytes to hash, fresh digests reused) and exit; "
+                         "no run row, no remote I/O, no database write")
+    ap.add_argument("--publish-only", action="store_true",
+                    help="no hashing and no remote I/O: publish groups from the digests that are already fresh "
+                         "(e.g. after a killed long run). Not combinable with --limit (INFRA-520 G5)")
+    return ap
+
+
+def main(argv=None) -> int:
+    ap = _build_parser()
     args = ap.parse_args(argv)
+    if args.publish_only and (args.limit or args.dry_run):
+        print("[nas_trigkey_dedup] ERROR: --publish-only cannot be combined with --limit or --dry-run", file=sys.stderr)
+        return EXIT_FAILED
 
     try:
         conn = _connect()
@@ -1043,6 +1088,11 @@ def main(argv=None) -> int:
             print(f"[nas_trigkey_dedup] ERROR: {e}", file=sys.stderr)
             return EXIT_FAILED
 
+        if args.dry_run:                                                     # read-only: no lock, no run row
+            plan = plan_only(conn, args.host, scope, excludes, args.limit)
+            print(json.dumps(plan, indent=1, ensure_ascii=False))
+            return EXIT_OK
+
         if scope is None:                                                    # whole-host run (also --exclude / --limit)
             refusal = _acquire_full_run_lock(conn, args.host)
             if refusal:
@@ -1053,7 +1103,8 @@ def main(argv=None) -> int:
         try:
             run_id, status = run_once(conn, args.host, scope=scope, excludes=excludes, limit=args.limit,
                                       batch_size=args.batch_size, batch_bytes=args.batch_bytes,
-                                      assumed_mbps=args.assumed_mbps, conn_factory=_connect)
+                                      assumed_mbps=args.assumed_mbps, conn_factory=_connect,
+                                      publish_only=args.publish_only)
         except Terminated as t:
             print("[nas_trigkey_dedup] terminated; run marked failed", file=sys.stderr)
             return 128 + t.signum
