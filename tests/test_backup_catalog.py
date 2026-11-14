@@ -246,6 +246,10 @@ def test_health_archive_repo_has_no_age_limit(hub):
     config.save(cfg)
     res = {n: ok for n, ok, _ in health.collect()}
     assert res["archive arch"] is True and "snapshot age arch" not in res
-    cfg["health"] = {}
+    cfg["health"] = {"check_streams": False}   # 3.3.3: the file-age check (the stream check reads restic's own times)
     config.save(cfg)
     assert {n: ok for n, ok, _ in health.collect()}["snapshot age arch"] is False
+    cfg["health"] = {}                           # 3.3.3 "auto": the hub has the password, so the stream check runs instead
+    config.save(cfg)
+    res = {n: ok for n, ok, _ in health.collect()}
+    assert res["device arch"] is True and "snapshot age arch" not in res

@@ -2,7 +2,7 @@
 
 **Know that every file you care about is backed up, prove the backups restore, and find any file in any backup.**
 HavnVard is a self-hosted storage-assurance toolkit for a home or small-office fleet: a few Linux machines, a NAS and
-a cloud account. Version 3.3.2.
+a cloud account. Version 3.3.3.
 
 > **Absolute rule: HavnVard never deletes, moves or overwrites a scanned file.** Every "duplicate", "stale" or
 > "not backed up" result is a report for you to read. Deleting anything is always your decision, made by hand.
@@ -124,7 +124,7 @@ step is printed. `nas-copy` mirrors the already-encrypted repo files (no passwor
 
 ### 6. Watch it and prove it
 ```bash
-python -m backup health          # snapshot age (> 26 h), last job, hub and NAS free space, offsite; non-zero on any problem
+python -m backup health          # every backup stream of every device (> 26 h), last job, hub and NAS free space, offsite; non-zero on any problem
 python -m backup prune my-laptop --keep-monthly 12 --owner-key ~/my-laptop.pass   # hub only, owner's order only: no default rule,
                                  # shows what would go, then asks you to type "DELETE FROM my-laptop <N> SNAPSHOTS BY RULE keep_monthly=12";
                                  # archive-tagged snapshots always kept; the hub's stored password is refused
@@ -148,6 +148,32 @@ file cannot be fetched or read, when the uploader read **any folder other than t
 was never re-pointed from), when its last run failed or is older than `offsite_stale_hours`, and for every hub repo not
 fully uploaded within that limit. Offsite problems raise only their own alert key, `havnvard-offsite-stale`
 (`havnvard-offsite-stale-<hub>` through `health-relay`), resolved only when every offsite check passes; they never fire the main health key.
+
+**Every backup stream of every device (3.3.3).** One repository often holds several streams: restic groups snapshots
+by host + paths, so a server that backs up its home folder and twenty app folders into one repository has 21 streams.
+`health` used to look only at the newest snapshot file of the repository, so one fresh stream hid every stopped one.
+Where the hub has the device's hub-side password (`~/.config/havnvard/hub-passwords/<repo>.pass`, the same file the
+catalog uses), `health` now reads the snapshot list (`restic snapshots --no-lock --no-cache`: read-only) and reports
+`device <repo>` as a problem when **any** stream's newest snapshot is older than the limit, naming each stale stream.
+Settings, in `backup.toml` on the hub:
+```toml
+[health]
+stale_hours = 26          # default limit for every device
+check_streams = true      # "auto" (default): stream check where a hub-side password exists; true: a missing password is a problem
+restic = "~/.local/bin/restic"   # optional; useful when health runs over ssh (health-relay) with a short PATH
+
+[health.devices.laptop-1]
+stale_hours = 48          # this device only
+
+[health.devices.server-1]
+retired_streams = ["server-1|/srv/old-app"]   # "host|path[|path...]": streams that stopped on purpose; counted, not judged
+```
+A stale device raises its own alert key, `havnvard-device-stale-<repo>` (also through `health-relay`), resolved by the
+first run that finds every stream fresh; alertlib keeps it to one notice per incident. A repository the hub cannot read
+(no password with `check_streams = true`, restic missing or failing) is never "fresh": it is a `stream check <repo>`
+problem on the main key, the device key is left as it was, and the newest-file age check still runs. A
+`[health.devices.<name>]` that names no hub repository is a problem too (a typo would silently leave the real device on
+the default limit).
 
 A hub without `alertlib` (agent-1): on the server run `python -m backup health-relay --ssh agent-1 --python PATH --repo-dir DIR`
 (or render an hourly timer with `--render-units ./out`). It runs `health --json --no-alert` on the hub and raises or
