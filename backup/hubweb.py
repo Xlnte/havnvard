@@ -1,12 +1,16 @@
 """HavnVard hub pages and device API (3.3.0; INFRA-579, INFRA-575, INFRA-576). Standard-library WSGI app, served on the
 hub by `python -m backup hub web` (wsgiref). Tailnet-only like the rest-server.
 
-Pages: /register /login /logout /reset /ack /me /admin/users /admin/computers /admin/schedules /admin/audit
+Pages: /register /login /logout /reset /ack /me /notice/dismiss /admin/users /admin/computers /admin/schedules
+/admin/audit
 Device API (Bearer = the computer's check-in token):
   POST /api/v1/devices/NAME/checkin   {"client_version"}            -> {"due", "reason", "next_checkin_s", ...}
   POST /api/v1/devices/NAME/run       {"action":"start"} | {"action":"end","run_id","exit_code","snapshot_id"}
   POST /api/v1/devices/NAME/late      {"started_at","ended_at","exit_code","error"}
-Every request re-reads the session (a disable is instant). A user with a pending force-open warning sees /ack first.
+  POST /api/v1/devices/NAME/notice    {"kind","text"}  (e.g. a pullback could not place files; stays until dismissed)
+Every request re-reads the session (a disable is instant). A user with a pending force-open notice sees /ack first and
+nothing else: acknowledge, be told the generated password, set their own. An old-password login is a 'notice' session
+that never reaches anything else.
 """
 from __future__ import annotations
 
@@ -18,7 +22,7 @@ import re
 from http.cookies import SimpleCookie
 from urllib.parse import parse_qs
 
-from .accounts import WARNING, Accounts
+from .accounts import Accounts
 from .config import BackupError
 from .schedules import MODES, Schedules
 
@@ -67,7 +71,7 @@ class App:
                 return self._page("403 Forbidden", "Not allowed", "<p>Your session ended or the form is stale. "
                                   "<a href='/login'>Log in again</a>.</p>")
             route = {"/register": self.register, "/login": self.login, "/logout": self.logout, "/reset": self.reset,
-                     "/ack": self.ack, "/me": self.me, "/": self.me}.get(path)
+                     "/ack": self.ack, "/me": self.me, "/": self.me, "/notice/dismiss": self.dismiss}.get(path)
             if route:
                 return route(method, form, token, sess)
             if path.startswith("/admin/"):
@@ -179,19 +183,55 @@ class App:
                           "required></label><br><button>Save</button></form>")
 
     def ack(self, method, f, token, sess):
+        """The force-open notice. Step 1: read and acknowledge (only the user can). Step 2: be told the generated
+        password, then set one of your own (the admin does not know it). Nothing else is reachable before both."""
         if not sess:
             return self._redirect("/login")
         if not sess["must_ack_force_open"]:
             return self._redirect("/me")
-        if method == "POST" and f.get("understand") == "yes":
-            self.a.ack_warning(sess["account_id"])
-            return self._redirect("/me")
-        w = self.a.ack_warning(sess["account_id"], preview=True)
-        return self._page("200 OK", "Your administrator reset your password",
-                          f"<div class='warn'><p><b>{_e(WARNING)}</b></p><p>When: {_e(w['at'])} (UTC)<br>"
-                          f"Administrator: {_e(w['admin'])}<br>Reason given: {_e(w['reason'])}</p></div>"
-                          f"<form method='post'>{self._csrf(token)}<label><input type='checkbox' name='understand' "
-                          "value='yes' required> I understand</label> <button>Continue</button></form>")
+        me = sess["account_id"]
+        if method == "POST" and f.get("step") == "ack" and f.get("understand") == "yes":
+            self.a.ack_warning(me)
+            return self._redirect("/ack")
+        if method == "POST" and f.get("step") == "password":
+            if f.get("password") != f.get("password2"):
+                raise BackupError("the two passwords differ")
+            r = self.a.set_own_password(me, f.get("password", ""))
+            return self._redirect("/me", self._set_cookie(r["token"]))
+        w = self.a.notice(me)
+        head = (f"<div class='warn'><p><b>{_e(w['text'])}</b></p><p>{_e(w['warning'])}</p>"
+                f"<p>All your files, not just some. Your administrator cannot hide or clear this notice.</p></div>")
+        if w["unacked"]:
+            return self._page("200 OK", "Your administrator reset your password", head +
+                              f"<form method='post'>{self._csrf(token)}<input type='hidden' name='step' value='ack'>"
+                              "<label><input type='checkbox' name='understand' value='yes' required> I have read this"
+                              "</label> <button>Acknowledge</button></form>")
+        told = self.a.told_password(me)
+        pw = (f"<p>The new password your administrator was given for you is: <code style='font-size:1.2em'>{_e(told)}"
+              "</code></p><p>Your administrator knows that one, so choose your own now. After this, neither that "
+              "password nor your old one works.</p>") if told else \
+             "<p>Choose a new password of your own now; your administrator will not know it.</p>"
+        return self._page("200 OK", "Choose your own password", head + pw +
+                          f"<form method='post'>{self._csrf(token)}<input type='hidden' name='step' value='password'>"
+                          "<label>New password (12+ characters) <input name='password' type='password' required></label>"
+                          "<br><label>Again <input name='password2' type='password' required></label><br>"
+                          "<button>Save my password</button></form>")
+
+    def dismiss(self, method, f, token, sess):
+        self._need(sess)
+        if method == "POST":
+            self.a.dismiss_notice(sess["account_id"], int(f.get("notice") or 0))
+        return self._redirect("/me")
+
+    def _notices(self, token, sess) -> str:
+        ns = self.a.open_notices(sess["account_id"])
+        if not ns:
+            return ""
+        return "<h2>Needs your attention</h2>" + "".join(
+            f"<div class='warn'><p><b>{_e(n['device'])}</b> - {_e(n['created_at'])} UTC</p>"
+            f"<pre style='white-space:pre-wrap'>{_e(n['text'])}</pre><form method='post' action='/notice/dismiss'>"
+            f"{self._csrf(token)}<input type='hidden' name='notice' value='{n['id']}'><button>Dismiss</button></form></div>"
+            for n in ns)
 
     # ---------- my files ----------
     def me(self, method, f, token, sess):
@@ -202,7 +242,7 @@ class App:
                      f"<td>{_e(rows.get(d['name'], {}).get('mode'))}</td><td>{_e(rows.get(d['name'], {}).get('last_started_at'))}</td>"
                      f"<td>{_e(rows.get(d['name'], {}).get('last_status'))}</td><td>{_e(rows.get(d['name'], {}).get('next_due'))}</td></tr>"
                      for d in mine)
-        body = ("<h2>My computers</h2><table><tr><th>Computer</th><th>Schedule</th><th>Last run</th><th>Result</th>"
+        body = (self._notices(token, sess) + "<h2>My computers</h2><table><tr><th>Computer</th><th>Schedule</th><th>Last run</th><th>Result</th>"
                 f"<th>Next</th></tr>{tr or '<tr><td colspan=5>No computers assigned to you yet.</td></tr>'}</table>"
                 "<p>Find and pull back your files on any of your computers with <code>python -m backup find NAME</code> "
                 "and <code>python -m backup pullback FILE</code>.</p>")
@@ -226,15 +266,19 @@ class App:
                 elif act == "reset":
                     note = f"<p class='warn'>Reset code: <code>{_e(self.a.admin_reset(me, tgt))}</code> (/reset)</p>"
                 elif act == "force_open":
-                    code = self.a.force_open(me, tgt, f.get("reason", ""), f.get("typed_email", ""))
-                    note = (f"<p class='warn'>Force-open started and logged. The user's password is reset; they will see the "
-                            f"warning at next login. Give them this reset code: <code>{_e(code)}</code></p>")
+                    r = self.a.force_open(me, tgt, f.get("reason", ""), f.get("typed_email", ""))
+                    note = (f"<div class='warn'><p>Force-open started and logged. {_e(r['user_email'])}'s password was "
+                            "replaced. New password (shown <b>once</b>, not kept): <code style='font-size:1.2em'>"
+                            f"{_e(r['new_password'])}</code></p><p>Email to the user: <b>{_e(r['email_status'])}</b>"
+                            + ("" if r["email_status"] == "sent" else " - tell them yourself") + "</p>"
+                            "<p>At their next login (old password or this one) they must first read that you reset "
+                            "their password and accessed all their files, and why; then they set their own.</p></div>")
                 elif act == "release":
                     self.a.release(me, int(f["from_user"]), int(f["to_user"]), f["device"], f["prefix"])
                     note = "<p>Released.</p>"
             rows = "".join(
                 f"<tr><td>{u['id']}</td><td>{_e(u['email'])}</td><td>{_e(u['kind'])}</td><td>{_e(u['status'])}</td>"
-                f"<td>{'warning pending' if u['must_ack_force_open'] else ''}</td><td>"
+                f"<td>{'notice not yet read' if u['must_ack_force_open'] else ('own password not yet set' if u.get('must_set_password') else '')}</td><td>"
                 + self._btn(token, "disable", u["id"], "Disable", "<input name='reason' placeholder='reason'>")
                 + self._btn(token, "enable", u["id"], "Enable") + self._btn(token, "reset", u["id"], "Reset password")
                 + (self._btn(token, "force_open", u["id"], "Force open",
@@ -265,7 +309,7 @@ class App:
             rows = "".join(f"<tr><td>{_e(d['name'])}</td><td>{_e(d['primary_user_id'])}</td><td>{_e(d['pc_admin_id'])}</td>"
                            f"<td>{_e(d['status'])}</td></tr>" for d in self.a.devices())
             c = self._csrf(token)
-            body = (note + f"<table><tr><th>Computer</th><th>Primary user #</th><th>PC administrator #</th><th>Status</th></tr>{rows}</table>"
+            body = (note + self._notices(token, sess) + f"<table><tr><th>Computer</th><th>Primary user #</th><th>PC administrator #</th><th>Status</th></tr>{rows}</table>"
                     f"<h2>Add a computer</h2><form method='post'>{c}<input type='hidden' name='action' value='add'>"
                     "<input name='name' placeholder='name' required><input name='primary_user' placeholder='user #'>"
                     "<input name='pc_admin' placeholder='PC admin #'><button>Add</button></form>"
@@ -317,7 +361,7 @@ class App:
 
     # ---------- device API (INFRA-576) ----------
     def api(self, env, path, method) -> tuple[str, list, str]:
-        m = re.fullmatch(r"/api/v1/devices/([A-Za-z0-9._-]{1,64})/(checkin|run|late)", path)
+        m = re.fullmatch(r"/api/v1/devices/([A-Za-z0-9._-]{1,64})/(checkin|run|late|notice)", path)
         if not m or method != "POST":
             return self._json("404 Not Found", {"error": "not found"})
         name, what = m.groups()
@@ -328,6 +372,9 @@ class App:
             body = self._form(env)
             if what == "checkin":
                 return self._json("200 OK", self.s.checkin(name, body.get("client_version")))
+            if what == "notice":
+                return self._json("200 OK", {"notice_id": self.a.add_notice(name, str(body.get("kind") or "notice"),
+                                                                            str(body["text"]))})
             if what == "run":
                 if body.get("action") == "start":
                     return self._json("200 OK", {"run_id": self.s.run_start(name, body.get("kind", "backup"))})

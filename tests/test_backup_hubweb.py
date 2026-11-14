@@ -44,6 +44,8 @@ class Client:
 
 @pytest.fixture
 def app(tmp_path, monkeypatch):
+    monkeypatch.setenv("HAVNVARD_CONFIG_DIR", str(tmp_path / "cfg"))       # never the real backup.toml ([mail])
+    monkeypatch.setenv("HAVNVARD_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setattr(accounts, "SCRYPT_N", 2 ** 10)
     a = accounts.Accounts(tmp_path / "accounts.db")
     return hubweb.App(a), a.new_setup_code()
@@ -80,26 +82,79 @@ def test_invite_disable_force_open_ack_flow_and_user_cannot_see_admin_pages(app)
     st, _, page = u.req("GET", "/admin/users")
     assert st == "400 Bad Request" and "administrators only" in page
     uid = w.a.login("al@example.com", PW)["account_id"]
-    # force-open: reset code shown to the admin; the user is logged out; at next login the warning comes first
+    # force-open: a new password shown to the admin once, email status shown; the user is logged out
     _, _, page = adm.post("/admin/users", {"action": "force_open", "target": uid, "reason": "legal hold",
                                            "typed_email": "al@example.com"})
-    reset = re.search(r"reset code: <code>([\w-]+)</code>", page).group(1)
+    new = re.search(r"not kept\): <code[^>]*>([A-Z2-7-]+)</code>", page).group(1)
+    assert "Email to the user: <b>not configured</b>" in page and "tell them yourself" in page
     st, h, _ = u.req("GET", "/me")
     assert st.startswith("303") and h["Location"] == "/login"
-    st, h, _ = u.req("POST", "/reset", {"code": reset, "password": "a whole new password", "password2": "a whole new password"})
+    # old password -> the notice; nothing else is reachable
+    st, h, _ = u.req("POST", "/login", {"email": "al@example.com", "password": PW})
     assert h["Location"] == "/ack"
-    st, h, _ = u.req("GET", "/me")
-    assert h["Location"] == "/ack"                                              # nothing else until acknowledged
+    for path in ("/me", "/admin/users"):
+        st, h, _ = u.req("GET", path)
+        assert h.get("Location") == "/ack", path
     _, _, page = u.req("GET", "/ack")
-    assert accounts.WARNING in page and "legal hold" in page and "boss@example.com" in page
-    st, h, _ = u.post("/ack", {"understand": "yes"})
+    assert "Your administrator boss@example.com reset your password on " in page
+    assert "accessed all your files. Reason: legal hold" in page and new not in page   # not before the click
+    st, _, page = u.post("/ack", {"step": "password", "password": "mine mine mine!", "password2": "mine mine mine!"})
+    assert st == "400 Bad Request" and "acknowledge the notice first" in page
+    # the admin cannot clear or hide it: no such action, and the user list shows it
+    adm.post("/admin/users", {"action": "ack", "target": uid})
+    _, _, page = adm.req("GET", "/admin/users")
+    assert "notice not yet read" in page
+    u.post("/ack", {"step": "ack", "understand": "yes"})
+    _, _, page = u.req("GET", "/ack")
+    assert new in page and "choose your own" in page                              # told the generated password
+    assert u.req("GET", "/me")[2] == "" and u.req("GET", "/me")[1]["Location"] == "/ack"
+    st, h, _ = u.post("/ack", {"step": "password", "password": "mine mine mine!", "password2": "mine mine mine!"})
     assert h["Location"] == "/me" and u.req("GET", "/me")[0] == "200 OK"
+    # the generated one and the old one are both dead now; the new password from the admin no longer works
+    with pytest.raises(Exception, match="wrong email or password"):
+        w.a.login("al@example.com", new)
+    # a login with the NEW (generated) password after a second force-open also lands on the notice
+    _, _, page = adm.post("/admin/users", {"action": "force_open", "target": uid, "reason": "audit 2",
+                                           "typed_email": "al@example.com"})
+    new2 = re.search(r"not kept\): <code[^>]*>([A-Z2-7-]+)</code>", page).group(1)
+    u2 = Client(w)
+    st, h, _ = u2.req("POST", "/login", {"email": "al@example.com", "password": new2})
+    assert h["Location"] == "/ack" and "Reason: audit 2" in u2.req("GET", "/ack")[2]
+    u2.post("/ack", {"step": "ack", "understand": "yes"})
+    u2.post("/ack", {"step": "password", "password": "mine again mine!", "password2": "mine again mine!"})
+    assert u2.req("GET", "/me")[0] == "200 OK"
+    u.cookie = ""
+    u.req("POST", "/login", {"email": "al@example.com", "password": "mine again mine!"})
     # disable: the user's live session stops at once
     adm.post("/admin/users", {"action": "disable", "target": uid, "reason": "quit"})
     st, h, _ = u.req("GET", "/me")
     assert st.startswith("303") and h["Location"] == "/login"
     _, _, page = adm.req("GET", "/admin/audit")
     assert "Chain intact" in page and "force_open.start" in page and "account.disable" in page
+    assert "force_open.ack" in page and "force_open.email" in page and "password.set_after_force_open" in page
+
+
+def test_pullback_notice_from_device_api_stays_until_dismissed(app):
+    w, code = app
+    adm = Client(w)
+    adm.req("POST", "/register", {"email": "boss@example.com", "password": PW, "password2": PW, "setup_code": code,
+                                  "company": "Acme"})
+    _, _, page = adm.post("/admin/computers", {"action": "add", "name": "air2017"})
+    tok = re.search(r"\(shown once\): <code>([\w-]+)</code>", page).group(1)
+    dev = Client(w)
+    st, _, _ = dev.req("POST", "/api/v1/devices/air2017/notice", {"kind": "pullback_blocked", "text": "x"},
+                       {"HTTP_AUTHORIZATION": "Bearer wrong"}, as_json=True)
+    assert st == "401 Unauthorized"
+    st, _, body = dev.req("POST", "/api/v1/devices/air2017/notice",
+                          {"kind": "pullback_blocked", "text": "HavnVard could not put back 2 item(s) into /srv/ro <b>"},
+                          {"HTTP_AUTHORIZATION": f"Bearer {tok}"}, as_json=True)
+    nid = json.loads(body)["notice_id"]
+    for _ in range(2):                                                    # stays across page loads
+        page = adm.req("GET", "/me")[2]
+        assert "could not put back 2 item(s) into /srv/ro &lt;b&gt;" in page and "Dismiss" in page
+    assert "could not put back" in adm.req("GET", "/admin/computers")[2]
+    adm.post("/notice/dismiss", {"notice": nid})
+    assert "could not put back" not in adm.req("GET", "/me")[2]
 
 
 def test_device_checkin_api_and_schedules_page(app):

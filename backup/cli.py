@@ -32,6 +32,13 @@ def build_parser() -> argparse.ArgumentParser:
     ha.add_argument("device")
     ha.add_argument("--store-key-file", required=True, help="file holding the store key from the recovery kit")
     ha.add_argument("--confirm", metavar="TEXT", help='exactly "ADD STORE KEY TO DEVICE"')
+    hf = hub.add_parser("force-open", help="admin: open a user's files by resetting their password (new random "
+                        "password shown once; the user must read a notice at next login; emailed; audited)")
+    hf.add_argument("user_email")
+    hf.add_argument("--admin", required=True, metavar="EMAIL", help="your administrator account")
+    hf.add_argument("--admin-password-file", help="file holding your admin password (default: asked)")
+    hf.add_argument("--reason", required=True, help="the user will see this, word for word")
+    hf.add_argument("--confirm", metavar="EMAIL", help="type the user's email again")
     hg = hub.add_parser("diskguard", help="stop/start the hub on low disk (run by its timer)")
     hg.add_argument("--stop-gb", type=int)
     hg.add_argument("--start-gb", type=int)
@@ -173,6 +180,8 @@ def _dispatch(a: argparse.Namespace) -> int:
                 print(f'adds a key to {a.device}\'s repository (nothing else changes); pass --confirm "{want}"')
                 return config.PROBLEM_EXIT
             print(f"{a.device}: store key {adopt_repo(restic_bin(), drill._env_for(a.device), read_secret(Path(a.store_key_file).expanduser()), Accounts())}")
+        elif a.hub_cmd == "force-open":
+            return _force_open_cli(a)
         else:
             return hub.diskguard(a.stop_gb, a.start_gb)
         return 0
@@ -228,6 +237,32 @@ def _dispatch(a: argparse.Namespace) -> int:
         return archive.forget_dated(a.device, a.date, a.owner_key, a.cmd == "forget-after", a.include_archive,
                                     a.confirm)
     return drill.drill(a.device, a.sample, a.seed, a.scratch)
+
+
+def _force_open_cli(a: argparse.Namespace) -> int:
+    import getpass
+    from .accounts import Accounts
+    from .util import read_secret
+    if (a.confirm or "").strip().lower() != a.user_email.strip().lower():
+        print(f"force-open resets {a.user_email}'s password and opens all their files; pass --confirm {a.user_email}")
+        return config.PROBLEM_EXIT
+    accts = Accounts()
+    pw = read_secret(Path(a.admin_password_file).expanduser()) if a.admin_password_file else \
+        getpass.getpass(f"password for administrator {a.admin}: ")
+    adm = accts.login(a.admin, pw, kind="admin")
+    accts.logout(adm["token"])
+    if adm["scope"] != "full" or adm["must_ack"]:
+        raise BackupError("this administrator account has a pending notice; log in on the hub page first")
+    users = [u for u in accts.list_accounts(kind="user") if u["email"] == a.user_email.strip().lower()]
+    if not users:
+        raise BackupError(f"no user account {a.user_email}")
+    r = accts.force_open(adm["account_id"], users[0]["id"], a.reason, a.confirm)
+    print(f"force-open of {r['user_email']} started and logged.")
+    print(f"New password (shown once, not kept): {r['new_password']}")
+    print(f"Email to the user: {r['email_status']}" + ("" if r["email_status"] == "sent" else " - tell them yourself"))
+    print("At their next login (old password or the new one) they first read that you reset their password and "
+          "accessed all their files, and why; then they set their own.")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:

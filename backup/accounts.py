@@ -11,8 +11,11 @@ PAF rulings 20261113-14 this module enforces:
   primary user, files an admin released to them. A folder marked shared is owned by the PC's administrator (PAF
   20261114: "nobody owns a shared folder; the administrator of that PC owns it").
 * Disable: every session revoked at once, files untouched.
-* Force-open: the admin opens a user's files only by forcing a password reset; the user must acknowledge a warning at
-  next login. No admin call clears that flag; every step is in the append-only, hash-chained audit log.
+* Force-open: the admin opens a user's files only by forcing a password reset. A new random password is generated and
+  shown to the admin once; the user's OLD password then reaches only a mandatory notice ("Your administrator X reset
+  your password on DATE and accessed all your files. Reason: R"), which only the user can acknowledge; then the user
+  is told the generated password and must set their own. The user is emailed (status audited). No admin call clears
+  the notice; every step is in the append-only, hash-chained audit log.
 * Login passwords never encrypt data: forgetting one loses nothing.
 
 Storage: one SQLite file on the hub (standard library; the backup half needs no PostgreSQL). Nothing here deletes a
@@ -20,6 +23,7 @@ file or a backup; account rows are never deleted either (disable, not delete).
 """
 from __future__ import annotations
 
+import base64
 import datetime as dt
 import hashlib
 import hmac
@@ -38,6 +42,7 @@ SETUP_CODE_TTL = dt.timedelta(hours=1)
 INVITE_TTL = dt.timedelta(days=7)
 FORCE_OPEN_WINDOW = dt.timedelta(hours=24)
 WARNING = "Your administrator reset your password, which means someone may have looked at your files."
+NOTICE = ("Your administrator {admin} reset your password on {when} and accessed all your files. Reason: {reason}")
 COMMON = {"password1234", "123456789012", "qwertyuiopas", "passwordpassword", "letmein12345", "iloveyou1234"}
 _WORDS = ("amber anchor apple arrow aspen badge birch bison blade bloom brook cabin cedar chalk cliff cloud comet coral "
           "crane delta dune eagle ember fern field flint frost glade grain grove harbor hazel heron ivory jade kayak "
@@ -54,6 +59,8 @@ CREATE TABLE IF NOT EXISTS account (id INTEGER PRIMARY KEY, company_id INTEGER N
     created_at TEXT NOT NULL, disabled_at TEXT, disabled_reason TEXT, UNIQUE (company_id, kind, email));
 CREATE TABLE IF NOT EXISTS session (id INTEGER PRIMARY KEY, account_id INTEGER NOT NULL REFERENCES account(id),
     token_hash TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, last_seen_at TEXT, revoked_at TEXT);
+CREATE TABLE IF NOT EXISTS notice (id INTEGER PRIMARY KEY, device_id INTEGER NOT NULL REFERENCES device(id),
+    kind TEXT NOT NULL, text TEXT NOT NULL, created_at TEXT NOT NULL, dismissed_at TEXT, dismissed_by INTEGER);
 CREATE TABLE IF NOT EXISTS setup_code (id INTEGER PRIMARY KEY, code_hash TEXT NOT NULL, expires_at TEXT NOT NULL,
     used_at TEXT);
 CREATE TABLE IF NOT EXISTS invite (id INTEGER PRIMARY KEY, company_id INTEGER NOT NULL, email TEXT NOT NULL,
@@ -77,6 +84,18 @@ CREATE TABLE IF NOT EXISTS audit (seq INTEGER PRIMARY KEY, at TEXT NOT NULL, act
 CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON audit BEGIN SELECT RAISE(ABORT, 'audit is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit BEGIN SELECT RAISE(ABORT, 'audit is append-only'); END;
 """
+
+# Columns added after the first 3.3.0 tables (never released, but a test hub may hold the older shape). Additive only.
+#   account.old_pw_hash   the user's password hash from BEFORE a force-open; it reaches ONLY the notice, never a session
+#                         with access, and is wiped when the user sets their own new password.
+#   account.must_set_password  after a force-open the user must choose a password the administrator does not know.
+#   account.sealed_pw     the generated password, sealed with the hub's own key file (never in clear in the database),
+#                         so the user can be told it after acknowledging; wiped with old_pw_hash.
+#   session.scope         'full' or 'notice' (a login with the OLD password: the notice and nothing else, ever).
+#   force_open.email_status   sent / not configured / failed: ERROR - shown to the admin, never silent.
+_COLUMNS = (("account", "old_pw_hash", "TEXT"), ("account", "must_set_password", "INTEGER NOT NULL DEFAULT 0"),
+            ("account", "sealed_pw", "TEXT"), ("session", "scope", "TEXT NOT NULL DEFAULT 'full'"),
+            ("force_open", "email_status", "TEXT"))
 
 
 def _now() -> dt.datetime:
@@ -121,6 +140,52 @@ def _under(path: str, prefix: str) -> bool:
     return f == "/" or path == f or path.startswith(f + "/")
 
 
+def generated_password() -> str:
+    """24 base32 characters (120 bits) in groups of four: strong and easy to read out or type."""
+    raw = base64.b32encode(secrets.token_bytes(15)).decode()
+    return "-".join(raw[i:i + 4] for i in range(0, 24, 4))
+
+
+def _hub_key(path: Path) -> bytes:
+    """The hub's sealing key (32 random bytes, mode 600, next to accounts.db; created on first use). It never leaves
+    the hub and is not in the database, so a copy of accounts.db alone does not reveal a sealed password."""
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return bytes.fromhex(path.read_text().strip())
+    with os.fdopen(fd, "w") as f:
+        k = secrets.token_bytes(32)
+        f.write(k.hex() + "\n")
+    return k
+
+
+def _stream(key: bytes, nonce: bytes, n: int) -> bytes:
+    ek = hmac.new(key, b"havnvard-seal-enc|" + nonce, hashlib.sha256).digest()
+    out = b"".join(hmac.new(ek, i.to_bytes(4, "big"), hashlib.sha256).digest() for i in range(n // 32 + 1))
+    return out[:n]
+
+
+def seal(key_file: Path, text: str) -> str:
+    """Encrypt-then-MAC with HMAC-SHA256 only (standard library; a fresh random nonce every time)."""
+    key, nonce, pt = _hub_key(key_file), secrets.token_bytes(16), text.encode()
+    ct = bytes(a ^ b for a, b in zip(pt, _stream(key, nonce, len(pt))))
+    tag = hmac.new(hmac.new(key, b"havnvard-seal-mac", hashlib.sha256).digest(), nonce + ct, hashlib.sha256).hexdigest()
+    return f"v1${nonce.hex()}${ct.hex()}${tag}"
+
+
+def unseal(key_file: Path, sealed: str) -> str:
+    try:
+        v, nonce_h, ct_h, tag = sealed.split("$")
+        nonce, ct = bytes.fromhex(nonce_h), bytes.fromhex(ct_h)
+    except ValueError as e:
+        raise BackupError("sealed password is damaged") from e
+    key = _hub_key(key_file)
+    want = hmac.new(hmac.new(key, b"havnvard-seal-mac", hashlib.sha256).digest(), nonce + ct, hashlib.sha256).hexdigest()
+    if v != "v1" or not hmac.compare_digest(want, tag):
+        raise BackupError("sealed password does not match this hub's key (key file replaced?)")
+    return bytes(a ^ b for a, b in zip(ct, _stream(key, nonce, len(ct)))).decode()
+
+
 def default_path() -> Path:
     return config.state_dir() / "accounts.db"
 
@@ -133,6 +198,10 @@ class Accounts:
         con = self._con()
         try:
             con.executescript(SCHEMA)
+            for table, col, decl in _COLUMNS:
+                have = {r["name"] for r in con.execute(f"PRAGMA table_info({table})")}
+                if col not in have:
+                    con.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
         finally:
             con.close()
         if new:
@@ -267,9 +336,18 @@ class Accounts:
 
     # ---------- login / sessions ----------
     def login(self, email: str, password: str, kind: str = "user") -> dict:
+        """Current password -> a session (gated by the notice while one is pending). After a force-open, the user's
+        OLD password -> a 'notice' session: the administrator's notice and the set-your-own-password step, and
+        nothing else ever. Any other password -> refused."""
         email = email.strip().lower()
         acc = self._one("SELECT * FROM account WHERE email=? AND kind=?", (email, kind))
-        if not acc or not check_password(password, acc["pw_hash"]):
+        scope = None
+        if acc and check_password(password, acc["pw_hash"]):
+            scope = "full"
+        elif acc and acc["old_pw_hash"] and (acc["must_ack_force_open"] or acc["must_set_password"]) \
+                and check_password(password, acc["old_pw_hash"]):
+            scope = "notice"
+        if scope is None:
             self._log(acc["id"] if acc else None, "login.fail", email, kind=kind)
             raise BackupError("wrong email or password")
         if acc["status"] != "active":
@@ -278,13 +356,14 @@ class Accounts:
         token = secrets.token_urlsafe(32)
         con = self._tx()
         try:
-            con.execute("INSERT INTO session(account_id, token_hash, created_at) VALUES (?,?,?)",
-                        (acc["id"], _h(token), _iso(_now())))
-            self._audit(con, acc["id"], "login.ok", email, kind=kind)
+            con.execute("INSERT INTO session(account_id, token_hash, created_at, scope) VALUES (?,?,?,?)",
+                        (acc["id"], _h(token), _iso(_now()), scope))
+            self._audit(con, acc["id"], "login.ok" if scope == "full" else "login.old_password_notice", email, kind=kind)
             con.execute("COMMIT")
         finally:
             con.close()
-        return {"token": token, "account_id": acc["id"], "kind": kind, "must_ack": bool(acc["must_ack_force_open"])}
+        pending = bool(acc["must_ack_force_open"] or acc["must_set_password"])
+        return {"token": token, "account_id": acc["id"], "kind": kind, "must_ack": pending, "scope": scope}
 
     def _log(self, actor, action, target="", **detail) -> None:
         con = self._tx()
@@ -298,7 +377,9 @@ class Accounts:
         """The live session for a token: checked on EVERY request (no cache), so a disable is instant."""
         if not token:
             return None
-        row = self._one("SELECT s.account_id, a.kind, a.email, a.company_id, a.must_ack_force_open FROM session s "
+        row = self._one("SELECT s.account_id, s.scope, a.kind, a.email, a.company_id, a.must_set_password, "
+                        "(a.must_ack_force_open OR a.must_set_password OR s.scope <> 'full') AS must_ack_force_open, "
+                        "a.must_ack_force_open AS notice_unacked FROM session s "
                         "JOIN account a ON a.id = s.account_id WHERE s.token_hash=? AND s.revoked_at IS NULL "
                         "AND a.status='active'", (_h(token),))
         return row
@@ -321,13 +402,15 @@ class Accounts:
 
     # ---------- accounts ----------
     def account(self, aid: int) -> dict | None:
-        return self._one("SELECT id, company_id, kind, email, status, must_ack_force_open, created_at, disabled_at, "
+        return self._one("SELECT id, company_id, kind, email, status, must_ack_force_open, must_set_password, "
+                         "created_at, disabled_at, "
                          "disabled_reason FROM account WHERE id=?", (aid,))
 
     def list_accounts(self, kind: str | None = None) -> list[dict]:
         con = self._con()
         try:
-            q = "SELECT id, kind, email, status, must_ack_force_open, created_at, disabled_at FROM account"
+            q = ("SELECT id, kind, email, status, must_ack_force_open, must_set_password, created_at, disabled_at "
+                 "FROM account")
             rows = con.execute(q + (" WHERE kind=?" if kind else "") + " ORDER BY id", (kind,) if kind else ())
             return [dict(r) for r in rows]
         finally:
@@ -373,12 +456,22 @@ class Accounts:
         finally:
             con.close()
 
-    # ---------- force-open (PAF ruling) ----------
-    def force_open(self, actor: int, target: int, reason: str, typed_email: str) -> str:
-        """Admin opens a user's files by forcing a password reset. Returns the reset code to hand to the user."""
+    # ---------- force-open (PAF rulings 20261114) ----------
+    def force_open(self, actor: int, target: int, reason: str, typed_email: str, mailer=None) -> dict:
+        """The admin opens a user's files by forcing a password reset.
+
+        * A NEW random password replaces the user's login; it is returned here ONCE for the admin and is never stored
+          in clear (only its scrypt hash, plus a copy sealed with the hub's key file so the USER can be told it after
+          acknowledging; that copy is wiped when the user sets their own password).
+        * The user's OLD password hash is kept apart: it reaches the notice and nothing else.
+        * Every session of the user is revoked; the notice is mandatory; no admin call clears it.
+        * The user is emailed; the result (sent / not configured / failed: ERROR) is in the audit log and returned.
+        Returns {"new_password", "email_status", "user_email"}."""
         if not reason.strip():
             raise BackupError("give the reason (the user will see it)")
-        code = secrets.token_urlsafe(18)
+        new_pw = generated_password()
+        new_hash = hash_password(new_pw)                                   # before the lock: scrypt is slow on purpose
+        sealed = seal(self.key_path(), new_pw)
         con = self._tx()
         try:
             adm = self._admin_of(con, actor)
@@ -388,30 +481,62 @@ class Accounts:
             if typed_email.strip().lower() != t["email"]:
                 raise BackupError("type the user's email exactly to confirm")
             now = _now()
-            con.execute("UPDATE account SET pw_hash=?, must_ack_force_open=1 WHERE id=?",
-                        ("locked$" + secrets.token_hex(16), target))
+            pending = bool(t["must_ack_force_open"] or t["must_set_password"])
+            # a second force-open before the user came back: keep the user's REAL old password, not our last one
+            old = t["old_pw_hash"] if (pending and t["old_pw_hash"]) else t["pw_hash"]
+            con.execute("UPDATE account SET pw_hash=?, old_pw_hash=?, sealed_pw=?, must_ack_force_open=1, "
+                        "must_set_password=1 WHERE id=?", (new_hash, old, sealed, target))
             n = con.execute("UPDATE session SET revoked_at=? WHERE account_id=? AND revoked_at IS NULL",
                             (_iso(now), target)).rowcount
-            con.execute("INSERT INTO reset(account_id, code_hash, created_by, created_at) VALUES (?,?,?,?)",
-                        (target, _h(code), actor, _iso(now)))
-            con.execute("INSERT INTO force_open(admin_id, user_id, reason, started_at, ends_at) VALUES (?,?,?,?,?)",
-                        (actor, target, reason.strip()[:500], _iso(now), _iso(now + FORCE_OPEN_WINDOW)))
+            fid = con.execute("INSERT INTO force_open(admin_id, user_id, reason, started_at, ends_at) VALUES (?,?,?,?,?)",
+                              (actor, target, reason.strip()[:500], _iso(now), _iso(now + FORCE_OPEN_WINDOW))).lastrowid
             self._audit(con, actor, "force_open.start", t["email"], admin=adm["email"], reason=reason.strip()[:500],
-                        sessions_revoked=n, window_h=FORCE_OPEN_WINDOW.total_seconds() / 3600)
+                        sessions_revoked=n, window_h=FORCE_OPEN_WINDOW.total_seconds() / 3600,
+                        password="replaced by a generated one (shown to the admin once)")
             con.execute("COMMIT")
         except BaseException:
             con.execute("ROLLBACK")
             raise
         finally:
             con.close()
-        return code
+        # the email goes out AFTER the commit (never claim a reset that did not happen); its outcome is audited
+        when = _iso(now)
+        body = (NOTICE.format(admin=adm["email"], when=when + " UTC", reason=reason.strip()[:500]) + "\n\n"
+                "Your old password and the new one your administrator was given both lead to this notice the next time "
+                "you log in. After you acknowledge it you will choose a new password of your own, which your "
+                "administrator will not know.\n\nNothing was deleted. This message was sent by HavnVard.")
+        if mailer is None:
+            from .mail import send as mailer
+        status = mailer(t["email"], "HavnVard: your administrator reset your password and accessed your files", body)
+        con = self._tx()
+        try:
+            con.execute("UPDATE force_open SET email_status=? WHERE id=?", (status, fid))
+            self._audit(con, actor, "force_open.email", t["email"], force_open_id=fid, email_status=status)
+            con.execute("COMMIT")
+        except BaseException:
+            con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+        return {"new_password": new_pw, "email_status": status, "user_email": t["email"]}
+
+    def key_path(self) -> Path:
+        return self.path.with_name(self.path.name + ".key")
+
+    def _pending(self, con, aid: int) -> bool:
+        a = con.execute("SELECT must_ack_force_open, must_set_password FROM account WHERE id=?", (aid,)).fetchone()
+        return bool(a and (a["must_ack_force_open"] or a["must_set_password"]))
 
     def admin_reset(self, actor: int, target: int) -> str:
-        """An ordinary 'forgot my password' reset by the admin (no force-open, no file access)."""
+        """An ordinary 'forgot my password' reset by the admin (no force-open, no file access). Refused while a
+        force-open notice is pending: a reset code must never be a way around the notice."""
         code = secrets.token_urlsafe(18)
         con = self._tx()
         try:
             self._admin_of(con, actor)
+            if self._pending(con, target):
+                raise BackupError("this user has a force-open notice pending; they log in with their old password or "
+                                  "the generated one, acknowledge, and set their own")
             con.execute("INSERT INTO reset(account_id, code_hash, created_by, created_at) VALUES (?,?,?,?)",
                         (target, _h(code), actor, _iso(_now())))
             self._audit(con, actor, "password.reset_issued", str(target))
@@ -431,6 +556,9 @@ class Accounts:
             r = con.execute("SELECT * FROM reset WHERE code_hash=? AND used_at IS NULL", (_h(code.strip()),)).fetchone()
             if not r:
                 raise BackupError("this reset code is used or wrong")
+            if self._pending(con, r["account_id"]):
+                raise BackupError("a force-open notice is pending on this account; log in with your old password to "
+                                  "read it")
             con.execute("UPDATE reset SET used_at=? WHERE id=?", (_iso(_now()), r["id"]))
             con.execute("UPDATE account SET pw_hash=? WHERE id=?", (pw_hash, r["account_id"]))
             token = secrets.token_urlsafe(32)
@@ -444,17 +572,35 @@ class Accounts:
             raise
         finally:
             con.close()
-        return {"token": token, "account_id": a["id"], "must_ack": bool(a["must_ack_force_open"])}
+        return {"token": token, "account_id": a["id"], "must_ack": False}
 
-    def ack_warning(self, account_id: int, preview: bool = False) -> dict:
-        """The warning the user must acknowledge. preview=True only reads it. Only the user's own call clears it."""
-        con = self._tx()
+    def notice(self, account_id: int) -> dict:
+        """The force-open notice for this user (read only): text, admin, reason, when, and whether it is still
+        unacknowledged / whether the user still has to set their own password."""
+        con = self._con()
         try:
+            a = con.execute("SELECT must_ack_force_open, must_set_password FROM account WHERE id=?",
+                            (account_id,)).fetchone()
             fo = con.execute("SELECT f.*, a.email AS admin_email FROM force_open f JOIN account a ON a.id=f.admin_id "
                              "WHERE f.user_id=? ORDER BY f.id DESC LIMIT 1", (account_id,)).fetchone()
-            w = {"text": WARNING, "admin": fo["admin_email"] if fo else "", "reason": fo["reason"] if fo else "",
-                 "at": fo["started_at"] if fo else ""}
-            if not preview:
+        finally:
+            con.close()
+        admin, reason, at = (fo["admin_email"], fo["reason"], fo["started_at"]) if fo else ("", "", "")
+        return {"text": NOTICE.format(admin=admin, when=at + " UTC", reason=reason) if fo else "", "warning": WARNING,
+                "admin": admin, "reason": reason, "at": at, "unacked": bool(a and a["must_ack_force_open"]),
+                "must_set_password": bool(a and a["must_set_password"])}
+
+    def ack_warning(self, account_id: int, preview: bool = False) -> dict:
+        """The user's own acknowledgement (audited). preview=True only reads. No admin call reaches this flag.
+        After acknowledging, the result carries the generated password (unsealed) so the user is told it."""
+        w = self.notice(account_id)
+        if preview:
+            return w
+        con = self._tx()
+        try:
+            a = con.execute("SELECT must_ack_force_open, sealed_pw FROM account WHERE id=?", (account_id,)).fetchone()
+            fo = con.execute("SELECT id FROM force_open WHERE user_id=? ORDER BY id DESC LIMIT 1", (account_id,)).fetchone()
+            if a and a["must_ack_force_open"]:
                 con.execute("UPDATE account SET must_ack_force_open=0 WHERE id=?", (account_id,))
                 if fo:
                     con.execute("UPDATE force_open SET acked_at=? WHERE id=?", (_iso(_now()), fo["id"]))
@@ -465,7 +611,50 @@ class Accounts:
             raise
         finally:
             con.close()
+        w["unacked"] = False
+        w["new_password"] = self.told_password(account_id)
         return w
+
+    def told_password(self, account_id: int) -> str | None:
+        """The generated password, for the user, only after they acknowledged and until they set their own."""
+        a = self._one("SELECT must_ack_force_open, must_set_password, sealed_pw FROM account WHERE id=?", (account_id,))
+        if not a or a["must_ack_force_open"] or not a["must_set_password"] or not a["sealed_pw"]:
+            return None
+        return unseal(self.key_path(), a["sealed_pw"])
+
+    def set_own_password(self, account_id: int, new_password: str) -> dict:
+        """After a force-open + acknowledgement: the user chooses a password the admin does not know. Every session is
+        revoked (the old-password 'notice' session included), the old password hash and the sealed copy are wiped,
+        and a fresh full session is returned."""
+        password_rule(new_password)
+        pw_hash = hash_password(new_password)
+        con = self._tx()
+        try:
+            a = con.execute("SELECT * FROM account WHERE id=?", (account_id,)).fetchone()
+            if not a or a["status"] != "active":
+                raise BackupError("please log in")
+            if a["must_ack_force_open"]:
+                raise BackupError("acknowledge the notice first")
+            if not a["must_set_password"]:
+                raise BackupError("nothing to do: change your password from your security page")
+            if check_password(new_password, a["pw_hash"]):
+                raise BackupError("choose a password of your own: your administrator knows this one")
+            now = _iso(_now())
+            con.execute("UPDATE account SET pw_hash=?, old_pw_hash=NULL, sealed_pw=NULL, must_set_password=0 WHERE id=?",
+                        (pw_hash, account_id))
+            n = con.execute("UPDATE session SET revoked_at=? WHERE account_id=? AND revoked_at IS NULL",
+                            (now, account_id)).rowcount
+            token = secrets.token_urlsafe(32)
+            con.execute("INSERT INTO session(account_id, token_hash, created_at) VALUES (?,?,?)",
+                        (account_id, _h(token), now))
+            self._audit(con, account_id, "password.set_after_force_open", a["email"], sessions_revoked=n)
+            con.execute("COMMIT")
+        except BaseException:
+            con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+        return {"token": token, "account_id": account_id}
 
     def force_open_active(self, admin_id: int, user_id: int) -> bool:
         return bool(self._one("SELECT 1 AS x FROM force_open WHERE admin_id=? AND user_id=? AND ends_at>?",
@@ -585,6 +774,59 @@ class Accounts:
 
     def filter_paths(self, account_id: int, device: str, paths: list[str]) -> list[str]:
         return [p for p in paths if self.can_read(account_id, device, p)]
+
+    # ---------- notices on the hub page (a pullback that could not place files, ...) ----------
+    def add_notice(self, device: str, kind: str, text: str) -> int:
+        """Called by the device API (device token already checked). Stays on the page until someone dismisses it."""
+        con = self._tx()
+        try:
+            d = con.execute("SELECT id FROM device WHERE name=?", (device,)).fetchone()
+            if not d:
+                raise BackupError(f"no device {device}")
+            nid = con.execute("INSERT INTO notice(device_id, kind, text, created_at) VALUES (?,?,?,?)",
+                              (d["id"], kind[:40], text[:8000], _iso(_now()))).lastrowid
+            self._audit(con, None, "notice.add", device, kind=kind[:40], notice_id=nid)
+            con.execute("COMMIT")
+        except BaseException:
+            con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+        return nid
+
+    def open_notices(self, account_id: int) -> list[dict]:
+        """Undismissed notices this account may see: an admin sees every computer's; a user, their computers'
+        (primary user or PC administrator)."""
+        acc = self.account(account_id)
+        if not acc:
+            return []
+        con = self._con()
+        try:
+            q = ("SELECT n.id, n.kind, n.text, n.created_at, d.name AS device FROM notice n JOIN device d ON d.id=n.device_id "
+                 "WHERE n.dismissed_at IS NULL")
+            if acc["kind"] == "admin":
+                rows = con.execute(q + " AND d.company_id=? ORDER BY n.id", (acc["company_id"],))
+            else:
+                rows = con.execute(q + " AND (d.primary_user_id=? OR d.pc_admin_id=?) ORDER BY n.id",
+                                   (account_id, account_id))
+            return [dict(r) for r in rows]
+        finally:
+            con.close()
+
+    def dismiss_notice(self, actor: int, notice_id: int) -> None:
+        if not any(n["id"] == notice_id for n in self.open_notices(actor)):
+            raise BackupError("no such notice for you (already dismissed?)")
+        con = self._tx()
+        try:
+            con.execute("UPDATE notice SET dismissed_at=?, dismissed_by=? WHERE id=? AND dismissed_at IS NULL",
+                        (_iso(_now()), actor, notice_id))
+            self._audit(con, actor, "notice.dismiss", str(notice_id))
+            con.execute("COMMIT")
+        except BaseException:
+            con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
 
     # ---------- audit ----------
     def audit_rows(self, actor: int | None = None) -> list[dict]:
