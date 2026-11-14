@@ -11,5 +11,12 @@ Older releases are described in `FEATURES.md` and `docs/*_RELEASE_*.md`.
   every hub repo not fully uploaded within that limit. Held repos are reported, not failed.
 - Offsite problems raise their own alert key `havnvard-offsite-stale` (`havnvard-offsite-stale-<hub>` from
   `health-relay`); it is resolved only from a readable result whose offsite checks all pass, never after a failed relay.
+- Offsite checks (names starting `offsite `) no longer decide the main key `havnvard-backup-health`
+  (`havnvard-backup-health-<hub>` from `health-relay`); they fire and resolve only the offsite key. Before, every
+  offsite problem alerted twice and held the main incident open for the whole upload backlog, so a new device-backup
+  failure in that window got no OPEN notice of its own. **Behaviour change for the 3.3.1 local `[offsite.<name>]`
+  checks too:** they now alert under `havnvard-offsite-stale` only. `health` exit code and JSON `ok`/`exit_code` are
+  unchanged (still 1 for any problem, offsite included); `health-relay` resolves the main key and exits 1 when only
+  offsite checks fail.
 - Why: after a hub move, the desktop uploader kept uploading the retired hub's folder and later nothing at all, while
   `health` on the new hub stayed green because it only knew offsite targets it runs itself.
