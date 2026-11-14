@@ -61,13 +61,20 @@ def collect(now: float | None = None) -> list[tuple[str, bool, str]]:
             skip = frozenset(catalog_snapshot_ids())
             archives = set(h.get("archive_repos", []))   # 2.2.5: one-time archives (e.g. an old-laptop-2023 archive): no age limit
             mode = h.get("check_streams", "auto")
-            if mode not in (True, False, "auto"):
+            if not (isinstance(mode, bool) or mode == "auto"):   # `mode in (True, False, "auto")` let 0 and 1 through
                 res.append(("health config", False, f'check_streams = {mode!r}: use true, false or "auto"'))
                 mode = "auto"
             res.extend(_device_config_problems(h, {r.name for r in repos}))
             for r in repos:
                 note = ""
+                bad_cfg = False
                 if r.name not in archives and mode is not False:
+                    try:   # a bad per-device setting is a config problem, not "cannot read the backups"
+                        _device_settings(h, r.name, stale_h)
+                    except BackupError as e:
+                        res.append(("health config", False, str(e)))
+                        bad_cfg = True
+                if r.name not in archives and mode is not False and not bad_cfg:
                     if mode is True or (hub_password_dir() / f"{r.name}.pass").is_file():
                         try:
                             res.append(_device_check(r, r.name, h, stale_h, now))

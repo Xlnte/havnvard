@@ -168,6 +168,11 @@ stale_hours = 48          # this device only
 [health.devices.server-1]
 retired_streams = ["server-1|/srv/old-app"]   # "host|path[|path...]": streams that stopped on purpose; counted, not judged
 ```
+**Copy lag:** a device whose backups reach the hub only through a daily copy (for example app streams that a server
+backs up locally and a scheduled `restic copy` brings to the hub) keeps its original snapshot times, so a stream backed
+up just after the copy reaches almost 48 h before the next one lands. Give that device `stale_hours` above 24 h plus the
+copy interval (for example 52), not the 26 h default.
+
 A stale device raises its own alert key, `havnvard-device-stale-<repo>` (also through `health-relay`), resolved by the
 first run that finds every stream fresh; alertlib keeps it to one notice per incident. A repository the hub cannot read
 (no password with `check_streams = true`, restic missing or failing) is never "fresh": it is a `stream check <repo>`
