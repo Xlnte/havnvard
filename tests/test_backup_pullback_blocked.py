@@ -225,6 +225,44 @@ def test_find_session_picks_the_active_local_graphical_one():
     assert notify.find_session(lambda c: "") is None
 
 
+def test_find_session_skips_the_login_screen():
+    """Live trigkey 20261114: nobody logged in at the desk, only gdm's greeter (Class=greeter) - that is no desktop."""
+    def run(cmd):
+        if cmd[:2] == ["loginctl", "show-session"]:
+            return "Type=x11\nActive=yes\nRemote=no\nName=gdm\nUser=120\nClass=greeter\nDisplay=:0\n"
+        return "c1 120 gdm seat0 tty1\n"
+    assert notify.find_session(run) is None
+    assert notify.find_session(run, uid=120) is None
+
+
+def test_popup_not_root_only_looks_for_its_own_session(monkeypatch):
+    """Not root: only the person running the pullback's own desktop counts; nobody else's session is ever tried."""
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setattr(notify.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(notify.shutil, "which", lambda n: "/usr/bin/zenity")
+    asked = []
+
+    def finder(uid=None):
+        asked.append(uid)
+        return None
+    r = notify.popup("T", "text", euid=1000, finder=finder, launcher=lambda *a: pytest.fail("must not launch"))
+    assert asked == [1000] and r["shown"] is False and "no graphical session" in r["how"]
+
+
+def test_session_env_survives_an_unreadable_xauthority(monkeypatch):
+    """/run/user/120/gdm/Xauthority is unreadable to others: that must never raise out of the popup path."""
+    real = notify.Path.is_file
+
+    def is_file(self):
+        if "gdm" in str(self):
+            raise PermissionError(13, "Permission denied", str(self))
+        return real(self)
+    monkeypatch.setattr(notify.Path, "is_file", is_file)
+    env = notify._session_env({"user": "gdm", "uid": 120, "type": "x11", "display": ":0", "runtime_dir": "/run/user/120"})
+    assert env["DISPLAY"] == ":0" and "XAUTHORITY" not in env
+
+
 def test_popup_launches_detached_and_reports(monkeypatch):
     monkeypatch.setenv("DISPLAY", ":0")
     monkeypatch.setattr(notify.platform, "system", lambda: "Linux")
