@@ -205,7 +205,7 @@ def _verify_suspect(target, host, suspect_path, run_id, batch_idx):
             r = target.scp_put(local_list, remote_list)
             if r.returncode != 0:
                 return f"UNVERIFIED (could not scp isolated path list: {r.stderr})"
-            r = target.ssh(f"sh {remote_script} {target.scratch_dir} {verify_name}")
+            r = target.ssh(f"sh {remote_script} {target.scratch_dir} {verify_name} {core.RACY_MARGIN_S}")
             _remote_cleanup(target, [remote_list, f"{target.scratch_dir}/{verify_name}.hashes",
                                      f"{target.scratch_dir}/{verify_name}.hasherrs"])
         if r.returncode == 124:
@@ -469,6 +469,36 @@ class RunCtx:
     retries: int = 0
     batch_no: int = 0
     progress: Progress = field(default_factory=Progress)
+    skew_max_abs: int | None = None                    # INFRA-621 F3: largest |hashing-host clock - driver clock| seen
+    skew_warn_batches: int = 0                         # batches with |skew| > core.CLOCK_SKEW_WARN_S
+
+
+def _record_skew(ctx: RunCtx, name: str, skew: int | None):
+    """INFRA-621 F3: journal the hashing host's clock skew for one batch; WARN above core.CLOCK_SKEW_WARN_S.
+    Never fails the run: skew only makes the server-side racy term re-hash recent files, it cannot make it
+    accept a stale digest that the script's own same-clock check would refuse."""
+    label = name.split("_", 2)[2] if name.count("_") >= 2 else name
+    if skew is None:
+        _log(ctx.host, ctx.run_id, "clock-skew", f"batch {label} ({name}) skew=unknown (no now= in the #DONE trailer)")
+        return
+    ctx.skew_max_abs = max(ctx.skew_max_abs or 0, abs(skew))
+    _log(ctx.host, ctx.run_id, "clock-skew", f"batch {label} ({name}) skew={skew:+d} s (hashing host minus driver)")
+    if core.skew_is_alarming(skew):
+        ctx.skew_warn_batches += 1
+        _log(ctx.host, ctx.run_id, "clock-skew",
+             f"WARN batch {label}: |skew| {abs(skew)} s > {core.CLOCK_SKEW_WARN_S} s; check NTP on {ctx.host} and on this "
+             f"machine. Files written within skew + {core.RACY_MARGIN_S} s of their hash are re-hashed every run.")
+
+
+def _skew_note(ctx: RunCtx) -> str:
+    """Run-row note (raw_stdout) for the clock skew seen across this run's batches; '' if no batch reported it."""
+    if ctx.skew_max_abs is None:
+        return ""
+    note = f"clock skew max |skew|={ctx.skew_max_abs} s"
+    if ctx.skew_warn_batches:
+        note += (f" WARN: {ctx.skew_warn_batches} batch(es) above {core.CLOCK_SKEW_WARN_S} s (hashing host vs driver clock; "
+                 f"recent files are re-hashed each run until fixed)")
+    return note + "; "
 
 
 def _note(ctx: RunCtx, stage: str, msg: str):
@@ -522,7 +552,10 @@ def _run_batch(ctx: RunCtx, name: str, batch: core.Batch):
         if r.returncode != 0:
             raise BatchTransportError(f"scp_put path list rc={r.returncode}: {r.stderr[:200]}")
         timeout = core.batch_timeout(batch.h_bytes, ctx.batch_timeout_mbps)
-        r = t.ssh(f"sh {ctx.remote_script} {d} {name}", timeout_sec=timeout)
+        # INFRA-621 F2: the racy margin has ONE source, core.RACY_MARGIN_S; the script takes it as its 3rd argument.
+        # F3: the driver clock read right before the ssh is compared with the script's batch-start clock (#DONE now=).
+        t_ssh = time.time()
+        r = t.ssh(f"sh {ctx.remote_script} {d} {name} {core.RACY_MARGIN_S}", timeout_sec=timeout)
         if r.returncode != 0:
             raise BatchTransportError(f"hash_stat_batch.sh rc={r.returncode} (timeout {timeout}s): {r.stderr[:200]}")
         lh, le = os.path.join(td, "b.hashes"), os.path.join(td, "b.hasherrs")
@@ -537,6 +570,7 @@ def _run_batch(ctx: RunCtx, name: str, batch: core.Batch):
         with open(le, encoding="utf-8", errors="surrogateescape", newline="") as f:
             errs_text = f.read()
     result = core.verify_batch(batch.items, hashes_text, errs_text)
+    _record_skew(ctx, name, core.clock_skew_s(result.remote_now, t_ssh))
     return result, bound_at, [remote_list, remote_hashes, remote_errs]
 
 
@@ -832,13 +866,14 @@ def run_dedup(ctx: RunCtx, scope, excludes, limit, batch_size, batch_bytes, code
     if is_partial:                                                       # HV-REQ-14: hash only, publish nothing
         _finish_run(conn, run_id, "completed", current_stage="hashed-only (partial)", considered=considered,
                     zero_byte=zero_byte, reused=plan.reused, transport_failures=ctx.transport_failures,
-                    retries=ctx.retries, raw_stdout=f"partial (--limit {limit}): hashed only, nothing published")
+                    retries=ctx.retries,
+                    raw_stdout=f"{_skew_note(ctx)}partial (--limit {limit}): hashed only, nothing published")
         return {"published": False, "considered": considered}
 
     ctx.progress.set_stage("publishing")
     write_heartbeat(conn, "dedup", run_id, host, "publishing", note="recomputing groups from fresh digests")
     stats = _publish(ctx, scope, excludes, code_version, considered, zero_byte, plan.reused,
-                     note="publish-only (no hashing); " if publish_only else "")
+                     note=("publish-only (no hashing); " if publish_only else "") + _skew_note(ctx))
     stats.update(published=True, considered=considered)
     return stats
 

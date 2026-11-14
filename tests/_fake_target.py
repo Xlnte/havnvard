@@ -62,7 +62,7 @@ class FakeTarget(cv._RemoteHashTarget):
                     os.remove(p)
             return _cp()
         if remote_cmd.startswith("sh "):
-            _sh, script, scratch, name = shlex.split(remote_cmd)
+            _sh, script, scratch, name, *extra = shlex.split(remote_cmd)   # extra = [racy margin] (INFRA-621 F2)
             self.ssh_timeouts.append(timeout_sec)
             idx = _idx(name)
             if self.on_ssh:
@@ -79,7 +79,7 @@ class FakeTarget(cv._RemoteHashTarget):
                 with open(os.path.join(scratch, f"{name}.hasherrs"), "w", encoding="utf-8") as f:
                     f.write(e)
                 return _cp()
-            r = subprocess.run(["sh", script, scratch, name], capture_output=True, text=True, timeout=120)
+            r = subprocess.run(["sh", script, scratch, name, *extra], capture_output=True, text=True, timeout=120)
             return _cp(r.returncode, r.stderr)
         return _cp()
 

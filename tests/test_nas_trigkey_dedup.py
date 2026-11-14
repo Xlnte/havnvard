@@ -1127,3 +1127,75 @@ def test_path_prefix_is_an_alias_of_path():
     assert p.parse_args(["--host", "nas-1", "--path-prefix", "/share/x"]).path == "/share/x"
     assert p.parse_args(["--host", "nas-1", "--path", "/share/x"]).path == "/share/x"
     assert p.parse_args(["--host", "nas-1"]).dry_run is False and p.parse_args(["--host", "nas-1"]).publish_only is False
+
+
+# ===========================================================================
+# INFRA-621 F2 (one racy margin) and F3 (driver/NAS clock skew)
+# ===========================================================================
+
+def _raw(env, rid):
+    return env.q("SELECT raw_stdout FROM diskaudit.dedup_runs WHERE dedup_run_id=%s", (rid,))[0][0] or ""
+
+
+def test_driver_passes_core_racy_margin_to_the_script(env):
+    """F2: the script's margin is core.RACY_MARGIN_S, passed on every hash call (single source)."""
+    env.mk_add("a", X)
+    env.mk_add("b", X)
+    _rid, status = env.run()
+    assert status == "completed"
+    calls = [d for op, d in env.target.log if op == "ssh" and d.startswith("sh ")]
+    assert calls and all(c.split()[-1] == str(core.RACY_MARGIN_S) and len(c.split()) == 5 for c in calls), calls
+
+
+def test_raising_core_racy_margin_reaches_the_script(env, monkeypatch):
+    """F2: raise the ONE value and the script refuses a 10 s old file (UNSTABLE) -- no second place to edit."""
+    mt = int(time.time()) - 10
+    a, b = env.mk_add("a", X, fs_mtime=mt), env.mk_add("b", X, fs_mtime=mt)
+    monkeypatch.setattr(core, "RACY_MARGIN_S", 30)
+    rid, status = env.run()
+    assert status == "completed"
+    assert env.items(rid).get(a, (None, None))[1] == "UNSTABLE" and env.items(rid).get(b, (None, None))[1] == "UNSTABLE"
+    assert env.snap_groups(rid) == {}
+
+
+def _with_now(responder, offset):
+    def r(name, items):
+        h, e = responder(name, items)
+        return h.rstrip("\n") + f"|now={int(time.time()) + offset}\n", e
+    return r
+
+
+def test_large_clock_skew_is_logged_and_noted_on_the_run(env, capsys):
+    """F3: the NAS clock 1 h ahead of the driver. Every batch logs its skew; |skew| > 60 s adds a WARN to the
+    journal and a note on the run row. It never fails the run (skew can only cause re-hashing, never a wrong reuse)."""
+    a, b = env.mk_add("a", X), env.mk_add("b", X)
+    st = {p: (sha(X), len(X), MTIME, os.stat(p).st_ino, os.stat(p).st_dev, 1) for p in (a, b)}
+    env.target.responder = _with_now(scripted(st), 3600)
+    rid, status = env.run()
+    assert status == "completed"
+    err = capsys.readouterr().err
+    assert re.search(r"clock-skew: batch 0 .*skew=\+(3599|360\d) s", err), err   # +3600 +- 1 s of rounding
+    assert "WARN" in err
+    raw = _raw(env, rid)
+    assert "WARN" in raw and re.search(r"clock skew max \|skew\|=(3599|360\d) s", raw), raw
+
+
+def test_small_clock_skew_is_logged_without_a_warning(env, capsys):
+    """F3 with the real script (same clock): skew is logged per batch, no WARN, no run note."""
+    env.mk_add("a", X)
+    env.mk_add("b", X)
+    rid, status = env.run()
+    assert status == "completed"
+    err = capsys.readouterr().err
+    m = re.search(r"clock-skew: batch 0 .*skew=([+-]\d+) s", err)
+    assert m and abs(int(m.group(1))) <= 2, err
+    assert "WARN" not in err and "WARN" not in _raw(env, rid)
+
+
+def test_missing_now_field_is_tolerated(env, capsys):
+    """F3: a trailer without now= (an older script) is accepted; skew is logged as unknown."""
+    a, b = env.mk_add("a", X), env.mk_add("b", X)
+    st = {p: (sha(X), len(X), MTIME, os.stat(p).st_ino, os.stat(p).st_dev, 1) for p in (a, b)}
+    env.target.responder = scripted(st)
+    _rid, status = env.run()
+    assert status == "completed" and "skew=unknown" in capsys.readouterr().err
