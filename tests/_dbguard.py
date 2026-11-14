@@ -92,5 +92,13 @@ class GuardedConn:
     def cursor(self, *a, **kw):
         return GuardedCursor(self._conn.cursor(*a, **kw), self)
 
+    @property
+    def read_only(self):                     # forwarded, so code under test that sets it reaches the real session
+        return self._conn.read_only
+
+    @read_only.setter
+    def read_only(self, value):
+        self._conn.read_only = value
+
     def __getattr__(self, name):
         return getattr(self._conn, name)
