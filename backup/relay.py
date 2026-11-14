@@ -9,11 +9,12 @@ from pathlib import Path
 
 from . import alerts, config
 from .config import BackupError
-from .health import OFFSITE_KEY, OFFSITE_PREFIX
+from .health import DEVICE_PREFIX, OFFSITE_KEY, OFFSITE_PREFIX, device_key
 from .render import render_task
 from .util import run, systemd_arg
 
 KEY = "havnvard-backup-health"
+RELAY_TIMEOUT_S = 300   # 3.3.3: the hub now reads every repository's snapshot list (STREAM_TIMEOUT_S each at most)
 
 
 def remote_command(python: str, repo_dir: str) -> str:
@@ -30,12 +31,26 @@ def _doc(stdout: str):
     return None
 
 
-def offsite_checks(stdout: str) -> list[dict] | None:
-    """The offsite checks of a well-formed health result, or None when there is no readable result (3.3.2)."""
+def _checks_with(stdout: str, prefix: str) -> list[dict] | None:
     doc = _doc(stdout)
     if not isinstance(doc, dict) or not isinstance(doc.get("checks"), list):
         return None
-    return [c for c in doc["checks"] if isinstance(c, dict) and str(c.get("name", "")).startswith(OFFSITE_PREFIX)]
+    return [c for c in doc["checks"] if isinstance(c, dict) and str(c.get("name", "")).startswith(prefix)]
+
+
+def offsite_checks(stdout: str) -> list[dict] | None:
+    """The offsite checks of a well-formed health result, or None when there is no readable result (3.3.2)."""
+    return _checks_with(stdout, OFFSITE_PREFIX)
+
+
+def device_checks(stdout: str) -> list[dict] | None:
+    """The per-device stream verdicts of a well-formed health result, or None when there is none (3.3.3)."""
+    return _checks_with(stdout, DEVICE_PREFIX)
+
+
+def _own_key(name) -> bool:
+    n = str(name)
+    return n.startswith(OFFSITE_PREFIX) or n.startswith(DEVICE_PREFIX)
 
 
 def interpret(rc: int, stdout: str, stderr: str = "") -> tuple[bool, str]:
@@ -47,8 +62,8 @@ def interpret(rc: int, stdout: str, stderr: str = "") -> tuple[bool, str]:
         return False, f"relay: remote health could not run: {doc['error']}"
     if rc not in (0, 1) or bool(doc["ok"]) != (rc == 0):
         return False, f"relay: remote exit code {rc} disagrees with its JSON (ok={doc['ok']})"
-    # 3.3.2 review fix 3: offsite checks are judged by _relay_offsite under their own key, never by the main key.
-    bad = [c for c in doc["checks"] if not c.get("ok") and not str(c.get("name", "")).startswith(OFFSITE_PREFIX)]
+    # 3.3.2 review fix 3 / 3.3.3: offsite and device checks are judged under their own keys, never by the main key.
+    bad = [c for c in doc["checks"] if not c.get("ok") and not _own_key(c.get("name", ""))]
     if bad:
         return False, "; ".join(f"{c.get('name')}: {c.get('detail')}" for c in bad)
     return True, ""
@@ -59,22 +74,23 @@ def relay(host: str, python: str, repo_dir: str, runner=run) -> int:
     key = f"{KEY}-{host}"
     try:
         r = runner(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20", host, remote_command(python, repo_dir)],
-                   timeout=120)
+                   timeout=RELAY_TIMEOUT_S)
         healthy, text = interpret(r.returncode, r.stdout, r.stderr)
         failed_relay = r.returncode not in (0, 1) or text.startswith("relay:")
         if r.returncode == 255:
             healthy, text, failed_relay = False, f"relay: ssh to {host} failed: {r.stderr.strip()[-200:]}", True
     except BackupError as e:
         healthy, text, failed_relay = False, f"relay: {e}", True
-    offsite_rc = _relay_offsite(host, None if failed_relay else r.stdout)
+    stdout = None if failed_relay else r.stdout
+    own_rc = max(_relay_offsite(host, stdout), _relay_devices(host, stdout))   # checks with their own alert keys
     if healthy:
         alerts.resolve(key)
-        print(f"health-relay {host}: healthy" + (" (offsite problem: see its own alert)" if offsite_rc else ""))
-        return offsite_rc
+        print(f"health-relay {host}: healthy" + (" (offsite or device problem: see its own alert)" if own_rc else ""))
+        return own_rc
     sent, detail = alerts.fire(key, f"HavnVard Backup ({host}): {text}")
     print(f"health-relay {host}: PROBLEM {text}")
     print(f"alert: {detail}" if sent else f"ALERT NOT SENT: {detail}")
-    return max(config.ERROR_EXIT if (failed_relay or not sent) else config.PROBLEM_EXIT, offsite_rc)
+    return max(config.ERROR_EXIT if (failed_relay or not sent) else config.PROBLEM_EXIT, own_rc)
 
 
 def _relay_offsite(host: str, stdout: str | None) -> int:
@@ -98,7 +114,28 @@ def _relay_offsite(host: str, stdout: str | None) -> int:
     return 0
 
 
+def _relay_devices(host: str, stdout: str | None) -> int:
+    """3.3.3 (INFRA-549): one key per device, `havnvard-device-stale-<device>`, fired or resolved only from a readable
+    result's `device <repo>` verdicts. A failed relay, or a device whose repository the hub could not read (no verdict),
+    leaves the device key as it was: those failures alert on the main key. Same exit rule as _relay_offsite."""
+    checks = device_checks(stdout) if stdout is not None else None
+    rc = 0
+    for c in checks or []:
+        dev = str(c.get("name", ""))[len(DEVICE_PREFIX):]
+        key = device_key(dev)
+        if c.get("ok"):
+            alerts.resolve(key)
+            continue
+        sent, detail = alerts.fire(key, f"HavnVard backup ({host}): {dev} is stale: {c.get('detail')}")
+        if not sent:
+            print(f"ALERT NOT SENT ({key}): {detail}")
+            rc = config.ERROR_EXIT
+        else:
+            rc = max(rc, config.PROBLEM_EXIT)
+    return rc
+
+
 def render_units(out_dir: Path, host: str, python: str, repo_dir: str, schedule: str = "hourly") -> list[Path]:
     cmd = f"health-relay --ssh {systemd_arg(host)} --python {systemd_arg(python)} --repo-dir {systemd_arg(repo_dir)}"
     return render_task(out_dir, "havnvard-health-relay", f"HavnVard backup health relay for {host}", cmd,
-                       f"OnCalendar={schedule}\nRandomizedDelaySec=5m", success_exit="1", timeout="3m")
+                       f"OnCalendar={schedule}\nRandomizedDelaySec=5m", success_exit="1", timeout="6m")
