@@ -69,6 +69,54 @@ def _flush_pending(base: str, name: str, token: str, opener) -> int:
     return sent
 
 
+def _notices_file() -> Path:
+    return config.state_dir() / "notices-pending.jsonl"
+
+
+def report_notice(kind: str, text: str, opener=urllib.request.urlopen) -> str:
+    """Leave a notice on the hub page (stays until someone clicks Dismiss). Never raises, never silent: returns
+    "sent", or why not and where the notice was kept on this computer (it is sent at the next check-in)."""
+    rec = {"kind": kind, "text": text, "at": _now()}
+    try:
+        base, name, token = _settings()
+    except BackupError as e:
+        return _keep_notice(rec, f"not sent: {e}")
+    try:
+        _post(f"{base}/api/v1/devices/{name}/notice", token, {"kind": kind, "text": text}, opener)
+    except (OSError, urllib.error.URLError, ValueError) as e:
+        return _keep_notice(rec, f"not sent: hub unreachable at {base} ({e})")
+    return "sent"
+
+
+def _keep_notice(rec: dict, why: str) -> str:
+    p = _notices_file()
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "a") as f:
+            f.write(json.dumps(rec) + "\n")
+    except OSError as e:
+        return f"{why}; could not keep it on this computer either ({e})"
+    return f"{why}; kept on this computer in {p} and sent at the next check-in"
+
+
+def _flush_notices(base: str, name: str, token: str, opener) -> int:
+    """Our own state file: replaced by the lines still unsent (never a backup or a user file)."""
+    p = _notices_file()
+    if not p.is_file():
+        return 0
+    left, sent = [], 0
+    for ln in p.read_text().splitlines():
+        try:
+            rec = json.loads(ln)
+            _post(f"{base}/api/v1/devices/{name}/notice", token,
+                  {"kind": rec["kind"], "text": rec["text"] + f"\n\n(recorded on the computer at {rec['at']})"}, opener)
+            sent += 1
+        except (OSError, urllib.error.URLError, ValueError, KeyError):
+            left.append(ln)
+    p.write_text("".join(x + "\n" for x in left))
+    return sent
+
+
 def checkin(run: bool = False, opener=urllib.request.urlopen, runner=None) -> int:
     """Exit 0 = not due or ran OK, 1 = the run failed or the hub could not be reached (kept for a late report)."""
     from . import __version__
@@ -83,6 +131,9 @@ def checkin(run: bool = False, opener=urllib.request.urlopen, runner=None) -> in
     n = _flush_pending(base, name, token, opener)
     if n:
         print(f"havnvard checkin: {n} earlier run(s) reported late")
+    n = _flush_notices(base, name, token, opener)
+    if n:
+        print(f"havnvard checkin: {n} notice(s) kept on this computer now left on the hub page")
     print(f"havnvard checkin: {'due' if ans.get('due') else 'not due'} ({ans.get('reason')})")
     if not (run and ans.get("due")):
         return 0
