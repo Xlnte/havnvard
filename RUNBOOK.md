@@ -319,6 +319,13 @@ Design, requirements (HV-REQ-01..38) and test plan: `/home/user/runbooks/2026110
 (Plane INFRA-519 work, INFRA-520 source gaps). Feeds the operator quarantine script
 `nas_dedup_delete.py` (lives in that runbook dir, NOT in this repo).
 
+**Racy-clean rule (3.3.2, INFRA-520 G1).** A digest counts only if it was taken at least 2 s after the file's mtime.
+`hash_stat_batch.sh` reports a file whose mtime is within 2 s of the batch start (on the NAS's own clock) or in the
+future as `UNSTABLE` and does not hash it; the driver and the publish SQL refuse any binding with
+`bound_at < mtime + 2 s` (older bindings made before the guard are re-hashed once). Reason: mtime has 1 s
+resolution, so a same-second rewrite keeps size and mtime and a digest taken in that window could later look fresh.
+`--path-prefix` is an alias of `--path`.
+
 **Run it** (always supervised, never a bare background process; `User=havnvard`):
 ```
 cd /opt/havnvard
@@ -328,6 +335,11 @@ systemd-run --unit=havnvard-nas-dedup-scoped-$(date +%H%M) --uid=havnvard --wait
 # whole host, bkup_server left out (what the weekly timer runs; first run re-hashes every legacy digest, plan on ~1 day)
 systemd-run --unit=havnvard-nas-dedup-full-$(date +%Y%m%d) --uid=havnvard --working-directory=/opt/havnvard \
   /opt/havnvard/.venv/bin/python3 nas_trigkey_dedup.py --host nas-1 --exclude /share/CACHEDEV1_DATA/bkup_server
+# plan only (3.3.2): read-only SQL, prints candidates / files and bytes to hash / fresh digests reused; no run row, no ssh
+.venv/bin/python3 nas_trigkey_dedup.py --host nas-1 --path /share/CACHEDEV1_DATA/Public/<dir> --dry-run
+# after a killed long run (3.3.2): publish groups from the digests already fresh, no ssh/scp, minutes not hours
+systemd-run --unit=havnvard-nas-dedup-publish-$(date +%H%M) --uid=havnvard --wait --pipe --working-directory=/opt/havnvard \
+  /opt/havnvard/.venv/bin/python3 nas_trigkey_dedup.py --host nas-1 --publish-only
 # hash only, publish nothing (a --limit run can never produce a publishable result)
 ... nas_trigkey_dedup.py --host nas-1 --limit 1000
 # reproducible snapshot export (what the delete script consumes); two exports of unchanged data differ only in run_id/timestamps

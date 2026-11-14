@@ -25,6 +25,7 @@
 #             #DONE|hashed=<n>|statonly=<n>|errors=<n>     <- LAST line; absent = failed batch
 #           <scratch-dir>/<batch-name>.hasherrs
 #             MISSING|p  UNREADABLE|p  UNSTABLE|p  NOT_REGULAR|p
+#             (UNSTABLE also = mtime within 2 s of the batch start or in the future: INFRA-520 G1)
 #             (plus raw sha256sum/stat stderr, which never starts with those tokens)
 # The PATH is always the LAST field (a path may contain '|'); the Python parser
 # splits from the left with a fixed field count.
@@ -65,6 +66,21 @@ echo "[hash_stat_batch] batch=$BATCH_NAME host=$(hostname 2>/dev/null || echo un
 N_HASHED=0
 N_STAT=0
 N_ERR=0
+
+# Racy-clean guard (INFRA-520 G1). mtime has 1-second resolution (2 s on FAT/SMB), so a file
+# rewritten in the same second it was last written keeps size AND mtime: a digest taken then
+# could later look fresh while the bytes differ. The batch start is read ONCE from THIS host's
+# own clock (no driver/NAS clock skew); a file whose mtime is >= NOW0-1 (or in the future) is
+# reported UNSTABLE instead of hashed, and the next run hashes it once it has settled. A file
+# with mtime <= NOW0-2 that is written again changes its mtime, which the stat-binding catches.
+NOW0=$(date +%s 2>/dev/null)
+case "$NOW0" in
+    ''|*[!0-9]*)
+        echo "error: cannot read this host's clock (date +%s): '$NOW0'" >&2
+        exit 2
+        ;;
+esac
+RECENT_FROM=$((NOW0 - 1))
 
 # stat_of <fmt> <path>: print stat or fail. Falls back to sudo -n (read-only)
 # where sudo exists, for files under directories this account cannot traverse.
@@ -144,6 +160,15 @@ while IFS= read -r line || [ -n "$line" ]; do
         continue
     }
     if [ "$PRE5" != "$POST5" ]; then
+        fail UNSTABLE "$p"
+        continue
+    fi
+    MT_REST="${PRE5#*|}"
+    MT="${MT_REST%%|*}"
+    case "$MT" in
+        ''|*[!0-9]*) fail UNSTABLE "$p"; continue ;;
+    esac
+    if [ "$MT" -ge "$RECENT_FROM" ]; then     # too recent to prove the bytes settled (racy-clean, G1)
         fail UNSTABLE "$p"
         continue
     fi

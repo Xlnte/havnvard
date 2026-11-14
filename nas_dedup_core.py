@@ -140,16 +140,36 @@ class Binding:
     bound_at: object = None
 
 
+# INFRA-520 G1 (racy-clean): a digest is trusted only if it was bound at least this many seconds AFTER the
+# file's mtime. mtime has 1 s resolution (2 s on FAT/SMB), so a rewrite inside the same second keeps size and
+# mtime; a digest bound in that window could later look fresh while the bytes differ. hash_stat_batch.sh
+# enforces the same margin on the hashing host's own clock; this check also rejects older bindings made
+# before that guard existed. Mirrored in the publish SQL (%(racy_s)s).
+RACY_MARGIN_S = 2
+
+
+def _epoch(v) -> float | None:
+    """datetime (tz-aware, from Postgres) or epoch number -> epoch seconds; None stays None."""
+    if v is None:
+        return None
+    return v.timestamp() if hasattr(v, "timestamp") else float(v)
+
+
 def digest_is_fresh(row: Cand, binding: Optional[Binding]) -> bool:
     """fresh(f, b) := b exists AND b.sha256 = f.content_sha256 AND
-    b.size = f.size AND b.mtime = f.mtime AND b.st_ino = f.inode.
+    b.size = f.size AND b.mtime = f.mtime AND b.st_ino = f.inode AND
+    b.bound_at >= f.mtime + RACY_MARGIN_S.
 
     Mirrors, term for term, the freshness join in the publish SQL. A legacy
     digest (no binding) is never fresh (HV-REQ-08); a foreign rewrite of
-    content_sha256 breaks freshness (HV-REQ-09)."""
+    content_sha256 breaks freshness (HV-REQ-09); a digest bound too close to
+    the write (or with no bind time) is never fresh (INFRA-520 G1)."""
     if binding is None or row.content_sha256 is None:
         return False
     if row.inode is None or row.mtime is None:
+        return False
+    bound = _epoch(binding.bound_at)
+    if bound is None or bound < float(row.mtime) + RACY_MARGIN_S:
         return False
     return (
         binding.sha256 == row.content_sha256

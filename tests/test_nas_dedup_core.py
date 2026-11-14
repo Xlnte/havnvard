@@ -38,7 +38,8 @@ def _row(**kw):
 
 
 def _bind(**kw):
-    base = dict(sha256=SHA_A, size_bytes=100, mtime=1_700_000_000, st_ino=7, st_dev=64520)
+    base = dict(sha256=SHA_A, size_bytes=100, mtime=1_700_000_000, st_ino=7, st_dev=64520,
+                bound_at=1_700_000_000 + 86_400)   # bound a day after the write (not racy)
     base.update(kw)
     return Binding(**base)
 
@@ -299,3 +300,23 @@ def test_heartbeat_note_has_rate_and_eta():
     # ETA is the max of the file-count and byte-count estimates
     assert re.search(r"ETA (\d+\.\d) h", n)
     assert "ETA n/a" in core.format_progress(0, 10, 0, 100, 0)
+
+
+# ---- INFRA-520 G1: racy-clean freshness ----------------------------------
+
+def test_digest_bound_too_close_to_mtime_is_not_fresh():
+    """A digest taken within RACY_MARGIN_S of the file's mtime cannot prove the bytes it read are the bytes
+    the mtime describes (same-second rewrite keeps size and mtime). Such a binding is never reused and
+    never published (publish SQL mirrors this term)."""
+    from datetime import datetime, timezone
+    mt = 1_700_000_000
+    def at(s):
+        return datetime.fromtimestamp(s, timezone.utc)
+    assert core.digest_is_fresh(_row(), _bind(bound_at=at(mt + core.RACY_MARGIN_S))) is True
+    assert core.digest_is_fresh(_row(), _bind(bound_at=at(mt + 1))) is False      # same / next second: racy
+    assert core.digest_is_fresh(_row(), _bind(bound_at=at(mt))) is False
+    assert core.digest_is_fresh(_row(), _bind(bound_at=at(mt - 100))) is False    # bound BEFORE the write
+    assert core.digest_is_fresh(_row(), _bind(bound_at=None)) is False             # unknown bind time
+    assert core.digest_is_fresh(_row(), _bind(bound_at=mt + 3600)) is True         # epoch number also accepted
+    plan = core.plan_hash_work([_row()], {"/p/a": _bind(bound_at=at(mt + 1))})
+    assert [w.path for w in plan.to_hash] == ["/p/a"] and plan.reused == 0       # racy -> re-hashed

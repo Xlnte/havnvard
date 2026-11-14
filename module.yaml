@@ -1,6 +1,6 @@
 name: HavnVard
 display_name: HavnVard — Storage Assurance (Whole-Disk File Inventory)
-version: 3.3.1
+version: 3.3.2
 license: Apache-2.0
 type: scheduled-scanner
 status: active
@@ -38,8 +38,8 @@ entrypoints:
   nas_loader: /opt/havnvard/load_nas_inventory.py --share <name> (2026-07-18, manual per-share invocation; not yet on a timer)
   crosshost_verify: /opt/havnvard/crosshost_verify.py {candidates|hash --host <h>|match|report} (2026-07-25, manual invocation so far, no timer; see docs below)
   crosshost_hash_remote_script: /opt/havnvard/hash_batch.sh (BusyBox/GNU-sh compatible, scp'd to and run on nas-1/agent-1 by crosshost_verify.py hash, deleted from both sides after load)
-  nas_dedup: /opt/havnvard/nas_trigkey_dedup.py --host nas-1 [--path <dir>] [--exclude <dir>]... [--limit N] [--export <run_id> --format csv|json] (1.4.0)
-  nas_dedup_timer: diskaudit-nas-dedup.timer (Sun 02:00, --exclude /share/CACHEDEV1_DATA/bkup_server; installed, NOT enabled until the release gate passes once)
+  nas_dedup: /opt/havnvard/nas_trigkey_dedup.py --host nas-1 [--path|--path-prefix <dir>] [--exclude <dir>]... [--limit N | --publish-only] [--dry-run] [--export <run_id> --format csv|json] (1.4.0; --path-prefix/--publish-only/--dry-run 3.3.2)
+  nas_dedup_timer: diskaudit-nas-dedup.timer (Sun 02:00; excludes come from the site file [nas] dedup_excludes; installed, NOT enabled until the release gate passes once)
   nas_dedup_remote_script: /opt/havnvard/hash_stat_batch.sh (stat-before/after + digest + #DONE trailer; scp'd to and run on the host by nas_trigkey_dedup.py, cleaned up by the driver)
 inputs:
   - root filesystem (/, single ext4 partition /dev/nvme0n1p2)
