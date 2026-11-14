@@ -168,9 +168,13 @@ def _remote_offsite(nm: str, spec: dict, hub: dict | None, h: dict, now: float) 
     return out
 
 
+def _is_offsite(name: str) -> bool:
+    return str(name).startswith(OFFSITE_PREFIX)
+
+
 def _alert_offsite(results: list[tuple[str, bool, str]]) -> None:
     """Raise or clear OFFSITE_KEY from the offsite checks alone (3.3.2)."""
-    off = [r for r in results if r[0].startswith(OFFSITE_PREFIX)]
+    off = [r for r in results if _is_offsite(r[0])]
     if not off:
         return
     bad = [r for r in off if not r[1]]
@@ -198,7 +202,9 @@ def run_health(send_alerts: bool = True, as_json: bool = False) -> int:
             return config.ERROR_EXIT
         print(json.dumps(doc))
         if send_alerts:
-            bad = [c for c in doc["checks"] if not c["ok"]]
+            # 3.3.2 review fix 3: offsite checks go out under OFFSITE_KEY only, so an offsite backlog never holds the
+            # main key open (a new device problem then gets its own OPEN notice). exit_code/ok still cover everything.
+            bad = [c for c in doc["checks"] if not c["ok"] and not _is_offsite(c["name"])]
             if bad:
                 sent, detail = alerts.fire(ALERT_KEY, "HavnVard Backup: " + "; ".join(f"{c['name']}: {c['detail']}" for c in bad))
                 if not sent:   # review 20261111: never silent about an alert that could not be raised
@@ -212,11 +218,12 @@ def run_health(send_alerts: bool = True, as_json: bool = False) -> int:
     for name, ok, detail in results:
         print(f"{'OK     ' if ok else 'PROBLEM'} {name}: {detail}")
     print(f"health: {len(results) - len(bad)}/{len(results)} checks ok")
-    if bad and send_alerts:
-        text = "HavnVard Backup: " + "; ".join(f"{n}: {d}" for n, _, d in bad)
+    main_bad = [r for r in bad if not _is_offsite(r[0])]   # review fix 3: offsite problems use OFFSITE_KEY only
+    if main_bad and send_alerts:
+        text = "HavnVard Backup: " + "; ".join(f"{n}: {d}" for n, _, d in main_bad)
         ok, detail = alerts.fire(ALERT_KEY, text)
         print(f"alert: {detail}" if ok else f"ALERT NOT SENT: {detail}")
-    elif not bad and send_alerts:
+    elif not main_bad and send_alerts:
         alerts.resolve(ALERT_KEY)
     if send_alerts:
         _alert_offsite(results)

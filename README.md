@@ -146,8 +146,8 @@ The status file is one JSON object: `{"source": "<host>:<folder it read>", "at":
 "hold": [repos], "repos": {"<repo>": {"ok_at": <epoch of its last full upload>}}}`. `health` reports a problem when the
 file cannot be fetched or read, when the uploader read **any folder other than this hub** (for example a retired hub it
 was never re-pointed from), when its last run failed or is older than `offsite_stale_hours`, and for every hub repo not
-fully uploaded within that limit. Offsite problems also raise their own alert key, `havnvard-offsite-stale`
-(`havnvard-offsite-stale-<hub>` through `health-relay`), resolved only when every offsite check passes.
+fully uploaded within that limit. Offsite problems raise only their own alert key, `havnvard-offsite-stale`
+(`havnvard-offsite-stale-<hub>` through `health-relay`), resolved only when every offsite check passes; they never fire the main health key.
 
 A hub without `alertlib` (agent-1): on the server run `python -m backup health-relay --ssh agent-1 --python PATH --repo-dir DIR`
 (or render an hourly timer with `--render-units ./out`). It runs `health --json --no-alert` on the hub and raises or

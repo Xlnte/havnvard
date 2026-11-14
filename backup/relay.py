@@ -47,7 +47,8 @@ def interpret(rc: int, stdout: str, stderr: str = "") -> tuple[bool, str]:
         return False, f"relay: remote health could not run: {doc['error']}"
     if rc not in (0, 1) or bool(doc["ok"]) != (rc == 0):
         return False, f"relay: remote exit code {rc} disagrees with its JSON (ok={doc['ok']})"
-    bad = [c for c in doc["checks"] if not c.get("ok")]
+    # 3.3.2 review fix 3: offsite checks are judged by _relay_offsite under their own key, never by the main key.
+    bad = [c for c in doc["checks"] if not c.get("ok") and not str(c.get("name", "")).startswith(OFFSITE_PREFIX)]
     if bad:
         return False, "; ".join(f"{c.get('name')}: {c.get('detail')}" for c in bad)
     return True, ""
@@ -65,23 +66,24 @@ def relay(host: str, python: str, repo_dir: str, runner=run) -> int:
             healthy, text, failed_relay = False, f"relay: ssh to {host} failed: {r.stderr.strip()[-200:]}", True
     except BackupError as e:
         healthy, text, failed_relay = False, f"relay: {e}", True
-    _relay_offsite(host, None if failed_relay else r.stdout)
+    offsite_bad = _relay_offsite(host, None if failed_relay else r.stdout)
     if healthy:
         alerts.resolve(key)
-        print(f"health-relay {host}: healthy")
-        return 0
+        print(f"health-relay {host}: healthy" + (" (offsite problem: see its own alert)" if offsite_bad else ""))
+        return config.PROBLEM_EXIT if offsite_bad else 0
     sent, detail = alerts.fire(key, f"HavnVard Backup ({host}): {text}")
     print(f"health-relay {host}: PROBLEM {text}")
     print(f"alert: {detail}" if sent else f"ALERT NOT SENT: {detail}")
     return config.ERROR_EXIT if (failed_relay or not sent) else config.PROBLEM_EXIT
 
 
-def _relay_offsite(host: str, stdout: str | None) -> None:
-    """3.3.2: offsite problems also go out under their own key; it is resolved only from a readable result whose
-    offsite checks all pass (a failed relay leaves it as it was; the relay's own alert covers that case)."""
+def _relay_offsite(host: str, stdout: str | None) -> bool:
+    """3.3.2: offsite problems go out under their own key only; it is resolved only from a readable result whose
+    offsite checks all pass (a failed relay leaves it as it was; the relay's own alert covers that case).
+    Returns True when an offsite check failed."""
     checks = offsite_checks(stdout) if stdout is not None else None
     if not checks:
-        return
+        return False
     okey = f"{OFFSITE_KEY}-{host}"
     bad = [c for c in checks if not c.get("ok")]
     if bad:
@@ -89,8 +91,9 @@ def _relay_offsite(host: str, stdout: str | None) -> None:
                                    "; ".join(f"{c.get('name')}: {c.get('detail')}" for c in bad))
         if not sent:
             print(f"ALERT NOT SENT ({okey}): {detail}")
-    else:
-        alerts.resolve(okey)
+        return True
+    alerts.resolve(okey)
+    return False
 
 
 def render_units(out_dir: Path, host: str, python: str, repo_dir: str, schedule: str = "hourly") -> list[Path]:

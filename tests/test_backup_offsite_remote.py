@@ -123,6 +123,13 @@ def test_last_run_failed_or_flagged_is_a_problem(tmp_path):
     assert "3 flagged" in _bad(health.collect(now=NOW))["offsite desk"]
 
 
+def test_budget_stop_rc_75_is_not_a_failed_run(tmp_path):
+    """rc 75 = the run used its time budget and the next one continues; it is not a failure (review gap)."""
+    _hub(tmp_path)
+    _target(_status(tmp_path, rc=75))
+    assert not _bad(health.collect(now=NOW))
+
+
 def test_held_repo_is_reported_not_failed(tmp_path):
     _hub(tmp_path, repos=("dev1", "dev2", "big"))
     _target(_status(tmp_path, hold=["big"]))
@@ -157,10 +164,36 @@ def test_offsite_problems_raise_their_own_alert_key(tmp_path, env, monkeypatch):
     _hub(tmp_path)
     _target(_status(tmp_path, source="desktop-1:/home/u/restic-hub"))
     monkeypatch.setattr(health.time, "time", lambda: NOW)
-    assert health.run_health() == 1
-    keys = [k for k, _ in env]
-    assert health.ALERT_KEY in keys and health.OFFSITE_KEY == "havnvard-offsite-stale" and health.OFFSITE_KEY in keys
+    assert health.run_health() == 1   # exit code still says "something is wrong"
+    fired = [k for k, t in env if t != "RESOLVED"]
+    assert health.OFFSITE_KEY == "havnvard-offsite-stale" and fired == [health.OFFSITE_KEY]
     assert "not this hub" in dict(env)[health.OFFSITE_KEY]
+    # review fix 3: an offsite-only problem never holds the main key open
+    assert (health.ALERT_KEY, "RESOLVED") in env
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+def test_offsite_only_problem_fires_only_the_offsite_key(tmp_path, env, monkeypatch, capsys, as_json):
+    _hub(tmp_path)
+    _target(_status(tmp_path, repos={"dev1": {"ok_at": NOW - 7200}}))   # dev2 never uploaded
+    monkeypatch.setattr(health.time, "time", lambda: NOW)
+    assert health.run_health(as_json=as_json) == 1
+    assert [k for k, t in env if t != "RESOLVED"] == [health.OFFSITE_KEY]
+    assert (health.ALERT_KEY, "RESOLVED") in env
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+def test_device_problem_during_offsite_problem_fires_the_main_key(tmp_path, env, monkeypatch, capsys, as_json):
+    root = _hub(tmp_path)
+    old = root / "dev1" / "snapshots" / "abc"
+    os.utime(old, (NOW - 500 * 3600, NOW - 500 * 3600))   # dev1's newest snapshot is very old: a device problem
+    _target(_status(tmp_path, repos={"dev1": {"ok_at": NOW - 7200}}))   # and dev2 never uploaded: an offsite problem
+    monkeypatch.setattr(health.time, "time", lambda: NOW)
+    assert health.run_health(as_json=as_json) == 1
+    fired = dict((k, t) for k, t in env if t != "RESOLVED")
+    assert set(fired) == {health.ALERT_KEY, health.OFFSITE_KEY}
+    assert "offsite" not in fired[health.ALERT_KEY]          # the main text carries only the device problem
+    assert "never fully uploaded" in fired[health.OFFSITE_KEY]
 
 
 def test_offsite_key_resolves_when_offsite_is_healthy(tmp_path, env, monkeypatch):
@@ -183,6 +216,27 @@ def test_relay_fires_offsite_key_for_offsite_checks(env):
         {"name": "offsite desk", "ok": False, "detail": "uploads desktop-1:/x, not this hub"}]})
     assert relay.relay("hub", "python3", "havnvard", _runner(1, out)) == 1
     assert f"{health.OFFSITE_KEY}-hub" in [k for k, t in env if t != "RESOLVED"]
+
+
+def test_relay_offsite_only_problem_resolves_the_main_key(env):
+    """Review fix 3: the hub's main key is not held open by an offsite backlog."""
+    out = json.dumps({"ok": False, "exit_code": 1, "checks": [
+        {"name": "snapshot age dev1", "ok": True, "detail": "1 h"},
+        {"name": "offsite desk dev2", "ok": False, "detail": "never fully uploaded"}]})
+    assert relay.relay("hub", "python3", "havnvard", _runner(1, out)) == 1
+    assert ("havnvard-backup-health-hub", "RESOLVED") in env
+    assert [k for k, t in env if t != "RESOLVED"] == [f"{health.OFFSITE_KEY}-hub"]
+    assert relay.interpret(1, out) == (True, "")
+
+
+def test_relay_device_problem_during_offsite_problem_fires_both_keys_separately(env):
+    out = json.dumps({"ok": False, "exit_code": 1, "checks": [
+        {"name": "snapshot age dev1", "ok": False, "detail": "30 h"},
+        {"name": "offsite desk dev2", "ok": False, "detail": "never fully uploaded"}]})
+    assert relay.relay("hub", "python3", "havnvard", _runner(1, out)) == 1
+    fired = dict((k, t) for k, t in env if t != "RESOLVED")
+    assert set(fired) == {"havnvard-backup-health-hub", f"{health.OFFSITE_KEY}-hub"}
+    assert "offsite" not in fired["havnvard-backup-health-hub"] and "30 h" in fired["havnvard-backup-health-hub"]
 
 
 def test_relay_resolves_offsite_key_only_when_offsite_checks_pass(env):
