@@ -188,10 +188,17 @@ python -m backup checkin --run             # on a device (timer every 5 min): as
   (or a reset code they redeem themselves): "Your administrator X reset your password on DATE and accessed all your
   files. Reason: R." Then they set their own password. The user is emailed.
 * **Every admin-issued password reset** ("Reset password") carries the same mandatory notice. An admin can never reset
-  another admin's password, nor an account of another company. A reset code works for 24 h and is refused when it is
-  redeemed from a browser logged in as an administrator.
-* **Honest limits.** An admin who redeems a user's reset code from a browser with no admin session can act as that user
-  once (and acknowledge the notice). What cannot be hidden: every login, reset and acknowledgement is in the
+  another admin's password, nor an account of another company. A reset code works for 24 h, once; it ends as soon as
+  anything else changes the account (the user finishes the notice, a new reset, a force-open, a disable), and redeeming
+  one always leads to the notice first. It is refused when redeemed from a browser logged in as an administrator.
+* **With `[mail]` configured**, the reset code and the force-open generated password go **only to the user's email**
+  and are never shown to the admin (page or CLI). Without mail they are shown to the admin, and the user's page says so.
+* **The user's page lists every force-open and reset for good**: when, which admin, why, who got the code, and how,
+  when and from where it was acknowledged (old password or reset code). Acknowledging never removes a row.
+* **Honest limits.** Without mail, an admin who redeems a user's reset code from a browser with no admin session can act
+  as that user once (and acknowledge the notice); the user's page then shows "acknowledged with a reset code" with the
+  address and browser. As root, `pullback` does not write into a folder another user controls (not root-owned, or
+  group/other-writable): run it as that user, or use `--target`. What cannot be hidden: every login, reset and acknowledgement is in the
   hash-chained audit log with the client address and browser, and the user's page permanently shows how many times an
   administrator reset their password, when, by whom and why. Whoever has root on the hub can read every backup the hub
   holds a password for; the log makes tampering visible, not impossible. Logins are limited to 5 failures a minute per

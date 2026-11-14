@@ -122,7 +122,12 @@ _COLUMNS = (("account", "old_pw_hash", "TEXT"), ("account", "must_set_password",
             ("account", "sealed_pw", "TEXT"), ("session", "scope", "TEXT NOT NULL DEFAULT 'full'"),
             ("session", "proof", "TEXT"), ("session", "ip", "TEXT"), ("session", "ua", "TEXT"),
             ("force_open", "email_status", "TEXT"), ("force_open", "kind", "TEXT NOT NULL DEFAULT 'force_open'"),
-            ("reset", "expires_at", "TEXT"), ("reset", "reason", "TEXT"))
+            ("reset", "expires_at", "TEXT"), ("reset", "reason", "TEXT"),
+            ("force_open", "ack_proof", "TEXT"), ("force_open", "ack_ip", "TEXT"), ("force_open", "ack_ua", "TEXT"),
+            ("force_open", "code_delivery", "TEXT"))
+#   force_open.ack_proof/ack_ip/ack_ua  HOW the notice was acknowledged (old_password / reset_code), from where: shown on
+#                         the user's page for ever (R3a).  force_open.code_delivery: who got the code or generated
+#                         password: "emailed to the user only" / "given to the admin (no mail configured)" / failed.
 
 
 def _now() -> dt.datetime:
@@ -181,6 +186,16 @@ def _under(path: str, prefix: str) -> bool:
 
 
 _DUMMY: dict[int, str] = {}
+
+
+def _delivery(status: str) -> tuple[bool, str]:
+    """R3b: (show the code/password to the admin?, what the history says). Only when mail is NOT configured does the
+    admin see it; when mail is configured it goes to the user's email only, even if sending failed."""
+    if status == "not configured":
+        return True, "code given to the admin (no mail configured)"
+    if status == "sent":
+        return False, "emailed to the user only (never shown to the admin)"
+    return False, f"email to the user FAILED ({status}); the code was not shown to the admin: issue a new one"
 
 
 def _dummy_hash() -> str:
@@ -364,6 +379,14 @@ class Accounts:
             return dict(r) if r else None
         finally:
             con.close()
+
+    @staticmethod
+    def _end_codes(con, account_id: int) -> int:
+        """R1: end every unused reset code of the account. Run in EVERY transaction that changes its credentials or its
+        notice state, so a code can never be kept and redeemed after the user has finished."""
+        now = _iso(_now())
+        return con.execute("UPDATE reset SET expires_at=? WHERE account_id=? AND used_at IS NULL "
+                           "AND (expires_at IS NULL OR expires_at > ?)", (now, account_id, now)).rowcount
 
     def _admin_of(self, con, actor: int) -> sqlite3.Row:
         a = con.execute("SELECT * FROM account WHERE id=?", (actor,)).fetchone()
@@ -605,6 +628,7 @@ class Accounts:
             now = _iso(_now())
             con.execute("UPDATE account SET status='disabled', disabled_at=?, disabled_reason=? WHERE id=?",
                         (now, reason[:500], target))
+            self._end_codes(con, target)
             n = con.execute("UPDATE session SET revoked_at=? WHERE account_id=? AND revoked_at IS NULL",
                             (now, target)).rowcount
             devs = [r["name"] for r in con.execute("SELECT name FROM device WHERE primary_user_id=? AND company_id=?",
@@ -678,6 +702,7 @@ class Accounts:
             old = t["old_pw_hash"] if (pending and t["old_pw_hash"]) else t["pw_hash"]
             con.execute("UPDATE account SET pw_hash=?, old_pw_hash=?, sealed_pw=?, must_ack_force_open=1, "
                         "must_set_password=1 WHERE id=?", (new_hash, old if _usable(old) else None, sealed, target))
+            self._end_codes(con, target)
             n = con.execute("UPDATE session SET revoked_at=? WHERE account_id=? AND revoked_at IS NULL",
                             (_iso(now), target)).rowcount
             fid = con.execute("INSERT INTO force_open(admin_id, user_id, reason, started_at, ends_at, kind) "
@@ -692,39 +717,51 @@ class Accounts:
             raise
         finally:
             con.close()
-        # the email goes out AFTER the commit (never claim a reset that did not happen); its outcome is audited
+        # the email goes out AFTER the commit (never claim a reset that did not happen); its outcome is audited.
+        # R3b: with [mail] configured the generated password goes ONLY to the user's email, never to the admin.
         when = _iso(now)
         body = (NOTICE.format(admin=adm["email"], when=when + " UTC", reason=reason.strip()[:500]) + "\n\n"
                 "To read this notice on the hub, log in with YOUR OWN old password (the one you used before). If you "
-                "have forgotten it, ask your administrator for a reset code and redeem it yourself. After you "
-                "acknowledge the notice you will choose a new password of your own, which your administrator will not "
-                "know. The password your administrator was given only shows this notice; it cannot acknowledge it.\n\n"
+                "have forgotten it, use the generated password below to READ the notice, and ask your administrator "
+                "for a reset code to acknowledge it. After you acknowledge the notice you will choose a new password of "
+                "your own.\n\nGenerated password (it only shows the notice): " + new_pw + "\n\n"
                 "Nothing was deleted. This message was sent by HavnVard.")
-        if mailer is None:
-            from .mail import send as mailer
-        status = mailer(t["email"], "HavnVard: your administrator reset your password and accessed your files", body)
+        status = self._mail(mailer, t["email"],
+                            "HavnVard: your administrator reset your password and accessed your files", body)
+        shown, delivery = _delivery(status)
         con = self._tx()
         try:
-            con.execute("UPDATE force_open SET email_status=? WHERE id=?", (status, fid))
-            self._audit(con, actor, "force_open.email", t["email"], force_open_id=fid, email_status=status)
+            con.execute("UPDATE force_open SET email_status=?, code_delivery=? WHERE id=?", (status, delivery, fid))
+            self._audit(con, actor, "force_open.email", t["email"], force_open_id=fid, email_status=status,
+                        code_delivery=delivery)
             con.execute("COMMIT")
         except BaseException:
             con.execute("ROLLBACK")
             raise
         finally:
             con.close()
-        return {"new_password": new_pw, "email_status": status, "user_email": t["email"]}
+        return {"new_password": new_pw if shown else None, "email_status": status, "user_email": t["email"],
+                "code_delivery": delivery}
+
+    @staticmethod
+    def _mail(mailer, to: str, subject: str, body: str) -> str:
+        if mailer is None:
+            from .mail import send as mailer
+        return mailer(to, subject, body)
 
     def key_path(self) -> Path:
         return self.path.with_name(self.path.name + ".key")
 
     def admin_reset(self, actor: int, target: int, reason: str | None = None, ip: str | None = None,
-                    ua: str | None = None) -> str:
+                    ua: str | None = None, mailer=None) -> dict:
         """A 'forgot my password' reset issued by the admin. Every admin-issued reset carries the mandatory notice
         (F2, PAF: "the admin forces a password reset"); there is no silent kind. Only a USER account of the admin's
         own company (F3). Allowed while a notice is pending (D1): it then adds to that notice. The user's current
         password stops working (it is kept only as the proof that opens the notice); the code works for 24 h, ends
-        every older code, and must be redeemed by the user (never from an administrator's session, D1)."""
+        every older code, and must be redeemed by the user (never from an administrator's session, D1).
+        R3b: with [mail] configured the code goes ONLY to the user's email and is never returned to the admin; without
+        mail it is returned (shown to the admin) and the history says so.
+        Returns {"code" (None when emailed), "email_status", "code_delivery"}."""
         code = secrets.token_urlsafe(18)
         why = (reason or "").strip()[:500] or RESET_REASON
         con = self._tx()
@@ -737,15 +774,15 @@ class Accounts:
                 old = t["old_pw_hash"]                                # keep the user's real old password
             else:
                 old = t["pw_hash"] if _usable(t["pw_hash"]) else None
-            con.execute("UPDATE reset SET expires_at=? WHERE account_id=? AND used_at IS NULL", (_iso(now), target))
+            self._end_codes(con, target)
             con.execute("INSERT INTO reset(account_id, code_hash, created_by, created_at, expires_at, reason) "
                         "VALUES (?,?,?,?,?,?)", (target, _h(code), actor, _iso(now), _iso(now + RESET_TTL), why))
             con.execute("UPDATE account SET pw_hash=?, old_pw_hash=?, sealed_pw=NULL, must_ack_force_open=1, "
                         "must_set_password=1 WHERE id=?", (UNUSABLE + "reset", old, target))
             n = con.execute("UPDATE session SET revoked_at=? WHERE account_id=? AND revoked_at IS NULL",
                             (_iso(now), target)).rowcount
-            con.execute("INSERT INTO force_open(admin_id, user_id, reason, started_at, ends_at, kind) "
-                        "VALUES (?,?,?,?,?, 'reset')", (actor, target, why, _iso(now), _iso(now)))
+            fid = con.execute("INSERT INTO force_open(admin_id, user_id, reason, started_at, ends_at, kind) "
+                              "VALUES (?,?,?,?,?, 'reset')", (actor, target, why, _iso(now), _iso(now))).lastrowid
             self._audit(con, actor, "password.reset_issued", t["email"], admin=adm["email"], reason=why,
                         sessions_revoked=n, notice="mandatory", ip=ip, ua=(ua or "")[:200])
             con.execute("COMMIT")
@@ -754,7 +791,24 @@ class Accounts:
             raise
         finally:
             con.close()
-        return code
+        body = (NOTICE_RESET.format(admin=adm["email"], when=_iso(now) + " UTC", reason=why) + "\n\n"
+                "Your reset code (works for 24 hours, only once): " + code + "\n\nRedeem it yourself on the hub's "
+                "/reset page. You will then read this notice and choose your own password.\n\n"
+                "This message was sent by HavnVard.")
+        status = self._mail(mailer, t["email"], "HavnVard: your administrator reset your password", body)
+        shown, delivery = _delivery(status)
+        self._log(actor, "password.reset_code_delivery", t["email"], force_open_id=fid, email_status=status,
+                  code_delivery=delivery)
+        con = self._tx()
+        try:
+            con.execute("UPDATE force_open SET email_status=?, code_delivery=? WHERE id=?", (status, delivery, fid))
+            con.execute("COMMIT")
+        except BaseException:
+            con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+        return {"code": code if shown else None, "email_status": status, "code_delivery": delivery}
 
     def set_password_with_reset(self, code: str, new_password: str, redeemer: dict | None = None,
                                 ip: str | None = None, ua: str | None = None) -> dict:
@@ -779,14 +833,22 @@ class Accounts:
                 raise BackupError("this account is disabled; ask your administrator")
             now = _iso(_now())
             con.execute("UPDATE reset SET used_at=? WHERE id=?", (now, r["id"]))
-            con.execute("UPDATE account SET pw_hash=?, old_pw_hash=NULL, sealed_pw=NULL, must_set_password=0 WHERE id=?",
-                        (pw_hash, r["account_id"]))
+            self._end_codes(con, a["id"])
+            # R1: a redeemed code ALWAYS leads to the notice. If none is pending (the user already finished), the
+            # redemption is itself a reset the user must see: a new notice row, acknowledged only through it.
+            if not a["must_ack_force_open"]:
+                con.execute("INSERT INTO force_open(admin_id, user_id, reason, started_at, ends_at, kind) "
+                            "VALUES (?,?,?,?,?, 'reset')",
+                            (r["created_by"], a["id"], f"a reset code issued on {r['created_at']} UTC was redeemed "
+                             f"({r['reason'] or RESET_REASON})", now, now))
+            con.execute("UPDATE account SET pw_hash=?, old_pw_hash=NULL, sealed_pw=NULL, must_set_password=0, "
+                        "must_ack_force_open=1 WHERE id=?", (pw_hash, r["account_id"]))
             con.execute("UPDATE session SET revoked_at=? WHERE account_id=? AND revoked_at IS NULL", (now, a["id"]))
-            pending = bool(a["must_ack_force_open"])
+            pending = True
             token = secrets.token_urlsafe(32)
             con.execute("INSERT INTO session(account_id, token_hash, created_at, scope, proof, ip, ua) "
                         "VALUES (?,?,?,?, 'reset_code', ?,?)",
-                        (a["id"], _h(token), now, "notice" if pending else "full", ip, (ua or "")[:200]))
+                        (a["id"], _h(token), now, "notice", ip, (ua or "")[:200]))
             self._audit(con, a["id"], "password.reset", a["email"], proof="reset_code", notice_pending=pending, ip=ip,
                         ua=(ua or "")[:200], redeemer_session=(redeemer or {}).get("account_id"))
             con.execute("COMMIT")
@@ -827,7 +889,8 @@ class Accounts:
         con = self._con()
         try:
             return [dict(r) for r in con.execute(
-                "SELECT f.kind, f.started_at, f.reason, f.acked_at, a.email AS admin_email FROM force_open f "
+                "SELECT f.kind, f.started_at, f.reason, f.acked_at, f.ack_proof, f.ack_ip, f.ack_ua, f.code_delivery, "
+                "f.email_status, a.email AS admin_email FROM force_open f "
                 "JOIN account a ON a.id=f.admin_id WHERE f.user_id=? ORDER BY f.id", (account_id,))]
         finally:
             con.close()
@@ -837,7 +900,7 @@ class Accounts:
         code the user redeemed) may acknowledge or set the password."""
         s = con.execute("SELECT s.id, s.account_id, s.scope, s.proof, a.kind, a.status, a.email FROM session s "
                         "JOIN account a ON a.id=s.account_id WHERE s.token_hash=? AND s.revoked_at IS NULL",
-                        (_h(token or ""),)).fetchone()
+                        (_h(str(token or "")),)).fetchone()
         if not s or s["status"] != "active":
             raise BackupError("please log in")
         if s["scope"] != "notice":
@@ -861,9 +924,11 @@ class Accounts:
                 ids = [r["id"] for r in con.execute("SELECT id FROM force_open WHERE user_id=? AND acked_at IS NULL",
                                                     (aid,))]
                 con.execute("UPDATE account SET must_ack_force_open=0 WHERE id=?", (aid,))
-                con.execute("UPDATE force_open SET acked_at=? WHERE user_id=? AND acked_at IS NULL", (_iso(_now()), aid))
+                con.execute("UPDATE force_open SET acked_at=?, ack_proof=?, ack_ip=?, ack_ua=? WHERE user_id=? "
+                            "AND acked_at IS NULL", (_iso(_now()), s["proof"], ip, (ua or "")[:200], aid))
                 self._audit(con, aid, "force_open.ack", str(aid), force_open_ids=ids, scope=s["scope"],
                             proof=s["proof"], ip=ip, ua=(ua or "")[:200])
+            self._end_codes(con, aid)
             con.execute("COMMIT")
         except BaseException:
             con.execute("ROLLBACK")
@@ -907,6 +972,7 @@ class Accounts:
             now = _iso(_now())
             con.execute("UPDATE account SET pw_hash=?, old_pw_hash=NULL, sealed_pw=NULL, must_set_password=0 WHERE id=?",
                         (pw_hash, account_id))
+            self._end_codes(con, account_id)
             n = con.execute("UPDATE session SET revoked_at=? WHERE account_id=? AND revoked_at IS NULL",
                             (now, account_id)).rowcount
             token2 = secrets.token_urlsafe(32)

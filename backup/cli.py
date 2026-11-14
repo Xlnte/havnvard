@@ -280,7 +280,8 @@ def _force_open_cli(a: argparse.Namespace) -> int:
         raise BackupError(f"no user account {a.user_email}")
     r = accts.force_open(adm["account_id"], users[0]["id"], a.reason, a.confirm)
     print(f"force-open of {r['user_email']} started and logged.")
-    print(f"New password (shown once, not kept): {r['new_password']}")
+    print(f"New password (shown once, not kept): {r['new_password']}" if r["new_password"] else
+          f"New password: {r['code_delivery']}")
     print(f"Email to the user: {r['email_status']}" + ("" if r["email_status"] == "sent" else " - tell them yourself"))
     print("This password only shows the notice: it cannot acknowledge it or set a password. The user acknowledges "
           "with their OWN old password (or a reset code they redeem themselves), after reading that you reset their "

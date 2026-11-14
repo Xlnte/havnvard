@@ -85,7 +85,7 @@ def test_invite_disable_force_open_ack_flow_and_user_cannot_see_admin_pages(app)
     # force-open: a new password shown to the admin once, email status shown; the user is logged out
     _, _, page = adm.post("/admin/users", {"action": "force_open", "target": uid, "reason": "legal hold",
                                            "typed_email": "al@example.com"})
-    new = re.search(r"not kept\): <code[^>]*>([A-Z2-7-]+)</code>", page).group(1)
+    new = re.search(r"not kept[^:]*: <code[^>]*>([A-Z2-7-]+)</code>", page).group(1)
     assert "Email to the user: <b>not configured</b>" in page and "tell them yourself" in page
     st, h, _ = u.req("GET", "/me")
     assert st.startswith("303") and h["Location"] == "/login"
@@ -116,7 +116,7 @@ def test_invite_disable_force_open_ack_flow_and_user_cannot_see_admin_pages(app)
     # a login with the NEW (generated) password after a second force-open also lands on the notice
     _, _, page = adm.post("/admin/users", {"action": "force_open", "target": uid, "reason": "audit 2",
                                            "typed_email": "al@example.com"})
-    new2 = re.search(r"not kept\): <code[^>]*>([A-Z2-7-]+)</code>", page).group(1)
+    new2 = re.search(r"not kept[^:]*: <code[^>]*>([A-Z2-7-]+)</code>", page).group(1)
     g = Client(w)                                       # FN-1: the admin-known password only READS the notice
     st, h, _ = g.req("POST", "/login", {"email": "al@example.com", "password": new2})
     assert h["Location"] == "/ack" and "Reason: audit 2" in g.req("GET", "/ack")[2]

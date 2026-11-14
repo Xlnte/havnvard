@@ -215,13 +215,17 @@ class App:
             return self._redirect("/me", self._set_cookie(r["token"]))
         w = self.a.notice(me)
         head = (f"<div class='warn'><p><b>{_e(w['text'])}</b></p><p>{_e(w['warning'])}</p>"
-                f"<p>All your files, not just some. Your administrator cannot hide or clear this notice.</p></div>")
+                "<p>All your files, not just some. This notice is kept on your page for good, acknowledged or not, "
+                "with how, when and from where it was acknowledged. It can be acknowledged only with your own old "
+                "password or with a reset code; whoever holds a reset code issued for you can do that too, which is "
+                "why every acknowledgement is listed.</p></div>")
         if sess["scope"] != "notice":
             return self._page("200 OK", "Your administrator reset your password", head +
-                              "<p>You logged in with a password your administrator knows, so this page can only show "
-                              "the notice. To acknowledge it and choose your own password, log out and log in with "
-                              "<b>your own old password</b>, or ask your administrator for a reset code and redeem it "
-                              "yourself at <a href='/reset'>/reset</a>.</p>", token, None)
+                              "<p>You logged in with the generated password. Your administrator may have seen it too "
+                              "(unless it reached you only by email), so this login can only show the notice: it "
+                              "cannot acknowledge it or set a password. To do that, log out and log in with <b>your "
+                              "own old password</b>, or ask your administrator for a reset code and redeem it at "
+                              "<a href='/reset'>/reset</a>.</p>", token, None)
         if w["unacked"]:
             return self._page("200 OK", "Your administrator reset your password", head +
                               f"<form method='post'>{self._csrf(token)}<input type='hidden' name='step' value='ack'>"
@@ -268,16 +272,38 @@ class App:
                      f"<td>{_e(rows.get(d['name'], {}).get('mode'))}</td><td>{_e(rows.get(d['name'], {}).get('last_started_at'))}</td>"
                      f"<td>{_e(rows.get(d['name'], {}).get('last_status'))}</td><td>{_e(rows.get(d['name'], {}).get('next_due'))}</td></tr>"
                      for d in mine)
-        hist = self.a.reset_history(sess["account_id"]) if sess["kind"] == "user" else []
-        resets = ("<p class='warn'>Your password was reset by an administrator "
-                  f"{len(hist)} time(s); the last: {_e(hist[-1]['started_at'])} UTC by {_e(hist[-1]['admin_email'])} "
-                  f"({_e('force-open' if hist[-1]['kind'] == 'force_open' else 'reset')}: {_e(hist[-1]['reason'])}).</p>"
-                  ) if hist else ""
+        resets = self._history(sess["account_id"]) if sess["kind"] == "user" else ""
         body = (resets + self._notices(token, sess) + "<h2>My computers</h2><table><tr><th>Computer</th><th>Schedule</th><th>Last run</th><th>Result</th>"
                 f"<th>Next</th></tr>{tr or '<tr><td colspan=5>No computers assigned to you yet.</td></tr>'}</table>"
                 "<p>Find and pull back your files on any of your computers with <code>python -m backup find NAME</code> "
                 "and <code>python -m backup pullback FILE</code>.</p>")
         return self._page("200 OK", "My files", body, token, sess)
+
+    def _history(self, aid: int) -> str:
+        """R3a: EVERY force-open and admin reset, for good: when, by whom, why, who got the code, and how / when / from
+        where it was acknowledged. Acknowledging never removes a row."""
+        hist = self.a.reset_history(aid)
+        if not hist:
+            return ""
+
+        def ack(h) -> str:
+            if not h["acked_at"]:
+                return "not yet acknowledged"
+            how = {"old_password": "with your old password", "reset_code": "with a reset code",
+                   "own_password_after_reset": "with the password set from a reset code"}.get(h["ack_proof"] or "",
+                                                                                         h["ack_proof"] or "?")
+            return f"acknowledged {h['acked_at']} UTC {how} from {h['ack_ip'] or '?'} ({h['ack_ua'] or '?'})"
+        rows = "".join(
+            f"<tr><td>{_e(h['started_at'])} UTC</td><td>{_e('force-open: accessed all your files' if h['kind'] == 'force_open' else 'password reset')}</td>"
+            f"<td>{_e(h['admin_email'])}</td><td>{_e(h['reason'])}</td><td>{_e(h['code_delivery'] or '')}</td>"
+            f"<td>{_e(ack(h))}</td></tr>" for h in hist)
+        warn = any(h["kind"] == "force_open" for h in hist) or any(
+            h["acked_at"] and h["ack_proof"] != "old_password" for h in hist)
+        return (("<div class='warn'>" if warn else "<div>") +
+                f"<h2>Your administrator reset your password {len(hist)} time(s)</h2>"
+                "<p>Kept here for good. If an acknowledgement below was not you, someone used a reset code issued for "
+                "you; ask your administrator why.</p><table><tr><th>When</th><th>What</th><th>Administrator</th>"
+                f"<th>Reason</th><th>Code / password went to</th><th>Acknowledged</th></tr>{rows}</table></div>")
 
     # ---------- admin ----------
     def admin(self, path, method, f, token, sess):
@@ -300,16 +326,19 @@ class App:
                 elif act == "enable":
                     self.a.enable(me, tgt)
                 elif act == "reset":
-                    code = self.a.admin_reset(me, tgt, f.get("reason"), ip=self.ip, ua=self.ua)
-                    note = (f"<p class='warn'>Reset code (24 h): <code>{_e(code)}</code>. Give it to the user; they "
-                            "redeem it themselves at /reset (it is refused from an administrator's session). At their "
-                            "next login they must first read that you reset their password, and why; this is "
-                            "logged.</p>")
+                    r = self.a.admin_reset(me, tgt, f.get("reason"), ip=self.ip, ua=self.ua)
+                    note = ((f"<p class='warn'>Reset code (24 h): <code>{_e(r['code'])}</code>. No mail is configured, "
+                             "so give it to the user; this is recorded on their page. ") if r["code"] else
+                            f"<p class='warn'>Reset code: {_e(r['code_delivery'])}. ") + (
+                            "They redeem it themselves at /reset (refused from an administrator's session) and first "
+                            "read that you reset their password, and why; this is logged.</p>")
                 elif act == "force_open":
                     r = self.a.force_open(me, tgt, f.get("reason", ""), f.get("typed_email", ""), ip=self.ip, ua=self.ua)
+                    pw = (("New password (shown <b>once</b>, not kept; no mail is configured, so this is recorded "
+                           f"on their page): <code style='font-size:1.2em'>{_e(r['new_password'])}</code>")
+                          if r["new_password"] else f"New password: {_e(r['code_delivery'])}")
                     note = (f"<div class='warn'><p>Force-open started and logged. {_e(r['user_email'])}'s password was "
-                            "replaced. New password (shown <b>once</b>, not kept): <code style='font-size:1.2em'>"
-                            f"{_e(r['new_password'])}</code></p><p>Email to the user: <b>{_e(r['email_status'])}</b>"
+                            f"replaced. {pw}</p><p>Email to the user: <b>{_e(r['email_status'])}</b>"
                             + ("" if r["email_status"] == "sent" else " - tell them yourself") + "</p>"
                             "<p>This password only shows the notice: it cannot acknowledge it or set a password. The "
                             "user acknowledges with their OWN old password (or a reset code they redeem themselves), "

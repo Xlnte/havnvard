@@ -154,7 +154,9 @@ def test_force_open_new_password_old_password_notice_unclearable_and_logged(db):
     with pytest.raises(BackupError, match="only an active admin"):
         a.force_open(u, u, reason="x", typed_email="al@example.com", mailer=mail)
     r = a.force_open(adm["account_id"], u, reason="investigation", typed_email="al@example.com", mailer=mail)
-    new = r["new_password"]
+    # R3b: mail is configured (the fake answers "sent"), so the generated password goes ONLY to the user's email
+    assert r["new_password"] is None and r["code_delivery"].startswith("emailed to the user only")
+    new = mail.sent[0][2].split("Generated password (it only shows the notice): ")[1].split()[0]
     assert len(new) == 29 and new.count("-") == 5 and r["email_status"] == "sent"
     assert a.session(tok) is None                                             # sessions revoked
     # never stored in clear: not in any column of the database file
@@ -163,7 +165,7 @@ def test_force_open_new_password_old_password_notice_unclearable_and_logged(db):
     # email to the user, with who / when / reason, and NOT the new password
     (to, _subj, body), = mail.sent
     assert to == "al@example.com" and "boss@example.com" in body and "investigation" in body
-    assert "accessed all your files" in body and new not in body
+    assert "accessed all your files" in body
     assert a.can_read(adm["account_id"], "al-laptop", "/home/al/x")          # admin may look, for the window
     # wrong password: refused
     with pytest.raises(BackupError, match="wrong email or password"):
@@ -220,9 +222,11 @@ def test_force_open_email_not_configured_and_failed_are_recorded(db, tmp_path, m
     monkeypatch.setenv("HAVNVARD_CONFIG_DIR", str(tmp_path / "cfg-none"))
     r = a.force_open(adm["account_id"], u, reason="r1", typed_email="al@example.com")   # real sender, no [mail]
     assert r["email_status"] == "not configured"
-    r = a.force_open(adm["account_id"], u, reason="r2", typed_email="al@example.com",
-                     mailer=Mail("failed: SMTPConnectError: nope"))
+    failing = Mail("failed: SMTPConnectError: nope")
+    r = a.force_open(adm["account_id"], u, reason="r2", typed_email="al@example.com", mailer=failing)
     assert r["email_status"].startswith("failed:")
+    assert r["new_password"] is None and "FAILED" in r["code_delivery"]        # R3b: mail configured -> never shown
+    r["new_password"] = failing.sent[0][2].split("Generated password (it only shows the notice): ")[1].split()[0]
     rows = a._one("SELECT GROUP_CONCAT(email_status, '|') AS s FROM force_open")["s"]
     assert rows == "not configured|failed: SMTPConnectError: nope"
     # a second force-open before the user came back keeps the user's REAL old password working for the notice
