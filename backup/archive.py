@@ -25,7 +25,7 @@ import tarfile
 import tempfile
 from pathlib import Path
 
-from . import catalog, config, prune
+from . import catalog, checkin, config, notify, prune
 from .config import BackupError
 from .util import read_secret, restic_bin, run, sha256_file
 
@@ -431,18 +431,39 @@ def _dest(tgt: Path, p: str) -> Path:
 _REFUSED = {errno.EACCES, errno.EPERM, errno.EROFS}
 
 
-def _why(e: OSError) -> str:
+LINK_OUT = "the folder is a link to somewhere else (not followed)"
+
+
+def _why(e: OSError | str) -> str:
+    if isinstance(e, str):
+        return e
     if e.errno == errno.EROFS:
         return "the disk or share is read-only"
     return "permission denied (the folder is read-only or belongs to another user)"
+
+
+def _euid() -> int:
+    return os.geteuid() if hasattr(os, "geteuid") else -1
+
+
+def _uid_of(p: Path, follow: bool) -> int:
+    return (os.stat(p) if follow else os.lstat(p)).st_uid
+
+
+def _safe_mode(mode: int) -> int:
+    """FN-5: as root, never create a setuid/setgid file or folder (root would own it)."""
+    mode &= 0o7777
+    return mode & ~(stat.S_ISUID | stat.S_ISGID) if _euid() == 0 else mode
 
 
 class _Blocked(Exception):
     """A folder refused us. Carries the folder that refused; the writer has already recorded it."""
 
 
-def blocked_text(folder: str, why: str, items: list[str], target: str) -> str:
-    """The popup / hub notice text for one folder that refused files: plain words, which folder, why, what to do."""
+def blocked_text(folder: str, why: str, items: list[str], target: str, files: list[str] | None = None) -> str:
+    """The popup / hub notice text for one folder that refused files: plain words, which folder, why, what to do.
+    FN-6: when files sit under the refused folder, every FILE is counted (first 10 shown), not just the folder."""
+    items = list(files) if files else items
     shown = "\n".join(f"  {p}" for p in items[:10]) + (f"\n  ... and {len(items) - 10} more" if len(items) > 10 else "")
     return (f"HavnVard could not put back {len(items)} item(s) into this folder:\n\n  {folder}\n\n"
             f"Why: {why}.\n\nNot put back:\n{shown}\n\n"
@@ -466,8 +487,8 @@ class _Writer:
         self.blocked: dict[str, dict] = {}
         self.unplaced: set[str] = set()          # source paths (files) not written because a folder refused them
 
-    def _refuse(self, folder: Path, item: Path, e: OSError) -> _Blocked:
-        b = self.blocked.setdefault(str(folder), {"why": _why(e), "items": []})
+    def _refuse(self, folder: Path, item: Path, e: OSError | str) -> _Blocked:
+        b = self.blocked.setdefault(str(folder), {"why": _why(e), "items": [], "files": []})
         if str(item) not in b["items"]:
             b["items"].append(str(item))
         return _Blocked(str(folder))
@@ -488,6 +509,8 @@ class _Writer:
             nxt = cur / part
             if os.path.lexists(nxt):
                 if nxt.is_dir():
+                    if nxt.is_symlink() and self._link_escapes(nxt):
+                        raise self._refuse(nxt, nxt, LINK_OUT)   # FN-5: listed as blocked, never followed
                     cur = nxt
                     continue
                 alt = renamed(nxt, self.stamp, is_dir=True)
@@ -512,6 +535,23 @@ class _Writer:
                 cur = nxt
         return cur
 
+    def _link_escapes(self, link: Path) -> bool:
+        """FN-5: a symlinked folder on the way to a destination is used only when it stays inside the target and,
+        when running as root, points at a folder owned by the same user as the link (a user's link into a
+        root-owned folder such as /etc/cron.d is refused)."""
+        try:
+            real = link.resolve(strict=True)
+        except (OSError, RuntimeError):
+            return True
+        if self.tgt != Path("/") and not real.is_relative_to(self.tgt.resolve()):
+            return True
+        if _euid() == 0:
+            try:
+                return _uid_of(link, follow=False) != _uid_of(real, follow=True)
+            except OSError:
+                return True
+        return False
+
     def put_dir(self, src: str, mode: int, mtime: float) -> None:
         """A folder in the backup (empty ones too). A folder that refuses us is recorded, never fatal."""
         try:
@@ -535,14 +575,16 @@ class _Writer:
                 os.write(fd, chunk)
         except BaseException:
             self.partial.append(str(path))      # stream cut mid-file (review N1): kept and reported, never removed
+            os.close(fd)
             raise
+        try:
+            if n == size:                       # FN-5: on the open fd, never by path (no race onto a swapped link)
+                os.fchmod(fd, _safe_mode(mode))
+                os.utime(fd, (mtime, mtime))
         finally:
             os.close(fd)
         if n != size:
             self.partial.append(str(path))      # kept, reported; never removed
-        else:
-            os.chmod(path, mode & 0o7777)
-            os.utime(path, (mtime, mtime))
         return h.hexdigest()
 
     @staticmethod
@@ -558,8 +600,9 @@ class _Writer:
         dest = _dest(self.tgt, src)
         try:
             self._put_file(src, dest, reader, size, mode, mtime)
-        except _Blocked:
+        except _Blocked as b:
             self.unplaced.add(src)
+            self.blocked[b.args[0]]["files"].append(src)
             self._drain(reader)
 
     def _put_file(self, src: str, dest: Path, reader, size: int, mode: int, mtime: float) -> None:
@@ -620,10 +663,16 @@ class _Writer:
             pass
 
     def finish(self) -> None:
+        """Folder modes and times, deepest first, set on an fd opened with O_NOFOLLOW (FN-5: never by path)."""
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
         for d, meta in sorted(self.new_dirs.items(), key=lambda kv: len(kv[0].parts), reverse=True):  # deepest first
             if meta:
-                os.chmod(d, meta[0] & 0o7777)
-                os.utime(d, (meta[1], meta[1]))
+                fd = os.open(d, flags)
+                try:
+                    os.fchmod(fd, _safe_mode(meta[0]))
+                    os.utime(fd, (meta[1], meta[1]))
+                finally:
+                    os.close(fd)
 
 
 def _popen(cmd: list[str], env: dict, errf):
@@ -757,18 +806,18 @@ def pullback(date: str | None = None, paths: list[str] | None = None, version: s
         print(f"  FAILED {inc}: {why}")
     if w.blocked:
         _report_blocked(w, str(tgt), notifier, hub_notice)
-    return 0 if not (bad or missing or w.partial or failed or w.blocked) else config.PROBLEM_EXIT
+    return 0 if not (bad or missing or w.partial or failed or w.blocked or w.unplaced) else config.PROBLEM_EXIT
 
 
-def _report_blocked(w: _Writer, target: str, notifier, hub_notice) -> None:
-    """Folders that refused files: listed, one popup per folder (stays until clicked), one hub notice per folder.
-    Whatever cannot be shown or sent is said on stderr; never silent."""
+def _report_blocked(w: _Writer, target: str, notifier, hub_notice) -> list[str]:
+    """Folders that refused files. FIRST every blocked folder, every item and every unplaced file is printed (FN-4,
+    FN-6), so nothing a popup or the hub does can hide the list. THEN, per folder, one popup (stays until clicked;
+    D2: as root, only on the graphical session of the user who owns that folder) and one hub notice, each in its own
+    guard: a failure is printed on stderr with its error and the next folder still gets its popup and notice.
+    Returns the errors (also on stderr); never silent."""
     import sys
-    from . import notify
-    if notifier is None:
-        notifier = notify.popup
-    if hub_notice is None:
-        from .checkin import report_notice as hub_notice
+    notifier = notifier or notify.popup
+    hub_notice = hub_notice or checkin.report_notice
     n = sum(len(b["items"]) for b in w.blocked.values())
     print(f"pullback: {n} item(s) could NOT be put back: {len(w.blocked)} folder(s) refused them "
           "(nothing there was changed)")
@@ -776,16 +825,34 @@ def _report_blocked(w: _Writer, target: str, notifier, hub_notice) -> None:
         print(f"  BLOCKED folder {folder}: {b['why']}")
         for item in b["items"]:
             print(f"    COULD NOT PLACE {item}")
-        text = blocked_text(folder, b["why"], b["items"], target)
-        shown = notifier(notify.TITLE, text)
-        if shown.get("shown"):
-            print(f"  popup shown ({shown.get('how')}); it stays until someone clicks OK")
-        else:
-            print(f"havnvard pullback: NO POPUP for {folder}: {shown.get('how')}", file=sys.stderr)
-        sent = hub_notice("pullback_blocked", text)
-        print(f"  hub notice: {sent}")
-        if not str(sent).startswith("sent"):
-            print(f"havnvard pullback: hub notice for {folder} not sent: {sent}", file=sys.stderr)
+    print(f"pullback: NOT PUT BACK: {len(w.unplaced)} file(s)")
+    for src in sorted(w.unplaced):
+        print(f"  NOT PUT BACK {src}")
+    errors: list[str] = []
+    for folder, b in w.blocked.items():
+        text = blocked_text(folder, b["why"], b["items"], target, b.get("files"))
+        try:
+            owner = _uid_of(Path(folder), follow=False)
+        except OSError:
+            owner = None
+        try:
+            shown = notifier(notify.TITLE, text, owner_uid=owner)
+            if shown.get("shown"):
+                print(f"  popup for {folder} shown ({shown.get('how')}); it stays until someone clicks OK")
+            else:
+                print(f"havnvard pullback: NO POPUP for {folder}: {shown.get('how')}", file=sys.stderr)
+        except Exception as e:  # noqa: BLE001 - FN-4: reported on stderr and returned; the next folder still runs
+            errors.append(f"NO POPUP for {folder}: {type(e).__name__}: {e}")
+            print(f"havnvard pullback: {errors[-1]}", file=sys.stderr)
+        try:
+            sent = hub_notice("pullback_blocked", text)
+            print(f"  hub notice for {folder}: {sent}")
+            if not str(sent).startswith("sent"):
+                print(f"havnvard pullback: hub notice for {folder} not sent: {sent}", file=sys.stderr)
+        except Exception as e:  # noqa: BLE001 - FN-4: reported on stderr and returned; the next folder still runs
+            errors.append(f"hub notice for {folder} not sent: {type(e).__name__}: {e}")
+            print(f"havnvard pullback: {errors[-1]}", file=sys.stderr)
+    return errors
 
 
 # ---------- find ----------

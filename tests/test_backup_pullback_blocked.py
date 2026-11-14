@@ -25,10 +25,13 @@ ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
 
 class Recorder:
     def __init__(self, result):
-        self.calls, self.result = [], result
+        self.calls, self.kw, self.result = [], [], result
 
-    def __call__(self, *a):
+    def __call__(self, *a, **kw):
         self.calls.append(a)
+        self.kw.append(kw)
+        if isinstance(self.result, BaseException):
+            raise self.result
         return self.result
 
 
@@ -111,7 +114,12 @@ def test_pullback_end_to_end_identical_different_deep_empty_and_readonly(env, ca
         assert "inside.txt" in text and "What to do" in text and "Nothing on this computer was changed" in text
     assert [k for k, _ in hub.calls] == ["pullback_blocked", "pullback_blocked"]
     assert hub.calls[0][1] == pop.calls[0][1]
-    assert "hub notice: sent" in o
+    assert f"hub notice for {base / 'ro'}: sent" in o
+    # FN-6: every file not put back is listed, with the count; D2: the popup is told who owns the folder
+    assert "NOT PUT BACK: 4 file(s)" in o
+    for ro in ("ro", "ro2"):
+        assert f"NOT PUT BACK {src / ro / 'inside.txt'}" in o and f"NOT PUT BACK {src / ro / 'sub' / 'x.txt'}" in o
+    assert [k["owner_uid"] for k in pop.kw] == [os.getuid(), os.getuid()]
 
 
 @needs_restic
@@ -177,7 +185,8 @@ SESSION = {"user": "alice", "uid": 1234, "type": "wayland", "display": "", "runt
 def test_popup_commands_for_each_platform():
     t, x = "Title", 'Folder "/srv/it\'s"; rm -rf ~'
     cmd, extra, how = notify.build(t, x, system="Linux", env={"DISPLAY": ":0"}, which=lambda n: "/usr/bin/zenity")
-    assert cmd == ["/usr/bin/zenity", "--warning", "--no-wrap", "--title", t, "--text", x] and extra == {}
+    assert cmd == ["/usr/bin/zenity", "--warning", "--no-wrap", "--no-markup", "--title", t, "--text", x]
+    assert extra == {}
     assert "--timeout" not in cmd                                           # stays until clicked
     cmd, extra, how = notify.build(t, x, system="Darwin")
     assert cmd[0] == "osascript" and cmd[-2:] == [x, t]                     # text as an argument, never in the script

@@ -3,10 +3,14 @@
 Used when a pullback cannot put files somewhere (a folder it cannot create or write). The popup has no time-out: it
 stays until someone clicks it away. It is launched DETACHED, so the pullback never waits for the click.
 
-* Linux with a graphical session: `zenity --warning` (modal, blocks until OK). When run from a service or as another
+* Linux with a graphical session: `zenity --warning --no-markup` (modal, blocks until OK; FN-3: the text is never
+  read as Pango markup, so a file named `<a href=...>` shows as plain text). When run from a service or as another
   user, the active local graphical session is found with `loginctl` and its DISPLAY / WAYLAND_DISPLAY /
   XDG_RUNTIME_DIR / DBUS_SESSION_BUS_ADDRESS are used. A session that belongs to ANOTHER user can only be reached when
   running as root (`runuser -u USER`); otherwise we say so.
+* D2 (orchestrator 20261114): when the pullback runs as ROOT, the popup goes only to the graphical session of the user
+  who OWNS the folder that refused files (`owner_uid`). When that user has no session there is no popup (hub notice
+  only) and the reason says so; it is never shown on someone else's screen.
 * macOS: `osascript` `display dialog ... buttons {"OK"}` (no `giving up after`, so no time-out).
 * Windows: PowerShell `[System.Windows.MessageBox]::Show`.
 
@@ -45,8 +49,9 @@ def _run_out(cmd: list[str]) -> str:
     return r.stdout if r.returncode == 0 else ""
 
 
-def find_session(run=_run_out) -> dict | None:
-    """The active, local graphical session: {user, uid, type, display, runtime_dir}. None when there is none."""
+def find_session(run=_run_out, uid: int | None = None) -> dict | None:
+    """The active, local graphical session (of user UID when given): {user, uid, type, display, runtime_dir}.
+    None when there is none."""
     for ln in run(["loginctl", "list-sessions", "--no-legend"]).splitlines():
         sid = ln.split()[0] if ln.split() else ""
         if not sid:
@@ -55,9 +60,14 @@ def find_session(run=_run_out) -> dict | None:
                                                    "-p", "Remote", "-p", "Name", "-p", "User", "-p", "Display",
                                                    "-p", "State"]).splitlines() if "=" in x)
         if props.get("Type") in ("x11", "wayland") and props.get("Active") == "yes" and props.get("Remote") != "yes":
-            uid = int(props.get("User") or -1)
-            return {"user": props.get("Name", ""), "uid": uid, "type": props["Type"],
-                    "display": props.get("Display", ""), "runtime_dir": f"/run/user/{uid}"}
+            try:
+                su = int(props.get("User") or -1)
+            except ValueError:                                   # unexpected loginctl output: not this session
+                continue
+            if uid is not None and su != uid:
+                continue
+            return {"user": props.get("Name", ""), "uid": su, "type": props["Type"],
+                    "display": props.get("Display", ""), "runtime_dir": f"/run/user/{su}"}
     return None
 
 
@@ -100,7 +110,7 @@ def build(title: str, text: str, system: str | None = None, env: dict | None = N
     zen = which("zenity")
     if not zen:
         return None, {}, "zenity is not installed, so no popup can be shown (install the zenity package)"
-    cmd = [zen, "--warning", "--no-wrap", "--title", title, "--text", text]
+    cmd = [zen, "--warning", "--no-wrap", "--no-markup", "--title", title, "--text", text]
     if env.get("DISPLAY") or env.get("WAYLAND_DISPLAY"):
         return cmd, {}, "zenity on this session's display"
     if session is None:
@@ -112,18 +122,39 @@ def build(title: str, text: str, system: str | None = None, env: dict | None = N
     if euid == 0:
         return (["runuser", "-u", session["user"], "--", "env", *[f"{k}={v}" for k, v in extra.items()], *cmd], {},
                 f"zenity on {session['user']}'s {session['type']} session (as {session['user']})")
-    me = pwd.getpwuid(euid).pw_name if pwd is not None else str(euid)
+    try:
+        me = pwd.getpwuid(euid).pw_name if pwd is not None else str(euid)
+    except KeyError:
+        me = f"uid {euid}"
     return None, {}, (f"the screen belongs to {session['user']} and this pullback runs as {me}; "
                       "only root can show a popup on another person's screen")
 
 
-def popup(title: str, text: str, launcher=None) -> dict:
-    """Show the popup without waiting for the click. {"shown": bool, "how": str} - how says why when not shown."""
+def popup(title: str, text: str, launcher=None, owner_uid: int | None = None, euid: int | None = None,
+          finder=None) -> dict:
+    """Show the popup without waiting for the click. {"shown": bool, "how": str} - how says why when not shown.
+    OWNER_UID: who owns the folder the popup is about (D2: used when running as root)."""
     system = platform.system()
-    session = None
-    if system not in ("Darwin", "Windows") and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
-        session = find_session()
-    cmd, extra, how = build(title, text, system=system, session=session)
+    finder = finder or find_session
+    session, env = None, None
+    if system not in ("Darwin", "Windows"):
+        euid = (os.geteuid() if hasattr(os, "geteuid") else -1) if euid is None else euid
+        if euid == 0 and owner_uid is None:
+            return {"shown": False, "how": "running as root and the folder's owner could not be told, so no popup on "
+                                           "anyone's screen (hub notice only)"}
+        if euid == 0:
+            session = finder(uid=owner_uid)
+            if session is None:
+                try:
+                    who = pwd.getpwuid(owner_uid).pw_name if pwd is not None else str(owner_uid)
+                except KeyError:
+                    who = f"uid {owner_uid}"
+                return {"shown": False, "how": f"running as root: the folder's owner ({who}) has no graphical session "
+                                               "on this computer, so no popup (hub notice only)"}
+            env = {}                                             # never root's own DISPLAY: the owner's session only
+        elif not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+            session = finder()
+    cmd, extra, how = build(title, text, system=system, env=env, session=session, euid=euid)
     if cmd is None:
         return {"shown": False, "how": how}
     launch = launcher or _launch
