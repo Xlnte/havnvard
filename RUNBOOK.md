@@ -322,7 +322,8 @@ Design, requirements (HV-REQ-01..38) and test plan: `/home/user/runbooks/2026110
 **Racy-clean rule (3.3.4, INFRA-520 G1).** A digest counts only if it was taken at least 2 s after the file's mtime.
 `hash_stat_batch.sh` reports a file whose mtime is within 2 s of the batch start (on the NAS's own clock) or in the
 future as `UNSTABLE` and does not hash it; the driver and the publish SQL refuse any binding with
-`bound_at < mtime + 2 s` (older bindings made before the guard are re-hashed once). Reason: mtime has 1 s
+`bound_at < mtime + 2 s`, where `bound_at` is the driver clock read at batch start (3.3.4; legacy pre-guard bindings
+are re-hashed only when bound inside that window by that clock). Reason: mtime has 1 s
 resolution, so a same-second rewrite keeps size and mtime and a digest taken in that window could later look fresh.
 `--path-prefix` is an alias of `--path`.
 

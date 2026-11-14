@@ -514,12 +514,15 @@ def _run_batch(ctx: RunCtx, name: str, batch: core.Batch):
         with open(local_list, "w", encoding="utf-8", newline="\n") as f:
             for kind, path in batch.items:
                 f.write(f"{kind}|{path}\n")
+        # INFRA-520 F1: bind time is read BEFORE any remote work, so it is a lower bound on when every file
+        # in this batch was hashed. Read after the batch (3.3.2), it could be minutes late on a long batch and
+        # the server-side term bound_at >= mtime + RACY_MARGIN_S would accept a digest taken inside that margin.
+        bound_at = datetime.now(timezone.utc)
         r = t.scp_put(local_list, remote_list)
         if r.returncode != 0:
             raise BatchTransportError(f"scp_put path list rc={r.returncode}: {r.stderr[:200]}")
         timeout = core.batch_timeout(batch.h_bytes, ctx.batch_timeout_mbps)
         r = t.ssh(f"sh {ctx.remote_script} {d} {name}", timeout_sec=timeout)
-        bound_at = datetime.now(timezone.utc)
         if r.returncode != 0:
             raise BatchTransportError(f"hash_stat_batch.sh rc={r.returncode} (timeout {timeout}s): {r.stderr[:200]}")
         lh, le = os.path.join(td, "b.hashes"), os.path.join(td, "b.hasherrs")
@@ -1089,8 +1092,12 @@ def main(argv=None) -> int:
             return EXIT_FAILED
 
         if args.dry_run:                                                     # read-only: no lock, no run row
+            conn.read_only = True                                            # F4: any write now raises in Postgres
             plan = plan_only(conn, args.host, scope, excludes, args.limit)
             print(json.dumps(plan, indent=1, ensure_ascii=False))
+            if plan["rows_in_scope"] == 0:                                   # HV-REQ-13: a typo'd scope is a failure
+                print("[nas_trigkey_dedup] ERROR: no inventory rows in scope; check --host/--path", file=sys.stderr)
+                return EXIT_FAILED
             return EXIT_OK
 
         if scope is None:                                                    # whole-host run (also --exclude / --limit)

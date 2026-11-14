@@ -1065,6 +1065,62 @@ def test_dry_run_plans_without_side_effects(env):
     assert plan2["to_hash"] == 0 and plan2["reused"] == 2
 
 
+def test_dry_run_main_is_read_only_and_fails_on_empty_scope(env, monkeypatch):
+    """F4: --dry-run sets the session READ ONLY, so a future write slipped into the plan path raises in Postgres;
+    item rows stay unchanged; a scope with no inventory rows (typo'd --path) exits non-zero like a real run."""
+    a, b = env.mk_add("a", X), env.mk_add("b", X)
+    rid, _ = env.run()
+    made = []
+
+    def factory():
+        c = env.factory()
+        made.append(c)
+        return c
+
+    monkeypatch.setattr(nd, "_connect", factory)
+    monkeypatch.setattr(nd, "_target_for_host", lambda h: _NoRemote())
+    monkeypatch.setattr(nd, "KNOWN_HOSTS", (env.host,))
+    count_sql = "SELECT (SELECT count(*) FROM diskaudit.dedup_runs WHERE host=%s), (SELECT count(*) FROM diskaudit.dedup_run_items)"
+    before = env.q(count_sql, (env.host,))[0]
+    assert nd.main(["--host", env.host, "--dry-run"]) == nd.EXIT_OK
+    assert made[-1].read_only is True
+    assert nd.main(["--host", env.host, "--dry-run", "--path", "/__test_nasdedup__/nope"]) == nd.EXIT_FAILED
+    assert env.q(count_sql, (env.host,))[0] == before and set(env.snap_members(rid)) == {a, b}
+
+    real_plan = nd.plan_only
+
+    def plan_then_write(conn, *a, **k):                                   # a future edit that adds a write
+        out = real_plan(conn, *a, **k)
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO diskaudit.dedup_runs (host, status) VALUES (%s, 'running')", (env.host,))
+        return out
+
+    monkeypatch.setattr(nd, "plan_only", plan_then_write)
+    with pytest.raises(psycopg.errors.ReadOnlySqlTransaction):
+        nd.main(["--host", env.host, "--dry-run"])
+    assert env.q(count_sql, (env.host,))[0] == before
+
+
+def test_bound_at_is_taken_before_the_batch_runs(env):
+    """F1: bound_at is the clock read BEFORE the batch's remote work. A batch that runs > RACY_MARGIN_S (slow
+    ssh) must not stamp a file written ~1 s before the batch started as bound >= mtime + 2 s. On 3e0843f
+    (bound_at read after ssh returned) this pair was published; now it is not, and the next run, once the
+    files have settled, re-hashes and groups them."""
+    while time.time() % 1 > 0.3:                         # start early in a second so setup cannot cross into mtime+2
+        time.sleep(0.05)
+    fs_mtime = int(time.time()) - 1
+    a, b = env.mk_add("a", X, fs_mtime=fs_mtime), env.mk_add("b", X, fs_mtime=fs_mtime)
+    env.target.on_ssh = lambda name: time.sleep(2.5)     # long batch: the script's own clock read is now >= mtime+3
+    rid, status = env.run()
+    assert status == "completed"
+    bound = env.binding(a)[1].timestamp()
+    assert bound < fs_mtime + core.RACY_MARGIN_S          # bound at batch start, not after the 2.5 s ssh
+    assert env.snap_groups(rid) == {}                     # server racy term rejects it
+    env.target.on_ssh = None
+    rid2, _ = env.run()
+    assert set(env.snap_members(rid2)) == {a, b}
+
+
 def test_path_prefix_is_an_alias_of_path():
     """G4: the ticket names the flag --path-prefix; 1.4.0 shipped it as --path. Both work."""
     p = nd._build_parser()

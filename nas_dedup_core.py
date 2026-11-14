@@ -143,8 +143,9 @@ class Binding:
 # INFRA-520 G1 (racy-clean): a digest is trusted only if it was bound at least this many seconds AFTER the
 # file's mtime. mtime has 1 s resolution (2 s on FAT/SMB), so a rewrite inside the same second keeps size and
 # mtime; a digest bound in that window could later look fresh while the bytes differ. hash_stat_batch.sh
-# enforces the same margin on the hashing host's own clock; this check also rejects older bindings made
-# before that guard existed. Mirrored in the publish SQL (%(racy_s)s).
+# enforces the same margin on the hashing host's own clock; this check also rejects any binding (legacy rows
+# included) whose bind time, the driver clock read at batch START, is inside the margin. Mirrored in the
+# publish SQL (%(racy_s)s).
 RACY_MARGIN_S = 2
 
 
