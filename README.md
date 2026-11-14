@@ -2,7 +2,7 @@
 
 **Know that every file you care about is backed up, prove the backups restore, and find any file in any backup.**
 HavnVard is a self-hosted storage-assurance toolkit for a home or small-office fleet: a few Linux machines, a NAS and
-a cloud account. Version 3.3.0.
+a cloud account. Version 3.3.2.
 
 > **Absolute rule: HavnVard never deletes, moves or overwrites a scanned file.** Every "duplicate", "stale" or
 > "not backed up" result is a report for you to read. Deleting anything is always your decision, made by hand.
@@ -133,6 +133,21 @@ python -m backup coverage-sync my-laptop    # mark files BACKED_UP_UNVERIFIED (n
 python -m backup not-backed-up --host agent-1 --by folder --limit 25   # biggest NOT backed-up folders (or --by type)
 python -m backup check-timers   # list havnvard-restic-* timers whose script or backup source no longer exists
 ```
+
+**An offsite uploader that runs on another machine (3.3.2).** Some cloud drives are reachable only through a desktop
+app's sync folder, so the upload runs on that desktop, not on the hub, and the hub's own `offsite` checks never see it.
+Have that uploader write a status file and tell the hub how to fetch it, in `backup.toml` on the hub:
+```toml
+[offsite_remote.cloud-desk]
+status_command = ["ssh", "-o", "BatchMode=yes", "desktop-1", "cat", ".local/state/offsite-cloud.status.json"]
+expect_source = "agent-1:/srv/hub/restic-hub"   # default: "<this hostname>:<[hub_local] repo_root>"
+```
+The status file is one JSON object: `{"source": "<host>:<folder it read>", "at": <epoch>, "rc": <exit>, "flagged": <n>,
+"hold": [repos], "repos": {"<repo>": {"ok_at": <epoch of its last full upload>}}}`. `health` reports a problem when the
+file cannot be fetched or read, when the uploader read **any folder other than this hub** (for example a retired hub it
+was never re-pointed from), when its last run failed or is older than `offsite_stale_hours`, and for every hub repo not
+fully uploaded within that limit. Offsite problems also raise their own alert key, `havnvard-offsite-stale`
+(`havnvard-offsite-stale-<hub>` through `health-relay`), resolved only when every offsite check passes.
 
 A hub without `alertlib` (agent-1): on the server run `python -m backup health-relay --ssh agent-1 --python PATH --repo-dir DIR`
 (or render an hourly timer with `--render-units ./out`). It runs `health --json --no-alert` on the hub and raises or

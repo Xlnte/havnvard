@@ -9,6 +9,7 @@ from pathlib import Path
 
 from . import alerts, config
 from .config import BackupError
+from .health import OFFSITE_KEY, OFFSITE_PREFIX
 from .render import render_task
 from .util import run, systemd_arg
 
@@ -19,16 +20,27 @@ def remote_command(python: str, repo_dir: str) -> str:
     return f"cd {shlex.quote(repo_dir)} && {shlex.quote(python)} -m backup health --json --no-alert"
 
 
-def interpret(rc: int, stdout: str, stderr: str = "") -> tuple[bool, str]:
-    """(healthy, problem_text). Anything that is not a well-formed health result is a problem."""
-    doc = None
+def _doc(stdout: str):
     for ln in reversed(stdout.splitlines()):
         if ln.lstrip().startswith("{"):
             try:
-                doc = json.loads(ln)
+                return json.loads(ln)
             except ValueError:
-                pass
-            break
+                return None
+    return None
+
+
+def offsite_checks(stdout: str) -> list[dict] | None:
+    """The offsite checks of a well-formed health result, or None when there is no readable result (3.3.2)."""
+    doc = _doc(stdout)
+    if not isinstance(doc, dict) or not isinstance(doc.get("checks"), list):
+        return None
+    return [c for c in doc["checks"] if isinstance(c, dict) and str(c.get("name", "")).startswith(OFFSITE_PREFIX)]
+
+
+def interpret(rc: int, stdout: str, stderr: str = "") -> tuple[bool, str]:
+    """(healthy, problem_text). Anything that is not a well-formed health result is a problem."""
+    doc = _doc(stdout)
     if not isinstance(doc, dict) or "ok" not in doc or "checks" not in doc and "error" not in doc:
         return False, f"relay: unparsable remote output (rc {rc}): {(stdout or stderr).strip()[-200:]!r}"
     if "error" in doc:
@@ -53,6 +65,7 @@ def relay(host: str, python: str, repo_dir: str, runner=run) -> int:
             healthy, text, failed_relay = False, f"relay: ssh to {host} failed: {r.stderr.strip()[-200:]}", True
     except BackupError as e:
         healthy, text, failed_relay = False, f"relay: {e}", True
+    _relay_offsite(host, None if failed_relay else r.stdout)
     if healthy:
         alerts.resolve(key)
         print(f"health-relay {host}: healthy")
@@ -61,6 +74,23 @@ def relay(host: str, python: str, repo_dir: str, runner=run) -> int:
     print(f"health-relay {host}: PROBLEM {text}")
     print(f"alert: {detail}" if sent else f"ALERT NOT SENT: {detail}")
     return config.ERROR_EXIT if (failed_relay or not sent) else config.PROBLEM_EXIT
+
+
+def _relay_offsite(host: str, stdout: str | None) -> None:
+    """3.3.2: offsite problems also go out under their own key; it is resolved only from a readable result whose
+    offsite checks all pass (a failed relay leaves it as it was; the relay's own alert covers that case)."""
+    checks = offsite_checks(stdout) if stdout is not None else None
+    if not checks:
+        return
+    okey = f"{OFFSITE_KEY}-{host}"
+    bad = [c for c in checks if not c.get("ok")]
+    if bad:
+        sent, detail = alerts.fire(okey, f"HavnVard offsite ({host}): " +
+                                   "; ".join(f"{c.get('name')}: {c.get('detail')}" for c in bad))
+        if not sent:
+            print(f"ALERT NOT SENT ({okey}): {detail}")
+    else:
+        alerts.resolve(okey)
 
 
 def render_units(out_dir: Path, host: str, python: str, repo_dir: str, schedule: str = "hourly") -> list[Path]:
