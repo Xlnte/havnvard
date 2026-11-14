@@ -28,7 +28,7 @@ def test_interval_due_when_never_run_then_after_the_interval(s):
     s.set(None, "air2017", mode="interval", every_min=60)
     assert s.checkin("air2017", now=T0)["due"] is True                       # never ran: due now
     rid = s.run_start("air2017", now=m(1))
-    s.run_end(rid, exit_code=0, snapshot_id="abc12345", now=m(3))
+    s.run_end("air2017", rid, exit_code=0, snapshot_id="abc12345", now=m(3))
     c = s.checkin("air2017", now=m(30))
     assert c["due"] is False and c["reason"].startswith("next run at")
     assert s.checkin("air2017", now=m(62))["due"] is True                    # 60 min after the last START
@@ -39,7 +39,7 @@ def test_constant_loop_min_gap_failure_backoff_and_run_lengths(s):
     s.set(None, "spark", mode="constant_loop", min_gap_s=60)
     rid = s.run_start("spark", now=T0)
     assert s.checkin("spark", now=m(5))["due"] is False                      # a run is still going
-    s.run_end(rid, exit_code=0, now=m(10))
+    s.run_end("spark", rid, exit_code=0, now=m(10))
     assert s.checkin("spark", now=m(10) + dt.timedelta(seconds=30))["due"] is False
     assert s.checkin("spark", now=m(11))["due"] is True                      # next starts when the last ends + gap
     # failures back off (2x, 4x ... the gap), capped at 60 min: a broken run must not loop hot
@@ -47,7 +47,7 @@ def test_constant_loop_min_gap_failure_backoff_and_run_lengths(s):
     gaps = []
     for _ in range(8):
         r = s.run_start("spark", now=t)
-        s.run_end(r, exit_code=1, now=t + dt.timedelta(seconds=10))
+        s.run_end("spark", r, exit_code=1, now=t + dt.timedelta(seconds=10))
         gaps.append(s.next_due("spark") - (t + dt.timedelta(seconds=10)))
         t = s.next_due("spark")
     assert gaps[0] == dt.timedelta(seconds=120) and gaps[1] == dt.timedelta(seconds=240)

@@ -39,6 +39,11 @@ def build_parser() -> argparse.ArgumentParser:
     hf.add_argument("--admin-password-file", help="file holding your admin password (default: asked)")
     hf.add_argument("--reason", required=True, help="the user will see this, word for word")
     hf.add_argument("--confirm", metavar="EMAIL", help="type the user's email again")
+    hr2 = hub.add_parser("revoke-device-key", help="after disabling a user: remove the computer's own restic key from its "
+                         "repository on the hub (KEY REMOVAL ONLY; snapshots untouched; needs the store key)")
+    hr2.add_argument("device")
+    hr2.add_argument("--store-key-file", required=True, help="file holding the store key from the recovery kit")
+    hr2.add_argument("--confirm", metavar="TEXT", help='exactly "REMOVE DEVICE KEYS FROM DEVICE"')
     hg = hub.add_parser("diskguard", help="stop/start the hub on low disk (run by its timer)")
     hg.add_argument("--stop-gb", type=int)
     hg.add_argument("--start-gb", type=int)
@@ -182,6 +187,23 @@ def _dispatch(a: argparse.Namespace) -> int:
             print(f"{a.device}: store key {adopt_repo(restic_bin(), drill._env_for(a.device), read_secret(Path(a.store_key_file).expanduser()), Accounts())}")
         elif a.hub_cmd == "force-open":
             return _force_open_cli(a)
+        elif a.hub_cmd == "revoke-device-key":
+            from .accounts import Accounts, revoke_device_keys
+            from .util import hub_password_dir, read_secret, restic_bin
+            want = f"REMOVE DEVICE KEYS FROM {a.device}"
+            if a.confirm != want:
+                print(f"removes every restic key of {a.device}'s repository except the store key (the computer's own "
+                      f'password stops working; no snapshot is touched); pass --confirm "{want}"')
+                return config.PROBLEM_EXIT
+            hub_local = config.load().get("hub_local")
+            if not hub_local:
+                raise BackupError("run this on the hub (`hub install` first)")
+            repo = Path(hub_local["repo_root"]) / prune.check_device(a.device)
+            r = revoke_device_keys(restic_bin(), str(repo), read_secret(Path(a.store_key_file).expanduser()), Accounts(),
+                                   a.device, hub_password_dir() / f"{a.device}.pass")
+            print(f"{a.device}: removed {len(r['removed'])} key(s): {', '.join(r['removed']) or 'none'}; "
+                  f"kept: {', '.join(r['kept'])}; {r['hub_key']}")
+            print("NAS and offsite copies keep the old key files until they are refreshed from the hub (copy-only).")
         else:
             return hub.diskguard(a.stop_gb, a.start_gb)
         return 0
@@ -260,8 +282,9 @@ def _force_open_cli(a: argparse.Namespace) -> int:
     print(f"force-open of {r['user_email']} started and logged.")
     print(f"New password (shown once, not kept): {r['new_password']}")
     print(f"Email to the user: {r['email_status']}" + ("" if r["email_status"] == "sent" else " - tell them yourself"))
-    print("At their next login (old password or the new one) they first read that you reset their password and "
-          "accessed all their files, and why; then they set their own.")
+    print("This password only shows the notice: it cannot acknowledge it or set a password. The user acknowledges "
+          "with their OWN old password (or a reset code they redeem themselves), after reading that you reset their "
+          "password and accessed all their files, and why; then they set their own.")
     return 0
 
 

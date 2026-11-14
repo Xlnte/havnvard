@@ -176,28 +176,26 @@ def test_force_open_new_password_old_password_notice_unclearable_and_logged(db):
     n = a.notice(u)
     assert n["text"].startswith("Your administrator boss@example.com reset your password on ")
     assert "accessed all your files. Reason: investigation" in n["text"] and n["unacked"]
-    # NEW password -> the same notice first
+    # NEW (admin-known) password -> the notice, read only (FN-1)
     fresh = a.login("al@example.com", new)
-    assert fresh["scope"] == "full" and fresh["must_ack"] is True
+    assert fresh["scope"] == "gated" and fresh["must_ack"] is True
     with pytest.raises(BackupError, match="acknowledge"):
         a.require_ready(fresh["token"])
-    # nothing an admin can call clears it (enable/disable/reset/second force-open)
+    # nothing an admin can call clears it (enable/disable/second force-open)
     a.disable(adm["account_id"], u, reason="x")
     a.enable(adm["account_id"], u)
-    with pytest.raises(BackupError, match="force-open notice pending"):
-        a.admin_reset(adm["account_id"], u)
     assert a.account(u)["must_ack_force_open"] == 1 and a.account(u)["must_set_password"] == 1
     assert a.told_password(u) is None                                         # not before the acknowledgement
-    with pytest.raises(BackupError, match="acknowledge the notice first"):
-        a.set_own_password(u, "my very own password")
     old = a.login("al@example.com", PW)                                        # disable revoked the earlier ones
-    w = a.ack_warning(u)
+    with pytest.raises(BackupError, match="acknowledge the notice first"):
+        a.set_own_password(old["token"], "my very own password")
+    w = a.ack_warning(old["token"])
     assert w["new_password"] == new                                           # told the generated password
     with pytest.raises(BackupError, match="acknowledge"):
         a.require_ready(old["token"])                                          # still gated: must set their own
     with pytest.raises(BackupError, match="administrator knows"):
-        a.set_own_password(u, new)
-    s = a.set_own_password(u, "my very own password")
+        a.set_own_password(old["token"], new)
+    s = a.set_own_password(old["token"], "my very own password")
     assert a.require_ready(s["token"])["account_id"] == u
     assert a.session(old["token"]) is None                                     # notice session gone
     acc = a._one("SELECT old_pw_hash, sealed_pw, must_set_password FROM account WHERE id=?", (u,))
@@ -229,7 +227,7 @@ def test_force_open_email_not_configured_and_failed_are_recorded(db, tmp_path, m
     assert rows == "not configured|failed: SMTPConnectError: nope"
     # a second force-open before the user came back keeps the user's REAL old password working for the notice
     assert a.login("al@example.com", PW)["scope"] == "notice"
-    assert a.login("al@example.com", r["new_password"])["scope"] == "full"
+    assert a.login("al@example.com", r["new_password"])["scope"] == "gated"
     assert a.notice(u)["reason"] == "r2"
     assert mailmod.settings({}) is None
 

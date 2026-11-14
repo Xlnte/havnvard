@@ -117,8 +117,16 @@ def test_invite_disable_force_open_ack_flow_and_user_cannot_see_admin_pages(app)
     _, _, page = adm.post("/admin/users", {"action": "force_open", "target": uid, "reason": "audit 2",
                                            "typed_email": "al@example.com"})
     new2 = re.search(r"not kept\): <code[^>]*>([A-Z2-7-]+)</code>", page).group(1)
-    u2 = Client(w)
-    st, h, _ = u2.req("POST", "/login", {"email": "al@example.com", "password": new2})
+    g = Client(w)                                       # FN-1: the admin-known password only READS the notice
+    st, h, _ = g.req("POST", "/login", {"email": "al@example.com", "password": new2})
+    assert h["Location"] == "/ack" and "Reason: audit 2" in g.req("GET", "/ack")[2]
+    assert "your own old password" in g.req("GET", "/ack")[2] and "Acknowledge" not in g.req("GET", "/ack")[2]
+    st, _, page = g.post("/ack", {"step": "ack", "understand": "yes"})
+    assert st == "400 Bad Request" and "only you can do this" in page
+    st, _, page = g.post("/ack", {"step": "password", "password": "admin chose this!", "password2": "admin chose this!"})
+    assert st == "400 Bad Request" and w.a.account(uid)["must_ack_force_open"] == 1
+    u2 = Client(w)                                      # the user, with their own (old) password
+    st, h, _ = u2.req("POST", "/login", {"email": "al@example.com", "password": "mine mine mine!"})
     assert h["Location"] == "/ack" and "Reason: audit 2" in u2.req("GET", "/ack")[2]
     u2.post("/ack", {"step": "ack", "understand": "yes"})
     u2.post("/ack", {"step": "password", "password": "mine again mine!", "password2": "mine again mine!"})
@@ -221,6 +229,8 @@ def test_device_checkin_client_runs_when_due_and_reports_late_after_an_outage(ap
     assert checkin.checkin(run=True, opener=opener, runner=lambda: ran.append(1) or 0) == 0
     assert ran == [1]
     runs = w.s._runs("air2017")
-    assert [(r["reported_via"], r["status"]) for r in runs] == [("late", "failed"), ("checkin", "completed")]
+    # F9: the check-in that could not reach the hub is a missed check-in, never a failed backup run
+    assert [(r["reported_via"], r["status"]) for r in runs] == [("checkin", "completed")]
+    assert w.s._rows("SELECT COUNT(*) AS n FROM checkin WHERE reason LIKE 'missed:%'")[0]["n"] == 1
     assert checkin.checkin(run=True, opener=opener, runner=lambda: ran.append(1) or 0) == 0
     assert ran == [1]                                                        # not due again within the hour

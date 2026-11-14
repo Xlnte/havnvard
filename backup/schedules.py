@@ -8,6 +8,10 @@ the next check-in without logging in to the laptop. Modes:
 * manual         - runs only when started by hand
 * paused         - never due
 A run the device could not report while the hub was unreachable is reported later (`report_late`), with its real times.
+A check-in that could not reach the hub is NOT a backup run (F9): it is reported later as a missed check-in
+(`report_missed_checkin`) and never moves the next backup, the back-off or the run statistics.
+A run whose end is never reported (lid closed, hub blip) is marked failed with reason 'stale' after STALE bound (F5), so
+scheduling never stops for good; a late end report for it still lands (`run_end`).
 Same SQLite file as the accounts (the hub's state dir). Nothing here deletes anything.
 """
 from __future__ import annotations
@@ -25,6 +29,14 @@ from .config import BackupError
 MODES = ("interval", "constant_loop", "manual", "paused")
 BACKOFF_CAP = dt.timedelta(minutes=60)
 CHECKIN_EVERY_S = 300
+STALE_DEFAULT = dt.timedelta(hours=24)     # no run length recorded yet
+STALE_MIN = dt.timedelta(hours=1)          # never sooner than this, however short the runs are
+STALE_PREFIX = "stale:"
+MISSED = "missed:"                          # checkin.reason prefix of a check-in that never reached the hub
+
+
+class NotFound(BackupError):
+    """No such run for this computer (the device API answers 404)."""
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS schedule (device TEXT PRIMARY KEY, mode TEXT NOT NULL CHECK (mode IN ('interval','constant_loop','manual','paused')),
@@ -108,17 +120,46 @@ class Schedules:
         return self._exec("INSERT INTO run(device, kind, started_at, status) VALUES (?,?,?, 'running')",
                           (device, kind, _iso(_utc(now))))
 
-    def run_end(self, run_id: int, exit_code: int, snapshot_id: str | None = None, error: str | None = None,
-                now: dt.datetime | None = None) -> None:
-        r = self._rows("SELECT started_at FROM run WHERE id=?", (run_id,))
+    def run_end(self, device: str, run_id: int, exit_code: int, snapshot_id: str | None = None,
+                error: str | None = None, now: dt.datetime | None = None) -> None:
+        """End THIS computer's open run (F4: a computer can never end or rewrite another computer's run). An open run
+        is 'running', or one the hub marked failed as stale (its real end report, arriving late, still lands)."""
+        r = self._rows("SELECT started_at FROM run WHERE id=? AND device=? AND (status='running' OR "
+                       "(status='failed' AND exit_code IS NULL AND error LIKE ?))", (run_id, device, STALE_PREFIX + "%"))
         if not r:
-            raise BackupError(f"no run {run_id}")
+            raise NotFound(f"no open run {run_id} for {device}")
         end = _utc(now)
         dur = (end - _parse(r[0]["started_at"])).total_seconds()
         # restic exit 3 = snapshot saved but some source files unreadable: the run completed (legacy SuccessExitStatus=3)
         status = "completed" if exit_code in (0, 3) else "failed"
-        self._exec("UPDATE run SET ended_at=?, duration_s=?, exit_code=?, status=?, snapshot_id=?, error=? WHERE id=?",
-                   (_iso(end), dur, exit_code, status, snapshot_id, (error or "")[:500] or None, run_id))
+        self._exec("UPDATE run SET ended_at=?, duration_s=?, exit_code=?, status=?, snapshot_id=?, error=? "
+                   "WHERE id=? AND device=?",
+                   (_iso(end), dur, exit_code, status, snapshot_id, (error or "")[:500] or None, run_id, device))
+
+    def report_missed_checkin(self, device: str, at: dt.datetime, error: str | None = None) -> int:
+        """F9: a check-in that could not reach the hub, reported later. Kept for the record; it is not a run."""
+        return self._exec("INSERT INTO checkin(device, at, due, reason, client_version) VALUES (?,?,0,?,NULL)",
+                          (device, _iso(_utc(at)), (MISSED + " " + (error or "hub unreachable"))[:300]))
+
+    def stale_after(self, device: str) -> dt.timedelta:
+        """How long a run may stay open: 2x the longest recorded run (at least STALE_MIN), or STALE_DEFAULT when no
+        run length is recorded yet."""
+        d = [r["duration_s"] for r in self._runs(device) if r["duration_s"] is not None]
+        return max(2 * dt.timedelta(seconds=max(d)), STALE_MIN) if d else STALE_DEFAULT
+
+    def expire_stale(self, device: str, now: dt.datetime | None = None) -> int:
+        """F5: a run still 'running' past `stale_after` becomes failed with reason 'stale' (no length recorded, so the
+        run statistics stay true). Returns how many were marked."""
+        now = _utc(now)
+        bound = self.stale_after(device)
+        n = 0
+        for r in self._rows("SELECT id, started_at FROM run WHERE device=? AND status='running'", (device,)):
+            if now - _parse(r["started_at"]) > bound:
+                n += 1
+                self._exec("UPDATE run SET status='failed', ended_at=?, error=? WHERE id=? AND status='running'",
+                           (_iso(now), f"{STALE_PREFIX} no end report within {bound}; marked failed by the hub so "
+                                       "backups keep being scheduled", r["id"]))
+        return n
 
     def report_late(self, device: str, started_at: dt.datetime, ended_at: dt.datetime, exit_code: int,
                     error: str | None = None, snapshot_id: str | None = None) -> int:
@@ -132,13 +173,15 @@ class Schedules:
         return self._rows("SELECT * FROM run WHERE device=? ORDER BY started_at, id", (device,))
 
     # ---------- due ----------
-    def next_due(self, device: str) -> dt.datetime | None:
-        """When the next run is due; None = never (manual, paused, no schedule) or a run is still going."""
+    def next_due(self, device: str, now: dt.datetime | None = None) -> dt.datetime | None:
+        """When the next run is due; None = never (manual, paused, no schedule) or a run is still going (a run open
+        longer than `stale_after` is marked failed first, F5)."""
         sch = self.get(device)
         if not sch or sch["mode"] in ("manual", "paused"):
             return None
+        self.expire_stale(device, now)
         runs = self._runs(device)
-        if any(r["status"] == "running" for r in runs[-3:]):
+        if any(r["status"] == "running" for r in runs):
             return None
         done = [r for r in runs if r["status"] != "running"]
         if not done:
@@ -166,7 +209,7 @@ class Schedules:
         elif sch["mode"] == "manual":
             due, reason = False, "manual: runs only when started by hand"
         else:
-            nd = self.next_due(device)
+            nd = self.next_due(device, now)
             if nd is None:
                 due, reason = False, "a run is still going"
             elif nd <= now:
@@ -191,9 +234,11 @@ class Schedules:
         out = []
         for sch in self._rows("SELECT * FROM schedule ORDER BY device"):
             dev = sch["device"]
+            self.expire_stale(dev, now)
             runs = [r for r in self._runs(dev) if r["status"] != "running"]
             last = runs[-1] if runs else None
-            ck = self._rows("SELECT at FROM checkin WHERE device=? ORDER BY at DESC LIMIT 1", (dev,))
+            ck = self._rows("SELECT at FROM checkin WHERE device=? AND (reason IS NULL OR reason NOT LIKE ?) "
+                            "ORDER BY at DESC LIMIT 1", (dev, MISSED + "%"))
             last_ck = ck[0]["at"] if ck else None
             limit = dt.timedelta(minutes=2 * (sch["every_min"] or 60)) if sch["mode"] == "interval" else dt.timedelta(hours=2)
             if sch["mode"] == "paused":
@@ -203,9 +248,9 @@ class Schedules:
             elif last and last["status"] == "failed":
                 health = "failed"
             else:
-                nd = self.next_due(dev)
+                nd = self.next_due(dev, now)
                 health = "late" if nd is not None and now - nd > limit / 2 else "ok"
-            nd = self.next_due(dev)
+            nd = self.next_due(dev, now)
             out.append({"device": dev, "mode": sch["mode"], "every_min": sch["every_min"], "min_gap_s": sch["min_gap_s"],
                         "last_started_at": last["started_at"] if last else None,
                         "last_duration_s": last["duration_s"] if last else None,
