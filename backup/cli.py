@@ -24,6 +24,14 @@ def build_parser() -> argparse.ArgumentParser:
     hi.add_argument("--rest-server", help="path to the rest-server binary")
     hs = hub.add_parser("set", help="on a device: choose the hub")
     hs.add_argument("address", metavar="HOST[:PORT]")
+    hub.add_parser("setup-code", help="on the hub's console: print the one-time code the FIRST registration needs")
+    hw = hub.add_parser("web", help="serve the hub pages (register, log in, users, computers, schedules, audit)")
+    hw.add_argument("--listen", default="127.0.0.1")
+    hw.add_argument("--port", type=int, default=8001)
+    ha = hub.add_parser("adopt", help="add the company's store key to a device's existing repository (additive)")
+    ha.add_argument("device")
+    ha.add_argument("--store-key-file", required=True, help="file holding the store key from the recovery kit")
+    ha.add_argument("--confirm", metavar="TEXT", help='exactly "ADD STORE KEY TO DEVICE"')
     hg = hub.add_parser("diskguard", help="stop/start the hub on low disk (run by its timer)")
     hg.add_argument("--stop-gb", type=int)
     hg.add_argument("--start-gb", type=int)
@@ -133,6 +141,8 @@ def build_parser() -> argparse.ArgumentParser:
         fb.add_argument("--owner-key", metavar="FILE")
         fb.add_argument("--include-archive", action="store_true")
         fb.add_argument("--confirm", metavar="TEXT")
+    ck = sub.add_parser("checkin", help="device: ask the hub whether a backup is due (schedules page); --run runs it")
+    ck.add_argument("--run", action="store_true")
     rd = sub.add_parser("restore-drill", help="restore a random sample and compare SHA-256")
     rd.add_argument("device")
     rd.add_argument("--sample", type=int, default=20)
@@ -148,6 +158,21 @@ def _dispatch(a: argparse.Namespace) -> int:
             print("\n".join(hub.hub_install(a.repo_root, a.port, a.listen, Path(a.out), a.rest_server)))
         elif a.hub_cmd == "set":
             print(f"hub set to {hub.hub_set(a.address)} in {config.config_path()}")
+        elif a.hub_cmd == "setup-code":
+            from .accounts import Accounts
+            print("One-time setup code for the first registration (valid 1 hour):")
+            print("  " + Accounts().new_setup_code())
+        elif a.hub_cmd == "web":
+            from .hubweb import serve
+            serve(a.listen, a.port)
+        elif a.hub_cmd == "adopt":
+            from .accounts import Accounts, adopt_repo
+            from .util import read_secret, restic_bin
+            want = f"ADD STORE KEY TO {a.device}"
+            if a.confirm != want:
+                print(f'adds a key to {a.device}\'s repository (nothing else changes); pass --confirm "{want}"')
+                return config.PROBLEM_EXIT
+            print(f"{a.device}: store key {adopt_repo(restic_bin(), drill._env_for(a.device), read_secret(Path(a.store_key_file).expanduser()), Accounts())}")
         else:
             return hub.diskguard(a.stop_gb, a.start_gb)
         return 0
@@ -157,6 +182,9 @@ def _dispatch(a: argparse.Namespace) -> int:
         return 0
     if a.cmd == "client-run":
         return enroll.client_run(a.init)
+    if a.cmd == "checkin":
+        from .checkin import checkin
+        return checkin(run=a.run)
     if a.cmd == "offsite":
         if a.off_cmd == "add":
             offsite.offsite_add(a.name, a.rclone_remote, a.crypt)

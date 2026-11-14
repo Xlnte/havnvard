@@ -50,7 +50,7 @@ Everything that differs between installations lives in one TOML file: `/etc/havn
 It names your hosts (the local machine, the NAS, remote "agent" machines), the database env file, the NAS and the
 optional alert/report integrations. **It never holds a password:** it names the files that hold them.
 
-## Known limits in 3.2.0
+## Known limits in 3.3.0
 
 * `migrations/` is the change history of the original deployment, not an install path; new sites use
   `schema/baseline.sql` (see "Database").
@@ -161,6 +161,31 @@ second pullback of the same backed-up file finds that copy and writes nothing). 
 the files named (3.3.0; 3.2.0 restored the whole snapshot, INFRA-578). Archive snapshots survive every keep rule and every
 `forget-*` unless `--include-archive` (which the typed text then names). The NAS and offsite copies are copy-only, so
 they still hold (and restore) snapshots the hub deleted. Offload records need `migrations/20261113_diskaudit_archive_offload_v1.sql`.
+
+### Accounts, registration and schedules (3.3.0)
+The hub can serve pages (`python -m backup hub web --listen <tailnet-ip> --port 8001`). The **company or household owns
+the files**: one store per company, opened by a **store key** the administrator holds (shown once at registration; the
+hub keeps only its fingerprint).
+```bash
+python -m backup hub setup-code            # on the hub's console: one-time code (1 hour) for the FIRST registration
+# open http://<hub>:8001/register: the first account becomes the administrator; everyone else needs an invite
+python -m backup hub adopt my-laptop --store-key-file ~/store.key --confirm "ADD STORE KEY TO my-laptop"   # additive
+python -m backup checkin --run             # on a device (timer every 5 min): ask the hub "am I due?", run if so
+```
+* **Administrator** and **user** are separate accounts; the same email (and password) may hold one of each.
+* A user sees only their own files: folder owners by path, the computer's primary user, or files an admin released to
+  them. **A shared folder is owned by that PC's administrator.**
+* **Disable** a user who quits or is fired: every session stops at once; the files stay with the company.
+* **Force-open:** an admin reaches a user's files only by forcing a password reset. At the next login the user must
+  acknowledge "Your administrator reset your password, which means someone may have looked at your files." with the
+  date, the admin and the reason. Nothing an admin can do clears it; every step is in the hash-chained audit log.
+  Honest limit: whoever has root on the hub can read every backup the hub holds a password for; the log makes
+  tampering visible, not impossible.
+* **Schedules page** (`/admin/schedules`): per computer `interval`, `constant_loop` (the next run starts when the last
+  ends; after a failure the gap doubles, up to 60 min), `manual` or `paused`; last run, length, next run, last check-in.
+  A device that cannot reach the hub runs nothing (no 15-minute retry loop) and reports the attempt late.
+* State: one SQLite file `~/.local/state/havnvard/accounts.db` on the hub (600). Not yet built: file search/pull back in
+  the web page (use `find` / `pullback`), SMTP invites, store-key rotation.
 
 ### Restore one file
 ```bash
