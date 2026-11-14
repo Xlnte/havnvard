@@ -991,3 +991,83 @@ def test_heartbeat_thread_reconnects_after_connect_failures(env):
     assert hb.errors >= 2 and attempts["n"] >= 3
     assert env.q("SELECT count(*) FROM diskaudit.run_heartbeats WHERE run_type='dedup' AND run_id=%s", (rid,))[0][0] >= 1
     assert env.q("SELECT last_heartbeat_at IS NOT NULL FROM diskaudit.dedup_runs WHERE dedup_run_id=%s", (rid,))[0][0] is True
+
+
+# ===========================================================================
+# INFRA-520 follow-ups on 3.3.1: G1 racy-clean publish gate, G4 --path-prefix alias, G5 --publish-only, --dry-run
+# ===========================================================================
+
+class _NoRemote:
+    """Any use of the remote transport is a test failure (publish-only and dry-run must not touch a host)."""
+
+    scratch_dir = "/nonexistent"
+
+    def __getattr__(self, name):
+        raise AssertionError(f"remote transport used: {name}")
+
+    def ssh(self, *a, **k):
+        raise AssertionError("remote ssh used")
+
+    def scp_get(self, *a, **k):
+        raise AssertionError("remote scp_get used")
+
+    def scp_put(self, *a, **k):
+        raise AssertionError("remote scp_put used")
+
+
+def test_racy_binding_is_never_published(env):
+    """G1: a binding whose bound_at is within RACY_MARGIN_S of the file mtime (a legacy row, or clock trouble)
+    must not make a group, even though sha/size/mtime/inode all still match the inventory."""
+    a, b = env.mk_add("a", X), env.mk_add("b", X)
+    rid, _ = env.run()
+    assert set(env.snap_members(rid)) == {a, b}
+    env.q("UPDATE diskaudit.dedup_digest_bindings SET bound_at = mtime + interval '1 second' WHERE host=%s AND path=%s",
+          (env.host, b))
+    rid2 = nd._start_run(env.conn, env.host, None, [], False, "test")
+    ctx = nd.RunCtx(conn=env.conn, host=env.host, run_id=rid2)
+    nd._publish(ctx, None, [], "test", 2, 0, 0)
+    assert env.snap_groups(rid2) == {}
+    assert env.label(a)[0] is None and env.label(b)[0] is None         # the stale label is cleared too
+
+
+def test_publish_only_uses_fresh_digests_and_no_remote(env):
+    """G5: a killed long run leaves its committed digests; --publish-only publishes groups from the FRESH ones
+    without any ssh/scp. A file never hashed (c) is not grouped and not hashed."""
+    a, b = env.mk_add("a", X), env.mk_add("b", X)
+    rid, _ = env.run(limit=10)                                          # partial: hashes, publishes nothing
+    assert env.snap_groups(rid) == {}
+    c = env.mk_add("c", X)
+    rid2, status = nd.run_once(env.conn, env.host, target=_NoRemote(), conn_factory=env.factory,
+                               heartbeat_interval=0.05, publish_only=True)
+    assert status == "completed"
+    assert set(env.snap_members(rid2)) == {a, b}
+    assert env.label(c)[0] is None and env.binding(c) is None
+    row = env.run_row(rid2)
+    assert row["is_partial"] is False and row["hashed"] == 0
+
+
+def test_publish_only_refuses_limit():
+    with pytest.raises(ValueError):
+        nd.run_once(None, "_test_x", limit=5, publish_only=True)
+
+
+def test_dry_run_plans_without_side_effects(env):
+    """A dry run reads the inventory and reports the plan: no run row, no item rows, no remote I/O."""
+    _a, _b = env.mk_add("a", X), env.mk_add("b", X)
+    env.mk_add("solo", Z + b"!")                                          # unique size: not a candidate
+    before = env.q("SELECT count(*) FROM diskaudit.dedup_runs WHERE host=%s", (env.host,))[0][0]
+    plan = nd.plan_only(env.conn, env.host, None, [], None)
+    assert plan["candidates"] == 2 and plan["to_hash"] == 2 and plan["reused"] == 0
+    assert plan["to_hash_bytes"] == 2 * len(X) and plan["unsafe_paths"] == 0
+    assert env.q("SELECT count(*) FROM diskaudit.dedup_runs WHERE host=%s", (env.host,))[0][0] == before
+    env.run()
+    plan2 = nd.plan_only(env.conn, env.host, None, [], None)
+    assert plan2["to_hash"] == 0 and plan2["reused"] == 2
+
+
+def test_path_prefix_is_an_alias_of_path():
+    """G4: the ticket names the flag --path-prefix; 1.4.0 shipped it as --path. Both work."""
+    p = nd._build_parser()
+    assert p.parse_args(["--host", "nas-1", "--path-prefix", "/share/x"]).path == "/share/x"
+    assert p.parse_args(["--host", "nas-1", "--path", "/share/x"]).path == "/share/x"
+    assert p.parse_args(["--host", "nas-1"]).dry_run is False and p.parse_args(["--host", "nas-1"]).publish_only is False

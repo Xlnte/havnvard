@@ -82,3 +82,26 @@ def test_directory_and_nonregular_rejected(tmp_path):
 def test_empty_path_list_still_writes_trailer(tmp_path):
     hashes, errs = run_script(tmp_path, [])
     assert hashes == ["#DONE|hashed=0|statonly=0|errors=0"]
+
+
+def test_recently_modified_file_is_unstable_not_hashed(tmp_path):
+    """INFRA-520 G1 (racy-clean): mtime has 1-second resolution, so a file whose mtime is within 2 s of the
+    batch start (on the hashing host's OWN clock) could still be rewritten inside the same second, keeping
+    size and mtime. Such a digest would later look fresh while the bytes differ. The script refuses it
+    (UNSTABLE, no H line); the next run hashes it once it has settled."""
+    import time as _t
+    now = int(_t.time())
+    fresh = tmp_path / "just_written.bin"
+    fresh.write_bytes(b"still being written")
+    os.utime(fresh, (now, now))
+    future = tmp_path / "future.bin"
+    future.write_bytes(b"clock ahead")
+    os.utime(future, (now + 3600, now + 3600))
+    settled = tmp_path / "settled.bin"
+    settled.write_bytes(b"old enough")
+    os.utime(settled, (now - 60, now - 60))
+    hashes, errs = run_script(tmp_path, [f"H|{fresh}", f"H|{future}", f"H|{settled}"])
+    assert f"UNSTABLE|{fresh}" in errs
+    assert f"UNSTABLE|{future}" in errs
+    assert [l.rsplit("|", 1)[1] for l in hashes if l.startswith("H|")] == [str(settled)]
+    assert hashes[-1] == "#DONE|hashed=1|statonly=0|errors=2"
