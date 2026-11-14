@@ -358,12 +358,33 @@ def plan(restic: str, env: dict, date: str | None, paths: list[str], version: st
     return out
 
 
+PULLBACK_MARK = "_PULLBACK-"
+
+
+def earlier_copy(path: Path, digest: str, size: int) -> Path | None:
+    """An earlier NAME_PULLBACK-*.EXT next to `path` holding exactly these bytes (so a second pullback of the same
+    backed-up file writes nothing). Old lowercase `_pullback-` copies from 3.2.0 count too."""
+    stem, ext = (path.stem, path.suffix) if (path.suffix and path.stem) else (path.name, "")
+    try:
+        sibs = list(os.scandir(path.parent))
+    except OSError:
+        return None
+    for e in sibs:
+        n = e.name
+        if not (n.endswith(ext) and (n.startswith(stem + PULLBACK_MARK) or n.startswith(stem + "_pullback-"))):
+            continue
+        if e.is_file(follow_symlinks=False) and e.stat().st_size == size and sha256_file(Path(e.path)) == digest:
+            return Path(e.path)
+    return None
+
+
 def renamed(path: Path, stamp: str, is_dir: bool = False) -> Path:
-    """report.pdf -> report_pullback-20261113-0130.pdf (then _2, _3 ... if that exists too). Folders keep no suffix split."""
+    """report.pdf -> report_PULLBACK-20261113-0130.pdf (then _2, _3 ... if that exists too): PULLBACK in capitals,
+    the extension stays last (PAF 20261114). Folders keep no suffix split."""
     stem, ext = (path.stem, path.suffix) if (path.suffix and path.stem and not is_dir) else (path.name, "")
     n = 1
     while True:
-        cand = path.with_name(f"{stem}_pullback-{stamp}{'' if n == 1 else '_' + str(n)}{ext}")
+        cand = path.with_name(f"{stem}{PULLBACK_MARK}{stamp}{'' if n == 1 else '_' + str(n)}{ext}")
         if not os.path.lexists(cand):
             return cand
         n += 1
@@ -378,9 +399,10 @@ class _Writer:
 
     def __init__(self, tgt: Path, stamp: str, scratch: Path):
         self.tgt, self.stamp, self.scratch = tgt, stamp, scratch
-        self.redirect: dict[Path, Path] = {}     # a path blocked by a non-folder -> the NAME_pullback-STAMP folder used
+        self.redirect: dict[Path, Path] = {}     # a path blocked by a non-folder -> the NAME_PULLBACK-STAMP folder used
         self.new_dirs: dict[Path, tuple[int, float] | None] = {}
         self.new, self.same, self.side, self.partial, self.links, self.special = [], 0, [], [], 0, 0
+        self.earlier: list[tuple[str, str]] = []  # (existing different file, earlier PULLBACK copy that already matches)
         self.hashes: dict[str, str] = {}         # source path -> SHA-256 of what was written / found identical
 
     def _apply(self, p: Path) -> Path:
@@ -391,7 +413,7 @@ class _Writer:
 
     def mkdirs(self, d: Path) -> Path:
         """Make sure folder d exists; create only missing folders. A FILE (or dead link) where a folder belongs is
-        left alone and the folder goes to NAME_pullback-STAMP next to it. A symlinked folder is used, never replaced."""
+        left alone and the folder goes to NAME_PULLBACK-STAMP next to it. A symlinked folder is used, never replaced."""
         d = self._apply(d)
         anchor = Path(d.anchor)
         cur = anchor
@@ -445,16 +467,23 @@ class _Writer:
             self.hashes[src] = self._write_new(d, reader, size, mode, mtime)
             self.new.append(str(d))
             return
-        if d.is_file() and not d.is_symlink() and d.stat().st_size == size:
+        if d.is_file() and not d.is_symlink():
             spool = self.scratch / "spool"
             h = hashlib.sha256()
             with open(spool, "wb") as f:                 # our own scratch file in a TemporaryDirectory
                 for chunk in iter(lambda: reader.read(1 << 20), b""):
                     h.update(chunk)
                     f.write(chunk)
-            if sha256_file(d) == h.hexdigest():
+            digest = h.hexdigest()
+            if d.stat().st_size == size and sha256_file(d) == digest:
                 self.same += 1
-                self.hashes[src] = h.hexdigest()
+                self.hashes[src] = digest
+                return
+            prev = earlier_copy(d, digest, size)
+            if prev is not None:                         # pulled back before: that copy already holds these bytes
+                self.same += 1
+                self.earlier.append((str(d), str(prev)))
+                self.hashes[src] = digest
                 return
             reader = open(spool, "rb")
         alt = renamed(d, self.stamp)
@@ -530,13 +559,24 @@ def pullback(date: str | None = None, paths: list[str] | None = None, version: s
              from_device: str | None = None, key_file: str | None = None, login_file: str | None = None,
              snapshot: str | None = None, now: dt.datetime | None = None) -> int:
     """Never changes anything that exists: an identical file is left alone; a different one stays and the backed-up
-    copy is written next to it as NAME_pullback-YYYYMMDD-HHMM.EXT; a file where a folder belongs stays and the folder
-    is written as NAME_pullback-YYYYMMDD-HHMM/. Every expected file is accounted for, or the exit is 1."""
+    copy is written next to it as NAME_PULLBACK-YYYYMMDD-HHMM.EXT; a file where a folder belongs stays and the folder
+    is written as NAME_PULLBACK-YYYYMMDD-HHMM/. Every expected file is accounted for, or the exit is 1."""
     restic = restic_bin()
     env = other_env(prune.check_device(from_device), key_file, login_file) if from_device else device_env()[0]
     if snapshot:
         s = find_snapshot(restic, env, snapshot)
-        incs = [p for p in s.get("paths", []) if _under(p, folder)] or ([folder.rstrip("/")] if folder else [])
+        if paths:                                    # INFRA-578: the file list was ignored (whole snapshot restored)
+            incs = [p for p in (_abs(x) for x in paths) if _under(p, folder)]
+            parents = sorted({str(Path(p).parent) for p in incs})
+            present = {o["path"] for o in _ls_nodes(restic, env, s["id"], parents, False)} if parents else set()
+            missing = [p for p in incs if p not in present]
+            if missing or not incs:
+                raise BackupError(f"not in snapshot {snapshot}: " + (", ".join(missing[:5]) if missing
+                                  else "no FILE is under --folder") + "; nothing was written")
+        else:
+            incs = [p for p in s.get("paths", []) if _under(p, folder)] or ([folder.rstrip("/")] if folder else [])
+            print(f"pullback: whole snapshot {s['id'][:8]}" + (f" under {folder}" if folder else "")
+                  + " (add FILES or --folder to restore less)")
         jobs = [(s, incs)]
     else:
         jobs = plan(restic, env, date, list(paths or []), version, folder, gone_mode)
@@ -579,6 +619,8 @@ def pullback(date: str | None = None, paths: list[str] | None = None, version: s
           + (f", {w.special} pipe/socket/device entr(ies) skipped" if w.special else ""))
     for orig, alt in w.side:
         print(f"  KEPT {orig}  ->  backed-up copy: {alt}")
+    for orig, prev in w.earlier:
+        print(f"  KEPT {orig}  (backed-up copy already pulled back earlier: {prev})")
     print(f"pullback: {len(expected) - len(missing)}/{len(expected)} files accounted for; "
           f"{checked - len(bad)}/{checked} SHA-256 match the offload manifest"
           + ("" if checked else " (no offload manifest for these files; restic checked its own hashes)"))

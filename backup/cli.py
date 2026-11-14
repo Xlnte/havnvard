@@ -107,7 +107,7 @@ def build_parser() -> argparse.ArgumentParser:
     of2.add_argument("folder")
     of2.add_argument("--no-db", action="store_true", help="do not record in diskaudit.archive_offload")
     pb = sub.add_parser("pullback", help="put backed-up files back; never overwrites: a different existing file is kept "
-                        "and the backed-up copy is written as NAME_pullback-YYYYMMDD-HHMM.EXT")
+                        "and the backed-up copy is written as NAME_PULLBACK-YYYYMMDD-HHMM.EXT")
     pb.add_argument("files", nargs="*", metavar="FILE", help="files or folders, space-separated (newest backup that holds each)")
     pb.add_argument("--date", metavar="YYYY-MM-DD", help="everything offloaded that day (with --vanished: everything that disappeared that day)")
     pb.add_argument("--vanished", action="store_true")

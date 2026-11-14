@@ -2,7 +2,7 @@
 
 **Know that every file you care about is backed up, prove the backups restore, and find any file in any backup.**
 HavnVard is a self-hosted storage-assurance toolkit for a home or small-office fleet: a few Linux machines, a NAS and
-a cloud account. Version 3.2.0.
+a cloud account. Version 3.3.0.
 
 > **Absolute rule: HavnVard never deletes, moves or overwrites a scanned file.** Every "duplicate", "stale" or
 > "not backed up" result is a report for you to read. Deleting anything is always your decision, made by hand.
@@ -156,7 +156,9 @@ python -m backup forget-before my-laptop 2020-01-01 --owner-key ~/laptop.pass   
 python -m backup forget-after  my-laptop 2026-11-01 --owner-key ~/laptop.pass
 ```
 `pullback` never overwrites: an existing identical file is left alone; an existing different file is kept and the backed-up
-copy is written next to it as `NAME_pullback-YYYYMMDD-HHMM.EXT`. Archive snapshots survive every keep rule and every
+copy is written next to it as `NAME_PULLBACK-YYYYMMDD-HHMM.EXT` (`PULLBACK` in capitals, the extension stays last; a
+second pullback of the same backed-up file finds that copy and writes nothing). `pullback FILE --snapshot ID` restores only
+the files named (3.3.0; 3.2.0 restored the whole snapshot, INFRA-578). Archive snapshots survive every keep rule and every
 `forget-*` unless `--include-archive` (which the typed text then names). The NAS and offsite copies are copy-only, so
 they still hold (and restore) snapshots the hub deleted. Offload records need `migrations/20261113_diskaudit_archive_offload_v1.sql`.
 
