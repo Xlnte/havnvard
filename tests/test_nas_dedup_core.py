@@ -320,3 +320,24 @@ def test_digest_bound_too_close_to_mtime_is_not_fresh():
     assert core.digest_is_fresh(_row(), _bind(bound_at=mt + 3600)) is True         # epoch number also accepted
     plan = core.plan_hash_work([_row()], {"/p/a": _bind(bound_at=at(mt + 1))})
     assert [w.path for w in plan.to_hash] == ["/p/a"] and plan.reused == 0       # racy -> re-hashed
+
+
+# ---- INFRA-621 F3: clock skew -------------------------------------------------------------------------------
+
+def test_verify_batch_reads_now_from_trailer_and_tolerates_its_absence():
+    sent = [("H", "/a")]
+    r = core.verify_batch(sent, _h("/a") + "\n" + _t(1, 0, 0) + "|now=1700000123\n", "")
+    assert r.remote_now == 1700000123 and len(r.hashed) == 1
+    r = core.verify_batch(sent, _h("/a") + "\n" + _t(1, 0, 0) + "\n", "")      # an older script: no now= field
+    assert r.remote_now is None and len(r.hashed) == 1
+    with pytest.raises(core.BatchIntegrityError):
+        core.verify_batch(sent, _h("/a") + "\n" + _t(1, 0, 0) + "|now=abc\n", "")
+
+
+def test_clock_skew_note():
+    assert core.clock_skew_s(None, 1000.0) is None
+    assert core.clock_skew_s(1060, 1000.4) == 60                  # positive = the hashing host's clock is ahead
+    assert core.clock_skew_s(940, 1000.0) == -60
+    assert core.CLOCK_SKEW_WARN_S == 60
+    assert core.skew_is_alarming(61) and core.skew_is_alarming(-61)
+    assert not core.skew_is_alarming(60) and not core.skew_is_alarming(None)

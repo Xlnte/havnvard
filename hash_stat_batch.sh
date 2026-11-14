@@ -15,17 +15,20 @@
 # (BusyBox v1.24.1: stat supports %s %Y %i %d %h %F, no ns, no --version) and
 # agent-1 (GNU coreutils).
 #
-# Usage: hash_stat_batch.sh <scratch-dir> <batch-name>
+# Usage: hash_stat_batch.sh <scratch-dir> <batch-name> [<racy-margin-s>]
+#   <racy-margin-s>: positive integer, default 2. The driver always passes
+#   nas_dedup_core.RACY_MARGIN_S (INFRA-621 F2: one source for the margin).
 #   Reads   <scratch-dir>/<batch-name>.paths
 #             one line per path:  H|<abs path>   hash it
 #                                 S|<abs path>   stat only (hardlink sibling)
 #   Writes  <scratch-dir>/<batch-name>.hashes
 #             H|<sha64>|<size>|<mtime_s>|<ino>|<dev>|<nlink>|<path>
 #             S|<size>|<mtime_s>|<ino>|<dev>|<nlink>|<path>
-#             #DONE|hashed=<n>|statonly=<n>|errors=<n>     <- LAST line; absent = failed batch
+#             #DONE|hashed=<n>|statonly=<n>|errors=<n>|now=<epoch>   <- LAST line; absent = failed batch
+#             (now = this host's clock at batch start; the driver logs its skew, INFRA-621 F3)
 #           <scratch-dir>/<batch-name>.hasherrs
 #             MISSING|p  UNREADABLE|p  UNSTABLE|p  NOT_REGULAR|p
-#             (UNSTABLE also = mtime within 2 s of the batch start or in the future: INFRA-520 G1)
+#             (UNSTABLE also = mtime within <racy-margin-s> of the batch start or in the future: INFRA-520 G1)
 #             (plus raw sha256sum/stat stderr, which never starts with those tokens)
 # The PATH is always the LAST field (a path may contain '|'); the Python parser
 # splits from the left with a fixed field count.
@@ -45,9 +48,17 @@ fi
 SCRATCH_DIR="$1"
 BATCH_NAME="$2"
 if [ -z "$SCRATCH_DIR" ] || [ -z "$BATCH_NAME" ]; then
-    echo "usage: $0 <scratch-dir> <batch-name>" >&2
+    echo "usage: $0 <scratch-dir> <batch-name> [<racy-margin-s>]" >&2
     exit 2
 fi
+if [ $# -ge 3 ]; then
+    RACY_MARGIN="$3"
+else
+    RACY_MARGIN=2
+fi
+case "$RACY_MARGIN" in
+    ''|*[!0-9]*|0) echo "error: racy margin must be a positive integer of seconds, got '$RACY_MARGIN'" >&2; exit 2 ;;
+esac
 
 IN_LIST="$SCRATCH_DIR/$BATCH_NAME.paths"
 OUT_HASHES="$SCRATCH_DIR/$BATCH_NAME.hashes"
@@ -70,9 +81,10 @@ N_ERR=0
 # Racy-clean guard (INFRA-520 G1). mtime has 1-second resolution (2 s on FAT/SMB), so a file
 # rewritten in the same second it was last written keeps size AND mtime: a digest taken then
 # could later look fresh while the bytes differ. The batch start is read ONCE from THIS host's
-# own clock (no driver/NAS clock skew); a file whose mtime is >= NOW0-1 (or in the future) is
-# reported UNSTABLE instead of hashed, and the next run hashes it once it has settled. A file
-# with mtime <= NOW0-2 that is written again changes its mtime, which the stat-binding catches.
+# own clock (no driver/NAS clock skew); a file whose mtime is >= NOW0-MARGIN+1 (or in the future)
+# is reported UNSTABLE instead of hashed, and the next run hashes it once it has settled. A file
+# with mtime <= NOW0-MARGIN that is written again changes its mtime, which the stat-binding catches.
+# MARGIN is the driver's nas_dedup_core.RACY_MARGIN_S (default 2), never a second constant here.
 NOW0=$(date +%s 2>/dev/null)
 case "$NOW0" in
     ''|*[!0-9]*)
@@ -80,7 +92,7 @@ case "$NOW0" in
         exit 2
         ;;
 esac
-RECENT_FROM=$((NOW0 - 1))
+RECENT_FROM=$((NOW0 - RACY_MARGIN + 1))
 
 # stat_of <fmt> <path>: print stat or fail. Falls back to sudo -n (read-only)
 # where sudo exists, for files under directories this account cannot traverse.
@@ -180,6 +192,6 @@ while IFS= read -r line || [ -n "$line" ]; do
     fi
 done < "$IN_LIST"
 
-printf '#DONE|hashed=%s|statonly=%s|errors=%s\n' "$N_HASHED" "$N_STAT" "$N_ERR" >> "$OUT_HASHES"
+printf '#DONE|hashed=%s|statonly=%s|errors=%s|now=%s\n' "$N_HASHED" "$N_STAT" "$N_ERR" "$NOW0" >> "$OUT_HASHES"
 echo "[hash_stat_batch] DONE batch=$BATCH_NAME hashed=$N_HASHED statonly=$N_STAT errors=$N_ERR" >&2
 exit 0

@@ -39,7 +39,8 @@ def _backup_tree_prefix() -> str:
 BACKUP_TREE_PREFIX = _backup_tree_prefix()
 # HV-REQ-27 in_backup_tree flag (LIKE ... ESCAPE '\'); '' never matches a real path.
 BACKUP_TREE_LIKE = re.sub(r"([\\%_])", r"\\\1", BACKUP_TREE_PREFIX) + "%" if BACKUP_TREE_PREFIX else ""
-_TRAILER_RE = re.compile(r"#DONE\|hashed=(\d+)\|statonly=(\d+)\|errors=(\d+)")
+# now=<epoch> (INFRA-621 F3) is optional so a trailer from an older script copy still verifies.
+_TRAILER_RE = re.compile(r"#DONE\|hashed=(\d+)\|statonly=(\d+)\|errors=(\d+)(?:\|now=(\d+))?")
 
 DEFAULT_BATCH_SIZE = 500
 DEFAULT_BATCH_BYTES = 4 * 1024 ** 3        # 4 GiB of file bytes per batch
@@ -145,8 +146,27 @@ class Binding:
 # mtime; a digest bound in that window could later look fresh while the bytes differ. hash_stat_batch.sh
 # enforces the same margin on the hashing host's own clock; this check also rejects any binding (legacy rows
 # included) whose bind time, the driver clock read at batch START, is inside the margin. Mirrored in the
-# publish SQL (%(racy_s)s).
+# publish SQL (%(racy_s)s). INFRA-621 F2: this is the ONLY definition; the driver passes it to hash_stat_batch.sh
+# as its 3rd argument, so the script and the server-side term cannot drift apart.
 RACY_MARGIN_S = 2
+
+# INFRA-621 F3: the server-side racy term compares the DRIVER clock (bound_at) with NAS mtimes. If the hashing host's
+# clock runs ahead by S s, every file written within S + RACY_MARGIN_S s of its hash is re-hashed on every run (never a
+# wrong reuse: liveness, not safety). Each batch logs its skew; above this the run carries a WARN note.
+CLOCK_SKEW_WARN_S = 60
+
+
+def clock_skew_s(remote_now: int | None, driver_epoch: float) -> int | None:
+    """Hashing host's batch-start clock minus the driver's clock read just before the ssh call, in whole seconds.
+    Positive = the hashing host is ahead. None when the script did not report its clock. Resolution about +-1 s plus
+    ssh connect latency, which is noise against CLOCK_SKEW_WARN_S."""
+    if remote_now is None:
+        return None
+    return round(remote_now - driver_epoch)
+
+
+def skew_is_alarming(skew: int | None) -> bool:
+    return skew is not None and abs(skew) > CLOCK_SKEW_WARN_S
 
 
 def _epoch(v) -> float | None:
@@ -341,6 +361,7 @@ class BatchResult:
     hashed: list[HashedRec] = field(default_factory=list)
     stat: list[StatRec] = field(default_factory=list)
     errors: list[tuple[str, str]] = field(default_factory=list)      # (reason, path)
+    remote_now: int | None = None                                      # #DONE now= (INFRA-621 F3); None if absent
 
 
 def _ints(fields: list[str]) -> Optional[list[int]]:
@@ -382,7 +403,8 @@ def verify_batch(sent: list[tuple[str, str]], hashes_text: str, errs_text: str) 
             if not m or trailer is not None or i != len(lines) - 1:
                 defects.append(f"hashes line {i + 1}: bad or misplaced trailer {line[:80]!r}")
             else:
-                trailer = tuple(int(x) for x in m.groups())
+                trailer = tuple(int(x) for x in m.groups()[:3])
+                res.remote_now = int(m.group(4)) if m.group(4) is not None else None
             continue
         if line.startswith("H|"):
             f = line.split("|", 7)

@@ -2,6 +2,20 @@
 
 Older releases are described in `FEATURES.md` and `docs/*_RELEASE_*.md`.
 
+## 3.3.5 (20261114)
+
+NAS within-host dedup, INFRA-621 (review findings F2, F3 of INFRA-520):
+
+- **One racy margin (F2).** `nas_dedup_core.RACY_MARGIN_S` is the only definition. `hash_stat_batch.sh` takes it as an
+  optional 3rd argument (default 2, a non-positive or non-integer value exits 2), and the driver passes it on every
+  call, so raising it in one place moves the script, `digest_is_fresh()` and the publish SQL together.
+- **Clock skew is visible (F3).** The `#DONE` trailer carries `now=<hashing host clock at batch start>` (optional
+  when parsing, so an older script copy still verifies). Each batch logs `skew = NAS clock - driver clock`; above
+  60 s (`CLOCK_SKEW_WARN_S`) the journal gets a WARN and the run row's `raw_stdout` a `clock skew ... WARN` note.
+  Skew never fails a run: it can only cause re-hashing, never a wrong reuse.
+- The quarantine script that consumes these snapshots (operator script, not in this repo) re-hashes the keeper
+  before every victim under `--execute` (F5); see its own header.
+
 ## 3.3.4 (20261114)
 
 NAS within-host dedup (`nas_trigkey_dedup.py`, `hash_stat_batch.sh`, `nas_dedup_core.py`), INFRA-520:

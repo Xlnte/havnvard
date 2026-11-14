@@ -8,20 +8,28 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import subprocess
+import time
 
 SCRIPT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hash_stat_batch.sh")
 
 
-def run_script(tmp_path, lines, batch="b1"):
+def run_script(tmp_path, lines, batch="b1", extra=()):
     scratch = tmp_path / "scratch"
     scratch.mkdir(exist_ok=True)
     (scratch / f"{batch}.paths").write_text("".join(l + "\n" for l in lines), encoding="utf-8")
-    r = subprocess.run(["sh", SCRIPT, str(scratch), batch], capture_output=True, text=True, timeout=60)
+    r = subprocess.run(["sh", SCRIPT, str(scratch), batch, *extra], capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, r.stderr
     hashes = (scratch / f"{batch}.hashes").read_text(encoding="utf-8").splitlines()
     errs = (scratch / f"{batch}.hasherrs").read_text(encoding="utf-8").splitlines()
     return hashes, errs
+
+
+def _counts(trailer):
+    """The trailer minus its |now=<epoch> field (INFRA-621 F3)."""
+    assert re.fullmatch(r"#DONE\|hashed=\d+\|statonly=\d+\|errors=\d+\|now=\d+", trailer), trailer
+    return trailer.rsplit("|now=", 1)[0]
 
 
 def test_hash_batch_output_parses_stat_fields(tmp_path):
@@ -66,7 +74,7 @@ def test_hash_batch_output_parses_stat_fields(tmp_path):
     assert ("NOT_REGULAR", str(link)) in structured      # symlink rejected even though it points at a regular file
     assert ("MISSING", str(missing)) in structured
     assert ("MISSING", str(tmp_path / "ghost.txt")) in structured
-    assert hashes[-1] == "#DONE|hashed=3|statonly=1|errors=3"
+    assert _counts(hashes[-1]) == "#DONE|hashed=3|statonly=1|errors=3"
     assert sum(1 for l in hashes if l.startswith("#DONE")) == 1
 
 
@@ -76,12 +84,12 @@ def test_directory_and_nonregular_rejected(tmp_path):
     hashes, errs = run_script(tmp_path, [f"H|{d}", f"S|{d}"])
     assert ("NOT_REGULAR|" + str(d)) in errs
     assert errs.count("NOT_REGULAR|" + str(d)) == 2
-    assert hashes == ["#DONE|hashed=0|statonly=0|errors=2"]
+    assert len(hashes) == 1 and _counts(hashes[0]) == "#DONE|hashed=0|statonly=0|errors=2"
 
 
 def test_empty_path_list_still_writes_trailer(tmp_path):
     hashes, errs = run_script(tmp_path, [])
-    assert hashes == ["#DONE|hashed=0|statonly=0|errors=0"]
+    assert len(hashes) == 1 and _counts(hashes[0]) == "#DONE|hashed=0|statonly=0|errors=0"
 
 
 def test_recently_modified_file_is_unstable_not_hashed(tmp_path):
@@ -104,4 +112,39 @@ def test_recently_modified_file_is_unstable_not_hashed(tmp_path):
     assert f"UNSTABLE|{fresh}" in errs
     assert f"UNSTABLE|{future}" in errs
     assert [l.rsplit("|", 1)[1] for l in hashes if l.startswith("H|")] == [str(settled)]
-    assert hashes[-1] == "#DONE|hashed=1|statonly=0|errors=2"
+    assert _counts(hashes[-1]) == "#DONE|hashed=1|statonly=0|errors=2"
+
+
+# ---- INFRA-621 F2: one racy margin, passed by the driver; F3: the trailer carries the host clock ------------
+
+def test_racy_margin_comes_from_the_third_argument(tmp_path):
+    """F2: the margin is an argument (the driver passes nas_dedup_core.RACY_MARGIN_S), default 2 when absent.
+    A file 4 s old is hashed with margin 2 and UNSTABLE with margin 6."""
+    now = int(time.time())
+    f = tmp_path / "four_s_old.bin"
+    f.write_bytes(b"settling")
+    os.utime(f, (now - 4, now - 4))
+    hashes, errs = run_script(tmp_path, [f"H|{f}"], batch="m2")
+    assert [l.rsplit("|", 1)[1] for l in hashes if l.startswith("H|")] == [str(f)] and errs == []
+    hashes, errs = run_script(tmp_path, [f"H|{f}"], batch="m2b", extra=("2",))
+    assert [l.rsplit("|", 1)[1] for l in hashes if l.startswith("H|")] == [str(f)]
+    hashes, errs = run_script(tmp_path, [f"H|{f}"], batch="m6", extra=("6",))
+    assert f"UNSTABLE|{f}" in errs and not [l for l in hashes if l.startswith("H|")]
+
+
+def test_bad_racy_margin_is_refused(tmp_path):
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    (scratch / "b.paths").write_text("", encoding="utf-8")
+    for bad in ("0", "-1", "x", "1.5", ""):
+        r = subprocess.run(["sh", SCRIPT, str(scratch), "b", bad], capture_output=True, text=True, timeout=30, check=False)
+        assert r.returncode == 2, (bad, r.stderr)
+        assert "margin" in r.stderr
+
+
+def test_trailer_reports_the_hosts_clock(tmp_path):
+    """F3: #DONE carries now=<the batch-start clock of the hashing host> so the driver can log its skew."""
+    t0 = int(time.time())
+    hashes, _ = run_script(tmp_path, [])
+    now = int(hashes[-1].rsplit("|now=", 1)[1])
+    assert t0 - 1 <= now <= int(time.time()) + 1

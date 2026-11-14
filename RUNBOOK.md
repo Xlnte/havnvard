@@ -327,6 +327,13 @@ are re-hashed only when bound inside that window by that clock). Reason: mtime h
 resolution, so a same-second rewrite keeps size and mtime and a digest taken in that window could later look fresh.
 `--path-prefix` is an alias of `--path`.
 
+**One margin, clock skew (3.3.5, INFRA-621).** The 2 s margin is defined once, `nas_dedup_core.RACY_MARGIN_S`; the driver
+passes it to `hash_stat_batch.sh` as its 3rd argument (no constant in the script). The script's `#DONE` trailer carries
+`now=<NAS clock at batch start>`; the driver logs `clock-skew: batch N ... skew=+S s` (NAS minus driver) for every batch,
+and above 60 s (`CLOCK_SKEW_WARN_S`) logs a WARN and adds `clock skew max |skew|=S s WARN ...` to the run's `raw_stdout`.
+Skew never causes a wrong reuse; a NAS clock ahead of the driver only makes recent files re-hash every run. Fix: NTP on the
+NAS (QNAP Control Panel, Time) and on the driver machine.
+
 **Run it** (always supervised, never a bare background process; `User=havnvard`):
 ```
 cd /opt/havnvard
