@@ -66,24 +66,25 @@ def relay(host: str, python: str, repo_dir: str, runner=run) -> int:
             healthy, text, failed_relay = False, f"relay: ssh to {host} failed: {r.stderr.strip()[-200:]}", True
     except BackupError as e:
         healthy, text, failed_relay = False, f"relay: {e}", True
-    offsite_bad = _relay_offsite(host, None if failed_relay else r.stdout)
+    offsite_rc = _relay_offsite(host, None if failed_relay else r.stdout)
     if healthy:
         alerts.resolve(key)
-        print(f"health-relay {host}: healthy" + (" (offsite problem: see its own alert)" if offsite_bad else ""))
-        return config.PROBLEM_EXIT if offsite_bad else 0
+        print(f"health-relay {host}: healthy" + (" (offsite problem: see its own alert)" if offsite_rc else ""))
+        return offsite_rc
     sent, detail = alerts.fire(key, f"HavnVard Backup ({host}): {text}")
     print(f"health-relay {host}: PROBLEM {text}")
     print(f"alert: {detail}" if sent else f"ALERT NOT SENT: {detail}")
-    return config.ERROR_EXIT if (failed_relay or not sent) else config.PROBLEM_EXIT
+    return max(config.ERROR_EXIT if (failed_relay or not sent) else config.PROBLEM_EXIT, offsite_rc)
 
 
-def _relay_offsite(host: str, stdout: str | None) -> bool:
+def _relay_offsite(host: str, stdout: str | None) -> int:
     """3.3.2: offsite problems go out under their own key only; it is resolved only from a readable result whose
     offsite checks all pass (a failed relay leaves it as it was; the relay's own alert covers that case).
-    Returns True when an offsite check failed."""
+    Returns 0 when no offsite check failed, PROBLEM_EXIT when one failed and its alert was raised, and ERROR_EXIT
+    when one failed and its alert could NOT be raised (same rule as the main key: an unsent alert is never a 1)."""
     checks = offsite_checks(stdout) if stdout is not None else None
     if not checks:
-        return False
+        return 0
     okey = f"{OFFSITE_KEY}-{host}"
     bad = [c for c in checks if not c.get("ok")]
     if bad:
@@ -91,9 +92,10 @@ def _relay_offsite(host: str, stdout: str | None) -> bool:
                                    "; ".join(f"{c.get('name')}: {c.get('detail')}" for c in bad))
         if not sent:
             print(f"ALERT NOT SENT ({okey}): {detail}")
-        return True
+            return config.ERROR_EXIT
+        return config.PROBLEM_EXIT
     alerts.resolve(okey)
-    return False
+    return 0
 
 
 def render_units(out_dir: Path, host: str, python: str, repo_dir: str, schedule: str = "hourly") -> list[Path]:
