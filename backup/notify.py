@@ -58,7 +58,9 @@ def find_session(run=_run_out, uid: int | None = None) -> dict | None:
             continue
         props = dict(x.split("=", 1) for x in run(["loginctl", "show-session", sid, "-p", "Type", "-p", "Active",
                                                    "-p", "Remote", "-p", "Name", "-p", "User", "-p", "Display",
-                                                   "-p", "State"]).splitlines() if "=" in x)
+                                                   "-p", "State", "-p", "Class"]).splitlines() if "=" in x)
+        if props.get("Class", "user") != "user":                 # gdm's login screen / lock screen is nobody's desktop
+            continue
         if props.get("Type") in ("x11", "wayland") and props.get("Active") == "yes" and props.get("Remote") != "yes":
             try:
                 su = int(props.get("User") or -1)
@@ -91,7 +93,11 @@ def _session_env(s: dict) -> dict:
         except KeyError:
             home = None
     for xa in (rt / "gdm" / "Xauthority", home):
-        if xa is not None and xa.is_file():
+        try:
+            found = xa is not None and xa.is_file()
+        except OSError:                                          # another user's runtime dir: not ours to read
+            found = False
+        if found:
             env["XAUTHORITY"] = str(xa)
             break
     return env
@@ -153,7 +159,7 @@ def popup(title: str, text: str, launcher=None, owner_uid: int | None = None, eu
                                                "on this computer, so no popup (hub notice only)"}
             env = {}                                             # never root's own DISPLAY: the owner's session only
         elif not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
-            session = finder()
+            session = finder(uid=euid)                           # only this person's own desktop, never someone else's
     cmd, extra, how = build(title, text, system=system, env=env, session=session, euid=euid)
     if cmd is None:
         return {"shown": False, "how": how}
