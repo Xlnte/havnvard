@@ -2,7 +2,7 @@
 
 **Know that every file you care about is backed up, prove the backups restore, and find any file in any backup.**
 HavnVard is a self-hosted storage-assurance toolkit for a home or small-office fleet: a few Linux machines, a NAS and
-a cloud account. Version 3.2.0.
+a cloud account. Version 3.3.0.
 
 > **Absolute rule: HavnVard never deletes, moves or overwrites a scanned file.** Every "duplicate", "stale" or
 > "not backed up" result is a report for you to read. Deleting anything is always your decision, made by hand.
@@ -50,7 +50,7 @@ Everything that differs between installations lives in one TOML file: `/etc/havn
 It names your hosts (the local machine, the NAS, remote "agent" machines), the database env file, the NAS and the
 optional alert/report integrations. **It never holds a password:** it names the files that hold them.
 
-## Known limits in 3.2.0
+## Known limits in 3.3.0
 
 * `migrations/` is the change history of the original deployment, not an install path; new sites use
   `schema/baseline.sql` (see "Database").
@@ -156,9 +156,63 @@ python -m backup forget-before my-laptop 2020-01-01 --owner-key ~/laptop.pass   
 python -m backup forget-after  my-laptop 2026-11-01 --owner-key ~/laptop.pass
 ```
 `pullback` never overwrites: an existing identical file is left alone; an existing different file is kept and the backed-up
-copy is written next to it as `NAME_pullback-YYYYMMDD-HHMM.EXT`. Archive snapshots survive every keep rule and every
+copy is written next to it as `NAME_PULLBACK-YYYYMMDD-HHMM.EXT` (`PULLBACK` in capitals, the extension stays last; a
+second pullback of the same backed-up file finds that copy and writes nothing). `pullback FILE --snapshot ID` restores only
+the files named (3.3.0; 3.2.0 restored the whole snapshot, INFRA-578). Archive snapshots survive every keep rule and every
 `forget-*` unless `--include-archive` (which the typed text then names). The NAS and offsite copies are copy-only, so
 they still hold (and restore) snapshots the hub deleted. Offload records need `migrations/20261113_diskaudit_archive_offload_v1.sql`.
+
+### Accounts, registration and schedules (3.3.0)
+The hub can serve pages (`python -m backup hub web --listen <tailnet-ip> --port 8001`). The **company or household owns
+the files**: one store per company, opened by a **store key** the administrator holds (shown once at registration; the
+hub keeps only its fingerprint).
+```bash
+python -m backup hub setup-code            # on the hub's console: one-time code (1 hour) for the FIRST registration
+# open http://<hub>:8001/register: the first account becomes the administrator; everyone else needs an invite
+python -m backup hub adopt my-laptop --store-key-file ~/store.key --confirm "ADD STORE KEY TO my-laptop"   # additive
+python -m backup checkin --run             # on a device (timer every 5 min): ask the hub "am I due?", run if so
+```
+* **Administrator** and **user** are separate accounts; the same email (and password) may hold one of each.
+* **Who owns which file** is recorded: folder owners by path, the computer's primary user, or files an admin released
+  to them; **a shared folder is owned by that PC's administrator.** **Not yet enforced in 3.3.0:** no hub page or
+  command shows or pulls files yet, so nothing uses that filter. A user restores with their computer's own restic key
+  (`find` / `pullback` on that computer), which sees everything backed up from that computer, shared folders included.
+* **Disable** a user who quits or is fired: every web session stops at once, the check-in token of every computer the
+  user is primary user of is revoked, and that computer's line is removed from the hub's rest-server htpasswd (kept
+  aside in `hub.htpasswd.removed`), so the laptop can no longer reach its backups through the hub. The computer's own
+  restic key is still in its repository (and in NAS/offsite copies) until the admin removes it with the store key:
+  `python -m backup hub revoke-device-key DEVICE --store-key-file ~/store.key --confirm "REMOVE DEVICE KEYS FROM DEVICE"`
+  (key removal only; no snapshot is touched). The files stay with the company.
+* **Force-open:** an admin reaches a user's files only by forcing a password reset. A new random password is shown to
+  the admin once; it opens only a read-only view of the notice. The user acknowledges with **their own old password**
+  (or a reset code they redeem themselves): "Your administrator X reset your password on DATE and accessed all your
+  files. Reason: R." Then they set their own password. The user is emailed.
+* **Every admin-issued password reset** ("Reset password") carries the same mandatory notice. An admin can never reset
+  another admin's password, nor an account of another company. A reset code works for 24 h, once; it ends as soon as
+  anything else changes the account (the user finishes the notice, a new reset, a force-open, a disable), and redeeming
+  one always leads to the notice first. It is refused when redeemed from a browser logged in as an administrator.
+* **With `[mail]` configured**, the reset code and the force-open generated password go **only to the user's email**
+  and are never shown to the admin (page or CLI). Without mail they are shown to the admin, and the user's page says so.
+* **The user's page lists every force-open and reset for good**: when, which admin, why, who got the code, and how,
+  when and from where it was acknowledged (old password or reset code). Acknowledging never removes a row.
+* **Honest limits.** Without mail, an admin who redeems a user's reset code from a browser with no admin session can act
+  as that user once (and acknowledge the notice); the user's page then shows "acknowledged with a reset code" with the
+  address and browser. As root, `pullback` does not write into a folder another user controls (not root-owned, or
+  group/other-writable): run it as that user, or use `--target`. What cannot be hidden: every login, reset and acknowledgement is in the
+  hash-chained audit log with the client address and browser, and the user's page permanently shows how many times an
+  administrator reset their password, when, by whom and why. Whoever has root on the hub can read every backup the hub
+  holds a password for; the log makes tampering visible, not impossible. Logins are limited to 5 failures a minute per
+  account and per address.
+* **Schedules page** (`/admin/schedules`): per computer `interval`, `constant_loop` (the next run starts when the last
+  ends; after a failure the gap doubles, up to 60 min), `manual` or `paused`; last run, length, next run, last check-in.
+  A device that cannot reach the hub runs nothing (no 15-minute retry loop) and reports it later as a missed check-in
+  (not a failed backup, so the next backup is not pushed back). A run whose end never reaches the hub is marked failed
+  ("stale") after twice the longest recorded run (at least 1 h; 24 h before any run length is known), so backups
+  keep being scheduled; a run end the device could not send is kept and sent at the next check-in.
+* An administrator who forgot their password cannot be reset by another administrator (3.3.0 has no admin recovery
+  page yet): keep two administrators and a password manager.
+* State: one SQLite file `~/.local/state/havnvard/accounts.db` on the hub (600). Not yet built: file search/pull back in
+  the web page (use `find` / `pullback`), SMTP invites, store-key rotation.
 
 ### Restore one file
 ```bash

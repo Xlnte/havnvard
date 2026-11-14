@@ -422,6 +422,9 @@ _ALLOWED_FORBIDDEN_SITES = {
     ("gen_cleanup_page.py", "os.replace(tmp, OUT)"),
     # backup/catalog.py (2.2.0): atomic write of the catalog's OWN state.json in ~/.local/state/havnvard/catalog/.
     ("catalog.py", "os.replace(tmp, p)"),
+    # backup/accounts.py (3.3.0 fix wave, F6): atomic write of HavnVard's OWN hub htpasswd (config dir) after a
+    # disabled user's computer line is cut; the removed line is kept in hub.htpasswd.removed. Never a scanned path.
+    ("accounts.py", "os.replace(tmp, path)  # atomic write of HavnVard's own hub htpasswd (allowlisted in test_crosshost_verify)"),
 }
 _REPLACE_PATTERN_SRC = r"os\.replace\("
 

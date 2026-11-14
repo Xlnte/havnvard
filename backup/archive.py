@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import csv
 import datetime as dt
+import errno
 import hashlib
 import json
 import os
@@ -24,7 +25,7 @@ import tarfile
 import tempfile
 from pathlib import Path
 
-from . import catalog, config, prune
+from . import catalog, checkin, config, notify, prune
 from .config import BackupError
 from .util import read_secret, restic_bin, run, sha256_file
 
@@ -284,32 +285,64 @@ def snapshot_files(restic: str, env: dict, snap_id: str, incs: list[str]) -> tup
     return files, special
 
 
-def vanished(restic: str, env: dict, snaps: list[dict], day: dt.date) -> tuple[dict, list[str]]:
-    """(snapshot to restore from, file paths that disappeared during `day`). Only regular backups are compared
-    (no archive/offload snapshots), and only snapshots of the same host and the same backup paths (review FIX-NOW 4).
-    after = last regular backup during the day, else the first after it; before = last matching backup before it."""
-    s0, s1 = _start(day), _start(day + dt.timedelta(days=1))
-    reg = [s for s in snaps if ARCHIVE not in (s.get("tags") or [])]
-    during = [s for s in reg if s0 <= _when(s["time"]) < s1]
-    later = [s for s in reg if _when(s["time"]) >= s1]
-    after = during[-1] if during else (later[0] if later else None)
-    same = (lambda s: (s.get("hostname"), sorted(s.get("paths", []))) == (after.get("hostname"), sorted(after.get("paths", [])))) if after else None
-    before = [s for s in reg if _when(s["time"]) < s0 and same(s)] if after else []
-    if not before or not after:
-        raise BackupError(f"--vanished needs a regular backup before {day} and one during or after it with the same "
-                          f"host and folders; found {len(before)} before, {'one' if after else 'none'} during/after")
-    r = run([restic, "diff", "--json", before[-1]["id"], after["id"]], env=env)
+def _removed(restic: str, env: dict, a: dict, b: dict) -> tuple[list[str], list[str]]:
+    """(file paths removed, file paths added) from snapshot a to snapshot b (`restic diff --json`)."""
+    r = run([restic, "diff", "--json", a["id"], b["id"]], env=env)
     if r.returncode != 0:
         raise BackupError(f"restic diff failed rc={r.returncode}: {r.stderr.strip()[-300:]}")
-    gone = []
+    gone, added = [], []
     for ln in r.stdout.splitlines():
         try:
             o = json.loads(ln)
         except ValueError:
             continue
-        if o.get("message_type") == "change" and o.get("modifier") == "-" and not o["path"].endswith("/"):
-            gone.append(o["path"])
-    return before[-1], gone
+        if o.get("message_type") == "change" and not o["path"].endswith("/"):
+            if o.get("modifier") == "-":
+                gone.append(o["path"])
+            elif o.get("modifier") == "+":
+                added.append(o["path"])
+    return gone, added
+
+
+def vanished_jobs(restic: str, env: dict, snaps: list[dict], day: dt.date) -> list[tuple[dict, list[str]]]:
+    """[(snapshot to restore from, file paths)] for everything that disappeared during `day` and is still gone at the
+    end of it. Every regular backup of the day is compared with the one before it (live 20261114: files created and
+    deleted the same day were missed when only the last backup before the day was compared with the last one in it).
+    Only regular backups (no archive/offload), same host and same backup paths (review FIX-NOW 4). Each file comes back
+    from the last backup that still held it."""
+    s0, s1 = _start(day), _start(day + dt.timedelta(days=1))
+    reg = [s for s in snaps if ARCHIVE not in (s.get("tags") or [])]
+    during = [s for s in reg if s0 <= _when(s["time"]) < s1]
+    later = [s for s in reg if _when(s["time"]) >= s1]
+    after = during[-1] if during else (later[0] if later else None)
+    key = (lambda s: (s.get("hostname"), sorted(s.get("paths", []))))
+    same = [s for s in reg if after and key(s) == key(after)]
+    before = [s for s in same if _when(s["time"]) < s0]
+    chain = before[-1:] + [s for s in same if s0 <= _when(s["time"]) < s1] + ([] if during else [after] if after else [])
+    if not before or len(chain) < 2:
+        raise BackupError(f"--vanished needs a regular backup before {day} and one during or after it with the same "
+                          f"host and folders; found {len(before)} before, {'one' if after else 'none'} during/after")
+    gone: dict[str, dict] = {}
+    for a, b in zip(chain, chain[1:]):
+        rem, add = _removed(restic, env, a, b)
+        for p in add:
+            gone.pop(p, None)                          # came back later the same day: not vanished
+        for p in rem:
+            gone[p] = a
+    jobs: dict[str, tuple[dict, list[str]]] = {}
+    for p, s in gone.items():
+        jobs.setdefault(s["id"], (s, []))[1].append(p)
+    return [(s, sorted(ps)) for s, ps in jobs.values()]
+
+
+def vanished(restic: str, env: dict, snaps: list[dict], day: dt.date) -> tuple[dict, list[str]]:
+    """Compatibility view of vanished_jobs: (the earliest source snapshot, every vanished path)."""
+    jobs = vanished_jobs(restic, env, snaps, day)
+    if not jobs:
+        s0 = _start(day)
+        reg = [s for s in snaps if ARCHIVE not in (s.get("tags") or []) and _when(s["time"]) < s0]
+        return (reg[-1] if reg else {}), []
+    return jobs[0][0], sorted(p for _, ps in jobs for p in ps)
 
 
 def _under(path: str, folder: str | None) -> bool:
@@ -341,9 +374,8 @@ def plan(restic: str, env: dict, date: str | None, paths: list[str], version: st
         raise BackupError("pullback needs FILES, --date or --snapshot")
     day = _day(date)
     if gone_mode:
-        src, gone = vanished(restic, env, snaps, day)
-        gone = [g for g in gone if _under(g, folder)]
-        return [(src, gone)] if gone else []
+        jobs = [(s, [g for g in ps if _under(g, folder)]) for s, ps in vanished_jobs(restic, env, snaps, day)]
+        return [(s, ps) for s, ps in jobs if ps]
     tag = f"{ARCHIVE}-{day:%Y%m%d}"
     hits = [s for s in snaps if tag in (s.get("tags") or [])]
     if not hits:
@@ -358,12 +390,33 @@ def plan(restic: str, env: dict, date: str | None, paths: list[str], version: st
     return out
 
 
+PULLBACK_MARK = "_PULLBACK-"
+
+
+def earlier_copy(path: Path, digest: str, size: int) -> Path | None:
+    """An earlier NAME_PULLBACK-*.EXT next to `path` holding exactly these bytes (so a second pullback of the same
+    backed-up file writes nothing). Old lowercase `_pullback-` copies from 3.2.0 count too."""
+    stem, ext = (path.stem, path.suffix) if (path.suffix and path.stem) else (path.name, "")
+    try:
+        sibs = list(os.scandir(path.parent))
+    except OSError:
+        return None
+    for e in sibs:
+        n = e.name
+        if not (n.endswith(ext) and (n.startswith(stem + PULLBACK_MARK) or n.startswith(stem + "_pullback-"))):
+            continue
+        if e.is_file(follow_symlinks=False) and e.stat().st_size == size and sha256_file(Path(e.path)) == digest:
+            return Path(e.path)
+    return None
+
+
 def renamed(path: Path, stamp: str, is_dir: bool = False) -> Path:
-    """report.pdf -> report_pullback-20261113-0130.pdf (then _2, _3 ... if that exists too). Folders keep no suffix split."""
+    """report.pdf -> report_PULLBACK-20261113-0130.pdf (then _2, _3 ... if that exists too): PULLBACK in capitals,
+    the extension stays last (owner ruling 20261114). Folders keep no suffix split."""
     stem, ext = (path.stem, path.suffix) if (path.suffix and path.stem and not is_dir) else (path.name, "")
     n = 1
     while True:
-        cand = path.with_name(f"{stem}_pullback-{stamp}{'' if n == 1 else '_' + str(n)}{ext}")
+        cand = path.with_name(f"{stem}{PULLBACK_MARK}{stamp}{'' if n == 1 else '_' + str(n)}{ext}")
         if not os.path.lexists(cand):
             return cand
         n += 1
@@ -373,15 +426,93 @@ def _dest(tgt: Path, p: str) -> Path:
     return tgt / p.lstrip("/") if tgt != Path("/") else Path(p)
 
 
+# A place we may not write: permission, a read-only disk, a folder owned by another user. Everything else (disk full,
+# I/O error) stays a hard failure of that include path, as before.
+_REFUSED = {errno.EACCES, errno.EPERM, errno.EROFS}
+
+
+LINK_OUT = "the folder is a link to somewhere else (not followed)"
+
+
+def _why(e: OSError | str) -> str:
+    if isinstance(e, str):
+        return e
+    if e.errno == errno.EROFS:
+        return "the disk or share is read-only"
+    return "permission denied (the folder is read-only or belongs to another user)"
+
+
+def _euid() -> int:
+    return os.geteuid() if hasattr(os, "geteuid") else -1
+
+
+def _uid_of(p: Path, follow: bool) -> int:
+    return (os.stat(p) if follow else os.lstat(p)).st_uid
+
+
+ROOT_FOREIGN = ("another user controls this folder (not owned by root, or group/other-writable); as root HavnVard "
+                "does not write into it: run the pullback as that user, or use --target")
+
+
+def _mode_of(p: Path, follow: bool) -> int:
+    return (os.stat(p) if follow else os.lstat(p)).st_mode
+
+
+def _root_unsafe(p: Path) -> bool:
+    """R2 (option c): as root, a folder on the way is safe only when root owns it (and the link to it, if any) and
+    nobody else can write it. Otherwise its owner could swap a sub-folder for a link mid-run, so it is a blocked
+    folder. (The race-free dir_fd walk is FILEd.)"""
+    try:
+        for follow in (False, True):
+            if _uid_of(p, follow) != 0:
+                return True
+        return bool(_mode_of(p, True) & 0o022)
+    except OSError:
+        return True
+
+
+def _safe_mode(mode: int) -> int:
+    """FN-5: as root, never create a setuid/setgid file or folder (root would own it)."""
+    mode &= 0o7777
+    return mode & ~(stat.S_ISUID | stat.S_ISGID) if _euid() == 0 else mode
+
+
+class _Blocked(Exception):
+    """A folder refused us. Carries the folder that refused; the writer has already recorded it."""
+
+
+def blocked_text(folder: str, why: str, items: list[str], target: str, files: list[str] | None = None) -> str:
+    """The popup / hub notice text for one folder that refused files: plain words, which folder, why, what to do.
+    FN-6: when files sit under the refused folder, every FILE is counted (first 10 shown), not just the folder."""
+    items = list(files) if files else items
+    shown = "\n".join(f"  {p}" for p in items[:10]) + (f"\n  ... and {len(items) - 10} more" if len(items) > 10 else "")
+    return (f"HavnVard could not put back {len(items)} item(s) into this folder:\n\n  {folder}\n\n"
+            f"Why: {why}.\n\nNot put back:\n{shown}\n\n"
+            "Nothing on this computer was changed or deleted, and your backup still holds these files.\n"
+            "What to do: ask the owner of that folder (or your administrator) to let you write there and run the "
+            "pullback again, or pull back into a folder you own with --target "
+            f"(this run used --target {target}).")
+
+
 class _Writer:
     """Writes backed-up files onto the device without ever changing what is there."""
 
     def __init__(self, tgt: Path, stamp: str, scratch: Path):
         self.tgt, self.stamp, self.scratch = tgt, stamp, scratch
-        self.redirect: dict[Path, Path] = {}     # a path blocked by a non-folder -> the NAME_pullback-STAMP folder used
+        self.redirect: dict[Path, Path] = {}     # a path blocked by a non-folder -> the NAME_PULLBACK-STAMP folder used
         self.new_dirs: dict[Path, tuple[int, float] | None] = {}
         self.new, self.same, self.side, self.partial, self.links, self.special = [], 0, [], [], 0, 0
+        self.earlier: list[tuple[str, str]] = []  # (existing different file, earlier PULLBACK copy that already matches)
         self.hashes: dict[str, str] = {}         # source path -> SHA-256 of what was written / found identical
+        # folder that refused us -> {"why", "items": destination paths not placed}; insertion order = first seen
+        self.blocked: dict[str, dict] = {}
+        self.unplaced: set[str] = set()          # source paths (files) not written because a folder refused them
+
+    def _refuse(self, folder: Path, item: Path, e: OSError | str) -> _Blocked:
+        b = self.blocked.setdefault(str(folder), {"why": _why(e), "items": [], "files": []})
+        if str(item) not in b["items"]:
+            b["items"].append(str(item))
+        return _Blocked(str(folder))
 
     def _apply(self, p: Path) -> Path:
         for k in sorted(self.redirect, key=lambda x: len(str(x)), reverse=True):
@@ -391,27 +522,69 @@ class _Writer:
 
     def mkdirs(self, d: Path) -> Path:
         """Make sure folder d exists; create only missing folders. A FILE (or dead link) where a folder belongs is
-        left alone and the folder goes to NAME_pullback-STAMP next to it. A symlinked folder is used, never replaced."""
+        left alone and the folder goes to NAME_PULLBACK-STAMP next to it. A symlinked folder is used, never replaced."""
         d = self._apply(d)
         anchor = Path(d.anchor)
         cur = anchor
+        root = _euid() == 0
+        if root and _root_unsafe(cur):
+            raise self._refuse(cur, cur, ROOT_FOREIGN)
         for part in d.relative_to(anchor).parts:
             nxt = cur / part
             if os.path.lexists(nxt):
                 if nxt.is_dir():
+                    if nxt.is_symlink() and self._link_escapes(nxt):
+                        raise self._refuse(nxt, nxt, LINK_OUT)   # FN-5: listed as blocked, never followed
+                    if root and _root_unsafe(nxt):
+                        raise self._refuse(nxt, nxt, ROOT_FOREIGN)   # R2: never write where a user can swap a link
                     cur = nxt
                     continue
                 alt = renamed(nxt, self.stamp, is_dir=True)
-                os.mkdir(alt)
+                try:
+                    os.mkdir(alt, 0o755 if root else 0o777)
+                except OSError as e:
+                    if e.errno in _REFUSED:
+                        raise self._refuse(cur, alt, e) from e
+                    raise
                 self.redirect[nxt] = alt
                 self.new_dirs[alt] = None
                 self.side.append((str(nxt), str(alt)))
                 cur = alt
             else:
-                os.mkdir(nxt)
+                try:
+                    os.mkdir(nxt, 0o755 if root else 0o777)   # as root never group/other-writable, even at umask 0
+                except OSError as e:
+                    if e.errno in _REFUSED:                # cur refused us: record it, the caller carries on
+                        raise self._refuse(cur, nxt, e) from e
+                    raise
                 self.new_dirs[nxt] = None
                 cur = nxt
         return cur
+
+    def _link_escapes(self, link: Path) -> bool:
+        """FN-5: a symlinked folder on the way to a destination is used only when it stays inside the target and,
+        when running as root, points at a folder owned by the same user as the link (a user's link into a
+        root-owned folder such as /etc/cron.d is refused)."""
+        try:
+            real = link.resolve(strict=True)
+        except (OSError, RuntimeError):
+            return True
+        if self.tgt != Path("/") and not real.is_relative_to(self.tgt.resolve()):
+            return True
+        if _euid() == 0:
+            try:
+                return _uid_of(link, follow=False) != _uid_of(real, follow=True)
+            except OSError:
+                return True
+        return False
+
+    def put_dir(self, src: str, mode: int, mtime: float) -> None:
+        """A folder in the backup (empty ones too). A folder that refuses us is recorded, never fatal."""
+        try:
+            self.mkdirs(_dest(self.tgt, src))
+        except _Blocked:
+            return
+        self.dir_meta(src, mode, mtime)
 
     def dir_meta(self, src: str, mode: int, mtime: float) -> None:
         d = self._apply(_dest(self.tgt, src))
@@ -428,38 +601,73 @@ class _Writer:
                 os.write(fd, chunk)
         except BaseException:
             self.partial.append(str(path))      # stream cut mid-file (review N1): kept and reported, never removed
+            os.close(fd)
             raise
+        try:
+            if n == size:                       # FN-5: on the open fd, never by path (no race onto a swapped link)
+                os.fchmod(fd, _safe_mode(mode))
+                os.utime(fd, (mtime, mtime))
         finally:
             os.close(fd)
         if n != size:
             self.partial.append(str(path))      # kept, reported; never removed
-        else:
-            os.chmod(path, mode & 0o7777)
-            os.utime(path, (mtime, mtime))
         return h.hexdigest()
 
+    @staticmethod
+    def _drain(reader) -> None:
+        """Read and drop the bytes of a file we cannot place, so restic is never left blocked on a full pipe."""
+        if reader is not None:
+            for _ in iter(lambda: reader.read(1 << 20), b""):
+                pass
+
     def put_file(self, src: str, reader, size: int, mode: int, mtime: float) -> None:
+        """Every outcome is recorded: new, identical (left alone), different (kept + NAME_PULLBACK copy), or not
+        placed because a folder refused us (listed; the rest of the pullback carries on)."""
         dest = _dest(self.tgt, src)
+        try:
+            self._put_file(src, dest, reader, size, mode, mtime)
+        except _Blocked as b:
+            self.unplaced.add(src)
+            self.blocked[b.args[0]]["files"].append(src)
+            self._drain(reader)
+
+    def _put_file(self, src: str, dest: Path, reader, size: int, mode: int, mtime: float) -> None:
         d = self.mkdirs(dest.parent) / dest.name
         if not os.path.lexists(d):
-            self.hashes[src] = self._write_new(d, reader, size, mode, mtime)
+            try:
+                self.hashes[src] = self._write_new(d, reader, size, mode, mtime)
+            except OSError as e:
+                if e.errno in _REFUSED and not os.path.lexists(d):   # the folder exists but will not take files
+                    raise self._refuse(d.parent, d, e) from e
+                raise
             self.new.append(str(d))
             return
-        if d.is_file() and not d.is_symlink() and d.stat().st_size == size:
+        if d.is_file() and not d.is_symlink():
             spool = self.scratch / "spool"
             h = hashlib.sha256()
             with open(spool, "wb") as f:                 # our own scratch file in a TemporaryDirectory
                 for chunk in iter(lambda: reader.read(1 << 20), b""):
                     h.update(chunk)
                     f.write(chunk)
-            if sha256_file(d) == h.hexdigest():
+            digest = h.hexdigest()
+            if d.stat().st_size == size and sha256_file(d) == digest:
                 self.same += 1
-                self.hashes[src] = h.hexdigest()
+                self.hashes[src] = digest
+                return
+            prev = earlier_copy(d, digest, size)
+            if prev is not None:                         # pulled back before: that copy already holds these bytes
+                self.same += 1
+                self.earlier.append((str(d), str(prev)))
+                self.hashes[src] = digest
                 return
             reader = open(spool, "rb")
         alt = renamed(d, self.stamp)
         try:
             self.hashes[src] = self._write_new(alt, reader, size, mode, mtime)
+        except OSError as e:
+            if e.errno in _REFUSED and not os.path.lexists(alt):
+                raise self._refuse(d.parent, alt, e) from e
+            raise
         finally:
             if reader is not None and getattr(reader, "name", None) == str(self.scratch / "spool"):
                 reader.close()
@@ -467,16 +675,30 @@ class _Writer:
 
     def put_link(self, src: str, target: str) -> None:
         dest = _dest(self.tgt, src)
-        d = self.mkdirs(dest.parent) / dest.name
-        if not os.path.lexists(d):
-            os.symlink(target, d)
-            self.links += 1
+        try:
+            d = self.mkdirs(dest.parent) / dest.name
+            if not os.path.lexists(d):
+                try:
+                    os.symlink(target, d)
+                except OSError as e:
+                    if e.errno in _REFUSED:
+                        raise self._refuse(d.parent, d, e) from e
+                    raise
+                self.links += 1
+        except _Blocked:
+            pass
 
     def finish(self) -> None:
+        """Folder modes and times, deepest first, set on an fd opened with O_NOFOLLOW (FN-5: never by path)."""
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
         for d, meta in sorted(self.new_dirs.items(), key=lambda kv: len(kv[0].parts), reverse=True):  # deepest first
             if meta:
-                os.chmod(d, meta[0] & 0o7777)
-                os.utime(d, (meta[1], meta[1]))
+                fd = os.open(d, flags)
+                try:
+                    os.fchmod(fd, _safe_mode(meta[0]))
+                    os.utime(fd, (meta[1], meta[1]))
+                finally:
+                    os.close(fd)
 
 
 def _popen(cmd: list[str], env: dict, errf):
@@ -508,8 +730,7 @@ def _stream_into(w: _Writer, restic: str, env: dict, snap_id: str, inc: str, nod
                         if src in special:
                             w.special += 1
                         elif m.isdir():
-                            w.mkdirs(_dest(w.tgt, src))
-                            w.dir_meta(src, m.mode, m.mtime)
+                            w.put_dir(src, m.mode, m.mtime)
                         elif m.isreg():
                             w.put_file(src, tf.extractfile(m), m.size, m.mode, m.mtime)
                         elif m.issym():
@@ -528,15 +749,30 @@ def _stream_into(w: _Writer, restic: str, env: dict, snap_id: str, inc: str, nod
 def pullback(date: str | None = None, paths: list[str] | None = None, version: str | None = None,
              folder: str | None = None, gone_mode: bool = False, target: str = "/",
              from_device: str | None = None, key_file: str | None = None, login_file: str | None = None,
-             snapshot: str | None = None, now: dt.datetime | None = None) -> int:
+             snapshot: str | None = None, now: dt.datetime | None = None, notifier=None, hub_notice=None) -> int:
     """Never changes anything that exists: an identical file is left alone; a different one stays and the backed-up
-    copy is written next to it as NAME_pullback-YYYYMMDD-HHMM.EXT; a file where a folder belongs stays and the folder
-    is written as NAME_pullback-YYYYMMDD-HHMM/. Every expected file is accounted for, or the exit is 1."""
+    copy is written next to it as NAME_PULLBACK-YYYYMMDD-HHMM.EXT; a file where a folder belongs stays and the folder
+    is written as NAME_PULLBACK-YYYYMMDD-HHMM/. Every expected file is accounted for, or the exit is 1.
+    A folder that cannot be created or written (permission, read-only, owned by another user) never stops the run:
+    everything else is still put back, every item not placed is listed, the exit is 1, and for EACH such folder a
+    popup stays on the screen until clicked (`notifier`, default notify.popup) and a notice is left on the hub page
+    until someone dismisses it (`hub_notice`, default checkin.report_notice)."""
     restic = restic_bin()
     env = other_env(prune.check_device(from_device), key_file, login_file) if from_device else device_env()[0]
     if snapshot:
         s = find_snapshot(restic, env, snapshot)
-        incs = [p for p in s.get("paths", []) if _under(p, folder)] or ([folder.rstrip("/")] if folder else [])
+        if paths:                                    # INFRA-578: the file list was ignored (whole snapshot restored)
+            incs = [p for p in (_abs(x) for x in paths) if _under(p, folder)]
+            parents = sorted({str(Path(p).parent) for p in incs})
+            present = {o["path"] for o in _ls_nodes(restic, env, s["id"], parents, False)} if parents else set()
+            missing = [p for p in incs if p not in present]
+            if missing or not incs:
+                raise BackupError(f"not in snapshot {snapshot}: " + (", ".join(missing[:5]) if missing
+                                  else "no FILE is under --folder") + "; nothing was written")
+        else:
+            incs = [p for p in s.get("paths", []) if _under(p, folder)] or ([folder.rstrip("/")] if folder else [])
+            print(f"pullback: whole snapshot {s['id'][:8]}" + (f" under {folder}" if folder else "")
+                  + " (add FILES or --folder to restore less)")
         jobs = [(s, incs)]
     else:
         jobs = plan(restic, env, date, list(paths or []), version, folder, gone_mode)
@@ -572,14 +808,18 @@ def pullback(date: str | None = None, paths: list[str] | None = None, version: s
             w.finish()
         except OSError as e:
             failed.append(("folder modes", str(e)))
-    missing = sorted(set(expected) - set(w.hashes))
+    blocked_src = w.unplaced
+    missing = sorted(set(expected) - set(w.hashes) - blocked_src)
     print(f"pullback: {len(w.new)} restored, {w.same} already there and identical (left alone), "
           f"{len(w.side)} already there but different (kept; backed-up copy written next to it)"
           + (f", {w.links} symlink(s)" if w.links else "")
           + (f", {w.special} pipe/socket/device entr(ies) skipped" if w.special else ""))
     for orig, alt in w.side:
         print(f"  KEPT {orig}  ->  backed-up copy: {alt}")
-    print(f"pullback: {len(expected) - len(missing)}/{len(expected)} files accounted for; "
+    for orig, prev in w.earlier:
+        print(f"  KEPT {orig}  (backed-up copy already pulled back earlier: {prev})")
+    print(f"pullback: {len(expected) - len(missing) - len(blocked_src & set(expected))}/{len(expected)} files "
+          "accounted for; "
           f"{checked - len(bad)}/{checked} SHA-256 match the offload manifest"
           + ("" if checked else " (no offload manifest for these files; restic checked its own hashes)"))
     for p in missing:
@@ -590,7 +830,55 @@ def pullback(date: str | None = None, paths: list[str] | None = None, version: s
         print(f"  MISMATCH {b}")
     for inc, why in failed:
         print(f"  FAILED {inc}: {why}")
-    return 0 if not (bad or missing or w.partial or failed) else config.PROBLEM_EXIT
+    if w.blocked:
+        _report_blocked(w, str(tgt), notifier, hub_notice)
+    return 0 if not (bad or missing or w.partial or failed or w.blocked or w.unplaced) else config.PROBLEM_EXIT
+
+
+def _report_blocked(w: _Writer, target: str, notifier, hub_notice) -> list[str]:
+    """Folders that refused files. FIRST every blocked folder, every item and every unplaced file is printed (FN-4,
+    FN-6), so nothing a popup or the hub does can hide the list. THEN, per folder, one popup (stays until clicked;
+    D2: as root, only on the graphical session of the user who owns that folder) and one hub notice, each in its own
+    guard: a failure is printed on stderr with its error and the next folder still gets its popup and notice.
+    Returns the errors (also on stderr); never silent."""
+    import sys
+    notifier = notifier or notify.popup
+    hub_notice = hub_notice or checkin.report_notice
+    n = sum(len(b["items"]) for b in w.blocked.values())
+    print(f"pullback: {n} item(s) could NOT be put back: {len(w.blocked)} folder(s) refused them "
+          "(nothing there was changed)")
+    for folder, b in w.blocked.items():
+        print(f"  BLOCKED folder {folder}: {b['why']}")
+        for item in b["items"]:
+            print(f"    COULD NOT PLACE {item}")
+    print(f"pullback: NOT PUT BACK: {len(w.unplaced)} file(s)")
+    for src in sorted(w.unplaced):
+        print(f"  NOT PUT BACK {src}")
+    errors: list[str] = []
+    for folder, b in w.blocked.items():
+        text = blocked_text(folder, b["why"], b["items"], target, b.get("files"))
+        try:
+            owner = _uid_of(Path(folder), follow=False)
+        except OSError:
+            owner = None
+        try:
+            shown = notifier(notify.TITLE, text, owner_uid=owner)
+            if shown.get("shown"):
+                print(f"  popup for {folder} shown ({shown.get('how')}); it stays until someone clicks OK")
+            else:
+                print(f"havnvard pullback: NO POPUP for {folder}: {shown.get('how')}", file=sys.stderr)
+        except Exception as e:  # noqa: BLE001 - FN-4: reported on stderr and returned; the next folder still runs
+            errors.append(f"NO POPUP for {folder}: {type(e).__name__}: {e}")
+            print(f"havnvard pullback: {errors[-1]}", file=sys.stderr)
+        try:
+            sent = hub_notice("pullback_blocked", text)
+            print(f"  hub notice for {folder}: {sent}")
+            if not str(sent).startswith("sent"):
+                print(f"havnvard pullback: hub notice for {folder} not sent: {sent}", file=sys.stderr)
+        except Exception as e:  # noqa: BLE001 - FN-4: reported on stderr and returned; the next folder still runs
+            errors.append(f"hub notice for {folder} not sent: {type(e).__name__}: {e}")
+            print(f"havnvard pullback: {errors[-1]}", file=sys.stderr)
+    return errors
 
 
 # ---------- find ----------

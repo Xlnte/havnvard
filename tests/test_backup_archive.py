@@ -106,7 +106,7 @@ def test_pullback_files_never_overwrite_rename_and_any_device(dev, capsys):
     assert rc == 0, out
     assert "1 restored, 1 already there and identical" in out and "1 already there but different" in out
     assert (tgt / p1.lstrip("/")).read_bytes() == b"someone else's p1"            # never overwritten
-    side = tgt / p1.lstrip("/").replace("p1.jpg", "p1_pullback-20261113-0130.jpg")
+    side = tgt / p1.lstrip("/").replace("p1.jpg", "p1_PULLBACK-20261113-0130.jpg")
     assert side.read_bytes() == (photos / "2019" / "p1.jpg").read_bytes()         # backed-up copy next to it
     assert (tgt / str(photos / "notes.txt").lstrip("/")).read_text() == "hello\n"
     assert "3/3 files accounted for; 3/3 SHA-256 match the offload manifest" in out
@@ -159,7 +159,7 @@ def test_pullback_never_changes_anything_that_exists(dev, capsys):
     out = capsys.readouterr().out
     assert rc == 0, out
     assert (base / "2019").read_text().startswith("I am a FILE")                # untouched
-    alt = base / "2019_pullback-20261113-0200"
+    alt = base / "2019_PULLBACK-20261113-0200"
     assert len(list(alt.glob("p*.jpg"))) == 5 and (alt / odd.name).read_text() == "odd\n"
     assert oct(base.stat().st_mode & 0o777) == "0o700"                         # existing folder mode kept
     assert (base.parent / "PhotosLink").is_symlink()                           # symlinked folder never replaced
@@ -299,8 +299,8 @@ def test_verify_stream_statuses(tmp_path):
     buf.seek(0)
     rows = {r["path"]: r["status"] for r in archive.verify_stream(buf, live, dt.datetime.now().astimezone())}
     assert rows == {str(live / "same.txt"): "VERIFIED", str(live / "extra.txt"): "MISSING_IN_SNAPSHOT"}
-    assert archive.renamed(tmp_path / "r.pdf", "20261113-0130").name == "r_pullback-20261113-0130.pdf"
-    assert archive.renamed(tmp_path / "Makefile", "x").name == "Makefile_pullback-x"
+    assert archive.renamed(tmp_path / "r.pdf", "20261113-0130").name == "r_PULLBACK-20261113-0130.pdf"
+    assert archive.renamed(tmp_path / "Makefile", "x").name == "Makefile_PULLBACK-x"
 
 
 @needs_restic
@@ -332,3 +332,65 @@ def test_cut_stream_reports_partial_and_fifo_never_hangs(dev, capsys, monkeypatc
     cut2.mkdir()
     assert archive.pullback(date=dt.date.today().isoformat(), target=str(cut2)) == config.PROBLEM_EXIT
     assert "FAILED" in capsys.readouterr().out
+
+
+@needs_restic
+def test_pullback_snapshot_honours_the_file_list_infra578(dev, capsys):
+    """INFRA-578: `pullback FILE --snapshot ID` restored the WHOLE snapshot (live: 29,019 files for one asked)."""
+    tmp, repo, pw, owner, photos = dev
+    restic(repo, pw, "backup", str(photos))
+    snap = json.loads(restic(repo, pw, "snapshots", "--json"))[-1]
+    tgt = tmp / "one"
+    tgt.mkdir()
+    want = str(photos / "2019" / "p2.jpg")
+    assert archive.pullback(paths=[want], snapshot=snap["id"][:8], target=str(tgt)) == 0
+    got = [p for p in tgt.rglob("*") if p.is_file()]
+    assert got == [tgt / want.lstrip("/")], got                                  # exactly the one file asked for
+    assert got[0].read_bytes() == (photos / "2019" / "p2.jpg").read_bytes()
+    assert "1/1 files accounted for" in capsys.readouterr().out
+    # a file that is not in that snapshot: refused before anything is written
+    tgt2 = tmp / "none"
+    tgt2.mkdir()
+    with pytest.raises(BackupError, match="not in snapshot"):
+        archive.pullback(paths=[str(photos / "nope.txt")], snapshot=snap["id"][:8], target=str(tgt2))
+    assert not any(tgt2.rglob("*"))
+
+
+@needs_restic
+def test_pullback_twice_writes_one_PULLBACK_copy(dev, capsys):
+    """owner ruling 20261114: a different same-name file is never overwritten; the copy is NAME_PULLBACK-STAMP.EXT, and a
+    second pullback of the same backed-up file finds that copy instead of writing an identical _2."""
+    tmp, repo, pw, owner, photos = dev
+    restic(repo, pw, "backup", str(photos))
+    tgt = tmp / "t"
+    f = str(photos / "notes.txt")
+    (tgt / f.lstrip("/")).parent.mkdir(parents=True)
+    (tgt / f.lstrip("/")).write_text("edited locally\n")
+    for minute in (1, 2):
+        assert archive.pullback(paths=[f], target=str(tgt), now=dt.datetime(2026, 11, 14, 2, minute)) == 0
+    d = (tgt / f.lstrip("/")).parent
+    assert (tgt / f.lstrip("/")).read_text() == "edited locally\n"
+    assert sorted(p.name for p in d.iterdir()) == ["notes.txt", "notes_PULLBACK-20261114-0201.txt"]
+    assert "already pulled back earlier" in capsys.readouterr().out
+
+
+@needs_restic
+def test_vanished_finds_files_created_and_deleted_the_same_day(dev):
+    """Live 20261114: 500 files created 15:00 and deleted 15:05 on one day were invisible to --vanished, which only
+    compared the last backup before the day with the last one in it. Every backup of the day is now compared in turn."""
+    tmp, repo, pw, owner, photos = dev
+    restic(repo, pw, "backup", "--time", "2026-11-10 12:00:00", str(photos))
+    day = photos / "made-today"
+    day.mkdir()
+    (day / "a.txt").write_text("made and lost the same day\n")
+    restic(repo, pw, "backup", "--time", "2026-11-11 09:00:00", "--exclude", "notes.txt", str(photos))  # notes gone ...
+    restic(repo, pw, "backup", "--time", "2026-11-11 18:00:00", "--exclude", "a.txt", str(photos))     # ... and back
+    env = {"RESTIC_REPOSITORY": str(repo), "RESTIC_PASSWORD_FILE": str(pw)}
+    snaps = archive.catalog.data_snapshots(archive.catalog.snapshots("restic", env))
+    jobs = archive.vanished_jobs("restic", env, snaps, dt.date(2026, 11, 11))
+    gone = sorted(p for _, ps in jobs for p in ps)
+    assert gone == [str(day / "a.txt")]
+    tgt = tmp / "back"
+    tgt.mkdir()
+    assert archive.pullback(date="2026-11-11", gone_mode=True, target=str(tgt)) == 0
+    assert (tgt / str(day / "a.txt").lstrip("/")).read_text() == "made and lost the same day\n"
