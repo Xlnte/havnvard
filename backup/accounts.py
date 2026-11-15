@@ -38,6 +38,7 @@ import hmac
 import json
 import os
 import posixpath
+import re
 import secrets
 import sqlite3
 import stat
@@ -55,6 +56,13 @@ SETUP_CODE_TTL = dt.timedelta(hours=1)
 INVITE_TTL = dt.timedelta(days=7)
 FORCE_OPEN_WINDOW = dt.timedelta(hours=24)
 RESET_TTL = dt.timedelta(hours=24)
+# INFRA-591 (F13): server-side session lifetime, checked on EVERY request. Administrators: 12 h absolute, 30 min idle.
+# Users stay "remembered" (design, review F13): 30 days absolute, no idle limit. Override with HAVNVARD_SESSION_ADMIN_ABS_H /
+# _USER_ABS_H / _ADMIN_IDLE_MIN / _USER_IDLE_MIN (0 = no limit).
+SESSION_ADMIN_ABS_H, SESSION_USER_ABS_H, SESSION_ADMIN_IDLE_MIN, SESSION_USER_IDLE_MIN = 12.0, 720.0, 30.0, 0.0
+_TOUCH_EVERY_S = 15
+# INFRA-600 (F22): ONE device-name rule, shared by the hub API route and add_device.
+DEVICE_NAME_RE = r"[A-Za-z0-9._-]{1,64}"
 WARNING = "Your administrator reset your password, which means someone may have looked at your files."
 NOTICE = ("Your administrator {admin} reset your password on {when} and accessed all your files. Reason: {reason}")
 NOTICE_RESET = ("Your administrator {admin} reset your password on {when}. Until you acknowledge this, whoever held "
@@ -136,6 +144,19 @@ def _now() -> dt.datetime:
 
 def _iso(t: dt.datetime) -> str:
     return t.astimezone(dt.timezone.utc).isoformat(timespec="seconds")
+
+
+def valid_device_name(name) -> bool:
+    return isinstance(name, str) and re.fullmatch(DEVICE_NAME_RE, name) is not None
+
+
+def _limit_s(env: str, default: float, unit_s: float) -> float:
+    """A session limit in seconds (env/default are in `unit_s`-second units); 0 means none. A bad value is a config error, not a silent default."""
+    raw = os.environ.get(env)
+    try:
+        return float(raw) * unit_s if raw not in (None, "") else default * unit_s
+    except ValueError as e:
+        raise BackupError(f"{env} must be a number of minutes, got {raw!r}") from e
 
 
 def _h(s: str) -> str:
@@ -414,7 +435,7 @@ class Accounts:
         return code
 
     def register(self, email: str, password: str, setup_code: str | None = None, invite_code: str | None = None,
-                 company: str | None = None) -> dict:
+                 company: str | None = None, ip: str | None = None, ua: str | None = None) -> dict:
         email = email.strip().lower()
         if "@" not in email or len(email) > 254:
             raise BackupError("enter a valid email address")
@@ -452,7 +473,8 @@ class Accounts:
                 raise BackupError(f"{email} already has a {kind} account")
             aid = con.execute("INSERT INTO account(company_id, kind, email, pw_hash, status, created_at) "
                               "VALUES (?,?,?,?, 'active', ?)", (cid, kind, email, pw_hash, _iso(_now()))).lastrowid
-            self._audit(con, aid, "account.register", email, kind=kind, first_admin=bool(out))
+            self._audit(con, aid, "account.register", email, kind=kind, first_admin=bool(out), ip=ip,
+                        ua=(ua or "")[:200])
             con.execute("COMMIT")
         except BaseException:
             con.execute("ROLLBACK")
@@ -550,15 +572,45 @@ class Accounts:
             con.close()
 
     def session(self, token: str | None) -> dict | None:
-        """The live session for a token: checked on EVERY request (no cache), so a disable is instant."""
+        """The live session for a token: checked on EVERY request (no cache), so a disable is instant. INFRA-591: a
+        session also ends by itself, server-side: after an absolute time from login, and after an idle gap
+        (administrators 30 min by default). An expired session is revoked and audited ('session.expired'), never silent."""
         if not token:
             return None
-        row = self._one("SELECT s.account_id, s.scope, s.proof, a.kind, a.email, a.company_id, a.must_set_password, "
+        row = self._one("SELECT s.id AS sid, s.created_at AS s_created, s.last_seen_at AS s_seen, s.account_id, s.scope, "
+                        "s.proof, a.kind, a.email, a.company_id, a.must_set_password, "
                         "(a.must_ack_force_open OR a.must_set_password OR s.scope <> 'full') AS must_ack_force_open, "
                         "a.must_ack_force_open AS notice_unacked FROM session s "
                         "JOIN account a ON a.id = s.account_id WHERE s.token_hash=? AND s.revoked_at IS NULL "
                         "AND a.status='active'", (_h(token),))
-        return row
+        if not row:
+            return None
+        now = _now()
+        born = dt.datetime.fromisoformat(row["s_created"])
+        seen = dt.datetime.fromisoformat(row["s_seen"]) if row["s_seen"] else born
+        adm = row["kind"] == "admin"
+        absolute = _limit_s("HAVNVARD_SESSION_ADMIN_ABS_H", SESSION_ADMIN_ABS_H, 3600) if adm else \
+            _limit_s("HAVNVARD_SESSION_USER_ABS_H", SESSION_USER_ABS_H, 3600)
+        idle = _limit_s("HAVNVARD_SESSION_ADMIN_IDLE_MIN", SESSION_ADMIN_IDLE_MIN, 60) if adm else \
+            _limit_s("HAVNVARD_SESSION_USER_IDLE_MIN", SESSION_USER_IDLE_MIN, 60)
+        why = ("absolute" if absolute and (now - born).total_seconds() > absolute else
+               "idle" if idle and (now - seen).total_seconds() > idle else "")
+        if not why and (now - seen).total_seconds() < _TOUCH_EVERY_S:
+            return row
+        con = self._tx()
+        try:
+            if why:
+                con.execute("UPDATE session SET revoked_at=? WHERE id=? AND revoked_at IS NULL", (_iso(now), row["sid"]))
+                self._audit(con, row["account_id"], "session.expired", row["email"], why=why, kind=row["kind"])
+            elif (now - seen).total_seconds() >= _TOUCH_EVERY_S:
+                con.execute("UPDATE session SET last_seen_at=? WHERE id=?", (_iso(now), row["sid"]))
+            con.execute("COMMIT")
+        except BaseException:
+            con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+        return None if why else row
 
     def require_ready(self, token: str | None) -> dict:
         s = self.session(token)
@@ -995,6 +1047,8 @@ class Accounts:
     # ---------- devices, rules, release, filter ----------
     def add_device(self, actor: int, name: str, primary_user: int | None = None, pc_admin: int | None = None) -> str:
         """Register a computer; returns its check-in token (shown once, stored hashed)."""
+        if not valid_device_name(name):
+            raise BackupError(f"computer name must be 1-64 characters from A-Z a-z 0-9 . _ - (got {str(name)[:40]!r})")
         token = secrets.token_urlsafe(24)
         con = self._tx()
         try:

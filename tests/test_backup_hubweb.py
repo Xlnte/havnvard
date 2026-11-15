@@ -17,21 +17,35 @@ PW = "correct horse battery"
 
 
 class Client:
-    def __init__(self, app):
-        self.app, self.cookie = app, ""
+    """A browser: a session cookie (`cookie`) plus the 3.3.5 pre-session CSRF cookie (`pre`, INFRA-592). A POST to
+    /login /register /reset fetches the form first and sends its token, like a browser would; `raw=True` sends nothing."""
 
-    def req(self, method, path, data=None, headers=None, as_json=False):
+    def __init__(self, app):
+        self.app, self.cookie, self.pre = app, "", ""
+
+    def _env(self, method, path, q, body, headers, as_json):
+        jar = "; ".join(c for c in (self.cookie, self.pre) if c)
+        return {"REQUEST_METHOD": method, "PATH_INFO": path, "QUERY_STRING": q, "HTTP_COOKIE": jar,
+                "CONTENT_LENGTH": str(len(body)), "wsgi.input": io.BytesIO(body),
+                "CONTENT_TYPE": "application/json" if as_json else "application/x-www-form-urlencoded", **(headers or {})}
+
+    def req(self, method, path, data=None, headers=None, as_json=False, raw=False):
         q = ""
         if "?" in path:
             path, q = path.split("?", 1)
+        if method == "POST" and path in getattr(hubweb, "PRE_FORMS", ()) and not raw and not as_json:
+            if not self.pre:
+                self.req("GET", path)
+            data = {**(data or {}), "csrf": hubweb.csrf_for(self.pre.split("=", 1)[1])}
         body = (json.dumps(data) if as_json else urlencode(data or {})).encode()
-        env = {"REQUEST_METHOD": method, "PATH_INFO": path, "QUERY_STRING": q, "HTTP_COOKIE": self.cookie,
-               "CONTENT_LENGTH": str(len(body)), "wsgi.input": io.BytesIO(body),
-               "CONTENT_TYPE": "application/json" if as_json else "application/x-www-form-urlencoded", **(headers or {})}
-        status, hdrs, text = self.app.handle(env)
+        status, hdrs, text = self.app.handle(self._env(method, path, q, body, headers, as_json))
         for k, v in hdrs:
             if k == "Set-Cookie":
-                self.cookie = v.split(";")[0]
+                nv = v.split(";")[0]
+                if nv.startswith("hv_csrf="):
+                    self.pre = nv
+                else:
+                    self.cookie = nv
         return status, dict(hdrs), text
 
     def csrf(self):
