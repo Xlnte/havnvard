@@ -172,11 +172,11 @@ def test_600_add_device_and_api_share_one_name_rule(app):  # noqa: F811
     w, code = app
     adm = _admin(w, code)
     aid = w.a.list_accounts(kind="admin")[0]["id"]
-    for bad in ("Al's laptop", "a b", "", "x" * 65, "../etc", "naïve"):
+    for bad in ("Al's laptop", "a b", "", "x" * 64, "-pc", "../etc", "naïve"):
         with pytest.raises(BackupError, match="computer name"):
             w.a.add_device(aid, bad)
         assert not accounts.valid_device_name(bad)
-    for good in ("pc-1", "Al.laptop_2", "x" * 64):
+    for good in ("pc-1", "Al.laptop_2", "x" * 63):
         tok = w.a.add_device(aid, good)
         # the device can authenticate at the API route built from the SAME rule
         st, _, _ = Client(w).req("POST", f"/api/v1/devices/{good}/checkin", {}, {"HTTP_AUTHORIZATION": f"Bearer {tok}"},

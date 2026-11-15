@@ -13,7 +13,7 @@ from .config import BackupError
 from .render import PKG, render_task
 from .util import new_secret_file, read_secret, restic_bin, run
 
-NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$")
+NAME_RE = config.DEVICE_NAME_RE      # INFRA-626: the same rule the hub's add_device uses (one definition, in config)
 QUIET_RE = re.compile(r"^(\d{1,2})-(\d{1,2})$")
 
 

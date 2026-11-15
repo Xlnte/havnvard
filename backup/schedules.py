@@ -99,17 +99,37 @@ class Schedules:
     # ---------- schedule ----------
     def set(self, actor: int | None, device: str, mode: str, every_min: int | None = None, min_gap_s: int = 60,
             only_on_ac: bool = False, now: dt.datetime | None = None) -> None:
+        """Set a computer's schedule. INFRA-596 (F18): the change and its `schedule.set` audit row (when the hub's audit
+        table is in the same database, as on a real hub) are ONE transaction: both happen or neither. The computer must
+        exist (when the hub's device table is present): a typo makes no schedule row for a computer that is not there."""
         if mode not in MODES:
             raise BackupError(f"mode must be one of {', '.join(MODES)}")
         if mode == "interval" and (not every_min or every_min < 1):
             raise BackupError("interval mode needs every_min of 1 or more")
         if min_gap_s < 0:
             raise BackupError("min_gap_s cannot be negative")
-        self._exec("INSERT INTO schedule(device, mode, every_min, min_gap_s, only_on_ac, updated_by, updated_at) "
-                   "VALUES (?,?,?,?,?,?,?) ON CONFLICT(device) DO UPDATE SET mode=excluded.mode, "
-                   "every_min=excluded.every_min, min_gap_s=excluded.min_gap_s, only_on_ac=excluded.only_on_ac, "
-                   "updated_by=excluded.updated_by, updated_at=excluded.updated_at",
-                   (device, mode, every_min, min_gap_s, int(only_on_ac), actor, _iso(_utc(now))))
+        con = self._con()
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            tables = {r["name"] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if "device" in tables and not con.execute("SELECT 1 FROM device WHERE name=?", (device,)).fetchone():
+                raise NotFound(f"no computer named {device!r}")
+            con.execute("INSERT INTO schedule(device, mode, every_min, min_gap_s, only_on_ac, updated_by, updated_at) "
+                        "VALUES (?,?,?,?,?,?,?) ON CONFLICT(device) DO UPDATE SET mode=excluded.mode, "
+                        "every_min=excluded.every_min, min_gap_s=excluded.min_gap_s, only_on_ac=excluded.only_on_ac, "
+                        "updated_by=excluded.updated_by, updated_at=excluded.updated_at",
+                        (device, mode, every_min, min_gap_s, int(only_on_ac), actor, _iso(_utc(now))))
+            if "audit" in tables:
+                from .accounts import Accounts
+                Accounts._audit(con, actor, "schedule.set", device, mode=mode, every_min=every_min, min_gap_s=min_gap_s,
+                                only_on_ac=bool(only_on_ac))
+            con.execute("COMMIT")
+        except BaseException:
+            if con.in_transaction:
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
 
     def get(self, device: str) -> dict | None:
         r = self._rows("SELECT * FROM schedule WHERE device=?", (device,))

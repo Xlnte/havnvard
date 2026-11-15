@@ -12,8 +12,10 @@ Config (backup.toml): [checkin] url = "http://HUB:8001", token_file = "~/.config
 """
 from __future__ import annotations
 
+import collections
 import datetime as dt
 import json
+import os
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -49,21 +51,48 @@ def _now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
 
 
-def _keep_pending(rec: dict) -> None:
-    p = _pending_file()
+def _append_line(p: Path, line: str) -> None:
+    """Append one line to a queue file under its lock (INFRA-609): a flush that rewrites the file cannot lose it."""
     p.parent.mkdir(parents=True, exist_ok=True)
-    with open(p, "a") as f:
-        f.write(json.dumps(rec) + "\n")
+    with config.file_lock(p):
+        with open(p, "a") as f:
+            f.write(line + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+
+
+def _flush_file(p: Path, handle) -> int:
+    """Send every line of queue file P with `handle(line) -> bool` (True = done, False = keep), then remove exactly the done
+    lines. INFRA-609: the network work happens WITHOUT the append lock, and the file is re-read under the lock before it
+    is rewritten (temp + rename), so a line appended by another process while we were sending is never lost. One flusher
+    at a time (a second one waits), so a line is not sent twice by two overlapping check-ins."""
+    if not p.is_file():
+        return 0
+    with config.file_lock(p.with_name(p.name + ".flush")):
+        with config.file_lock(p):
+            lines = p.read_text().splitlines() if p.is_file() else []
+        done = [ln for ln in lines if handle(ln)]
+        if done:
+            with config.file_lock(p):
+                gone = collections.Counter(done)
+                keep = []
+                for ln in (p.read_text().splitlines() if p.is_file() else []):
+                    if gone[ln] > 0:
+                        gone[ln] -= 1
+                    else:
+                        keep.append(ln)
+                config.atomic_write_text(p, "".join(x + "\n" for x in keep))
+    return len(done)
+
+
+def _keep_pending(rec: dict) -> None:
+    _append_line(_pending_file(), json.dumps(rec))
 
 
 def _flush_pending(base: str, name: str, token: str, opener) -> int:
     """Send what could not be reported while the hub was down: missed check-ins, run ends, whole runs. The file is
-    replaced by the lines still unsent (our own state file, never a backup or a user file)."""
-    p = _pending_file()
-    if not p.is_file():
-        return 0
-    left, sent = [], 0
-    for ln in p.read_text().splitlines():
+    replaced by the lines still unsent (our own state file, never a backup or a user file); see `_flush_file`."""
+    def handle(ln: str) -> bool:
         try:
             rec = json.loads(ln)
             if rec.get("kind") == "end":
@@ -71,17 +100,15 @@ def _flush_pending(base: str, name: str, token: str, opener) -> int:
                       | {"action": "end"}, opener)
             else:
                 _post(f"{base}/api/v1/devices/{name}/late", token, rec, opener)
-            sent += 1
+            return True
         except urllib.error.HTTPError as e:
             if e.code == 404:                       # the hub has no such open run any more: nothing left to send
-                sent += 1
                 print(f"havnvard checkin: hub no longer has that run open (404); dropped from the queue: {ln[:200]}")
-            else:
-                left.append(ln)
+                return True
+            return False
         except (OSError, urllib.error.URLError, ValueError):
-            left.append(ln)
-    p.write_text("".join(x + "\n" for x in left))
-    return sent
+            return False
+    return _flush_file(_pending_file(), handle)
 
 
 def _notices_file() -> Path:
@@ -106,30 +133,23 @@ def report_notice(kind: str, text: str, opener=urllib.request.urlopen) -> str:
 def _keep_notice(rec: dict, why: str) -> str:
     p = _notices_file()
     try:
-        p.parent.mkdir(parents=True, exist_ok=True)
-        with open(p, "a") as f:
-            f.write(json.dumps(rec) + "\n")
+        _append_line(p, json.dumps(rec))
     except OSError as e:
         return f"{why}; could not keep it on this computer either ({e})"
     return f"{why}; kept on this computer in {p} and sent at the next check-in"
 
 
 def _flush_notices(base: str, name: str, token: str, opener) -> int:
-    """Our own state file: replaced by the lines still unsent (never a backup or a user file)."""
-    p = _notices_file()
-    if not p.is_file():
-        return 0
-    left, sent = [], 0
-    for ln in p.read_text().splitlines():
+    """Our own state file: replaced by the lines still unsent (never a backup or a user file); see `_flush_file`."""
+    def handle(ln: str) -> bool:
         try:
             rec = json.loads(ln)
             _post(f"{base}/api/v1/devices/{name}/notice", token,
                   {"kind": rec["kind"], "text": rec["text"] + f"\n\n(recorded on the computer at {rec['at']})"}, opener)
-            sent += 1
+            return True
         except (OSError, urllib.error.URLError, ValueError, KeyError):
-            left.append(ln)
-    p.write_text("".join(x + "\n" for x in left))
-    return sent
+            return False
+    return _flush_file(_notices_file(), handle)
 
 
 def checkin(run: bool = False, opener=urllib.request.urlopen, runner=None) -> int:
