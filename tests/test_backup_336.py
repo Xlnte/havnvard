@@ -413,3 +413,43 @@ def test_585_there_is_no_web_route_and_the_cli_wants_confirmation(app, tmp_path)
     p = subprocess.run([sys.executable, "-m", "backup", "hub", "admin-reset"], cwd=REPO, env=env, capture_output=True, text=True)
     assert p.returncode == config.PROBLEM_EXIT and "RESET ADMIN PASSWORD" in p.stdout
     time.sleep(0)
+
+
+# ---- Opus review of 3.3.6 (FIX-NOW): the console force-open must not hand its mail to the in-process outbox ----
+def test_review_cli_force_open_sends_mail_before_exiting(app, monkeypatch, tmp_path, capsys):  # noqa: F811
+    import argparse
+
+    from backup import cli
+    w, code = app
+    _, aid = _admin(w, code)
+    inv = w.a.invite(aid, "al@example.com")
+    w.a.register("al@example.com", PW, invite_code=inv)
+    sent = []
+    monkeypatch.setattr(mail, "settings", lambda cfg=None: {"host": "h", "from": "f"})
+    monkeypatch.setattr(mail, "send", lambda to, subject, body, cfg=None, smtp=None: (sent.append(to), "sent")[1])
+    monkeypatch.setattr(accounts, "Accounts", lambda *a, **k: w.a)
+    pwf = tmp_path / "adm.pass"
+    pwf.write_text(PW + "\n")
+    ns = argparse.Namespace(user_email="al@example.com", confirm="al@example.com", admin="boss@example.com",
+                            admin_password_file=str(pwf), reason="legal hold")
+    before = dict(mail.OUTBOX.stats)
+    assert cli._force_open_cli(ns) == 0
+    assert sent == ["al@example.com"]                                 # sent before the command returned
+    assert "Email to the user: sent" in capsys.readouterr().out
+    assert mail.OUTBOX.stats["queued"] == before["queued"]            # nothing left to a thread that dies with the process
+
+
+# ---- Opus review of 3.3.6: a computer added under 3.3.0-3.3.5 with a name the new rule refuses still checks in ----
+def test_review_legacy_device_name_still_checks_in(app, monkeypatch):  # noqa: F811
+    w, code = app
+    _, aid = _admin(w, code)
+    real = accounts.valid_device_name
+    accounts.valid_device_name = lambda n: True                           # as 3.3.5 allowed it
+    try:
+        tok = w.a.add_device(aid, "-old-pc")
+    finally:
+        accounts.valid_device_name = real
+    assert not accounts.valid_device_name("-old-pc")
+    st, _, body = Client(w).req("POST", "/api/v1/devices/-old-pc/checkin", {"client_version": "3.3.4"},
+                                {"HTTP_AUTHORIZATION": f"Bearer {tok}"}, as_json=True)
+    assert st == "200 OK", body
