@@ -429,12 +429,12 @@ def generate_all(conn, out_dir: str) -> dict:
 
 
 if __name__ == "__main__":
-    import sys as _sys
+    import sys
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import crosshost_verify as _cv  # noqa: E402
     _conn = __import__("psycopg").connect(_cv.get_dsn(), autocommit=False)
     try:
         result = generate_all(_conn, out_dir=_cv.REPORTS_DIR)
-        print(result, file=_sys.stderr)
+        print(result, file=sys.stderr)
     finally:
         _conn.close()
