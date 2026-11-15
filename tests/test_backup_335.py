@@ -193,3 +193,24 @@ def test_574_report_main_has_no_nameerror():
     r = subprocess.run([sys.executable, os.path.join(REPO, "report.py")], env=env, capture_output=True, text=True,
                        timeout=60, cwd=REPO)
     assert "NameError" not in r.stderr, r.stderr[-400:]
+
+
+def test_review_session_limit_rejects_negative_or_nan(monkeypatch):
+    """Opus review: a negative or NaN limit would silently expire (or never expire) every session; it is a config error."""
+    for bad in ("-1", "nan", "inf", "x"):
+        monkeypatch.setenv("HAVNVARD_SESSION_ADMIN_ABS_H", bad)
+        with pytest.raises(BackupError):
+            accounts._limit_s("HAVNVARD_SESSION_ADMIN_ABS_H", 12.0, 3600)
+    monkeypatch.setenv("HAVNVARD_SESSION_ADMIN_ABS_H", "0")
+    assert accounts._limit_s("HAVNVARD_SESSION_ADMIN_ABS_H", 12.0, 3600) == 0
+
+
+def test_review_device_api_null_number_is_a_json_400(app):  # noqa: F811
+    """Opus review: a null run_id/exit_code (TypeError in int()) must stay a JSON 400 on the device API, not an HTML page."""
+    w, code = app
+    _admin(w, code)
+    aid = w.a.list_accounts(kind="admin")[0]["id"]
+    tok = w.a.add_device(aid, "pc-null")
+    st, hdrs, body = Client(w).req("POST", "/api/v1/devices/pc-null/run", {"run_id": None, "exit_code": None},
+                                   {"HTTP_AUTHORIZATION": f"Bearer {tok}"}, as_json=True)
+    assert st == "400 Bad Request" and hdrs.get("Content-Type") == "application/json" and "error" in json.loads(body)
