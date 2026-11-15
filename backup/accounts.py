@@ -153,10 +153,14 @@ def valid_device_name(name) -> bool:
 def _limit_s(env: str, default: float, unit_s: float) -> float:
     """A session limit in seconds (env/default are in `unit_s`-second units); 0 means none. A bad value is a config error, not a silent default."""
     raw = os.environ.get(env)
+    unit = "hours" if unit_s == 3600 else "minutes"
     try:
-        return float(raw) * unit_s if raw not in (None, "") else default * unit_s
+        v = float(raw) if raw not in (None, "") else default
     except ValueError as e:
-        raise BackupError(f"{env} must be a number of minutes, got {raw!r}") from e
+        raise BackupError(f"{env} must be a number of {unit}, got {raw!r}") from e
+    if not v >= 0 or v == float("inf"):          # negative or NaN would expire (or never expire) every session silently
+        raise BackupError(f"{env} must be 0 (no limit) or a positive number of {unit}, got {raw!r}")
+    return v * unit_s
 
 
 def _h(s: str) -> str:

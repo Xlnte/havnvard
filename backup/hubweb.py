@@ -519,7 +519,7 @@ class App:
             return self._json("200 OK", {"run_id": rid})
         except NotFound as e:
             return self._json("404 Not Found", {"error": str(e)})
-        except (BackupError, KeyError, ValueError) as e:
+        except (BackupError, KeyError, ValueError, TypeError) as e:     # TypeError: a null where a number goes
             return self._json("400 Bad Request", {"error": str(e)})
 
     @staticmethod
