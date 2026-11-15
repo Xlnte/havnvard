@@ -25,6 +25,9 @@ def build_parser() -> argparse.ArgumentParser:
     hs = hub.add_parser("set", help="on a device: choose the hub")
     hs.add_argument("address", metavar="HOST[:PORT]")
     hub.add_parser("setup-code", help="on the hub's console: print the one-time code the FIRST registration needs")
+    hr = hub.add_parser("admin-reset", help="on the hub's console: reset the administrator's password (INFRA-585); local shell only")
+    hr.add_argument("--email", help="which administrator, when there is more than one")
+    hr.add_argument("--confirm", help='must be "RESET ADMIN PASSWORD"')
     hw = hub.add_parser("web", help="serve the hub pages (register, log in, users, computers, schedules, audit)")
     hw.add_argument("--listen", default="127.0.0.1")
     hw.add_argument("--port", type=int, default=8001)
@@ -174,6 +177,17 @@ def _dispatch(a: argparse.Namespace) -> int:
             from .accounts import Accounts
             print("One-time setup code for the first registration (valid 1 hour):")
             print("  " + Accounts().new_setup_code())
+        elif a.hub_cmd == "admin-reset":
+            from .accounts import Accounts
+            want = "RESET ADMIN PASSWORD"
+            if a.confirm != want:
+                print("replaces the administrator's password with a generated one, ends their sessions and writes an audit "
+                      f'row; run it only at this hub\'s own console; pass --confirm "{want}"')
+                return config.PROBLEM_EXIT
+            r = Accounts().recover_admin(a.email)
+            print(f"Administrator {r['email']}: password reset, {r['sessions_revoked']} session(s) ended, audit row written.")
+            print("New password (shown once; log in and change it):")
+            print("  " + r["new_password"])
         elif a.hub_cmd == "web":
             from .hubweb import serve
             serve(a.listen, a.port)

@@ -61,8 +61,10 @@ RESET_TTL = dt.timedelta(hours=24)
 # _USER_ABS_H / _ADMIN_IDLE_MIN / _USER_IDLE_MIN (0 = no limit).
 SESSION_ADMIN_ABS_H, SESSION_USER_ABS_H, SESSION_ADMIN_IDLE_MIN, SESSION_USER_IDLE_MIN = 12.0, 720.0, 30.0, 0.0
 _TOUCH_EVERY_S = 15
-# INFRA-600 (F22): ONE device-name rule, shared by the hub API route and add_device.
-DEVICE_NAME_RE = r"[A-Za-z0-9._-]{1,64}"
+# INFRA-600 / INFRA-626: ONE device-name rule, shared by `enroll` (client) and add_device (hub): config.DEVICE_NAME_PATTERN.
+# The API route accepts config.LEGACY_DEVICE_NAME_PATTERN so a computer added under 3.3.0-3.3.5 keeps checking in.
+DEVICE_NAME_RE = config.DEVICE_NAME_PATTERN
+LEGACY_DEVICE_NAME_RE = config.LEGACY_DEVICE_NAME_PATTERN
 WARNING = "Your administrator reset your password, which means someone may have looked at your files."
 NOTICE = ("Your administrator {admin} reset your password on {when} and accessed all your files. Reason: {reason}")
 NOTICE_RESET = ("Your administrator {admin} reset your password on {when}. Until you acknowledge this, whoever held "
@@ -70,6 +72,11 @@ NOTICE_RESET = ("Your administrator {admin} reset your password on {when}. Until
 RESET_REASON = "password reset by administrator"
 UNUSABLE = "!"                    # pw_hash prefix: no password matches (after an admin reset, until the user acts)
 LOGIN_MAX_FAILS, LOGIN_WINDOW_S, LOGIN_LOCK_S, LOGIN_MAX_KEYS = 5, 60.0, 60.0, 4096
+# INFRA-612 (S2): one global cap on failed logins from everywhere, so many (address, username) pairs cannot be tried
+# without limit; far above what a few mistyped passwords produce, so they never lock the hub for other people.
+LOGIN_GLOBAL_MAX_FAILS, LOGIN_GLOBAL_LOCK_S = 100, 60.0
+GLOBAL_KEY = "all"
+NOTICE_CAP_PER_DEVICE = 50                  # INFRA-610 (FL-8): open (undismissed) notices one device may hold on the hub
 COMMON = {"password1234", "123456789012", "qwertyuiopas", "passwordpassword", "letmein12345", "iloveyou1234"}
 _WORDS = ("amber anchor apple arrow aspen badge birch bison blade bloom brook cabin cedar chalk cliff cloud comet coral "
           "crane delta dune eagle ember fern field flint frost glade grain grove harbor hazel heron ivory jade kayak "
@@ -218,8 +225,9 @@ def _delivery(status: str) -> tuple[bool, str]:
     admin see it; when mail is configured it goes to the user's email only, even if sending failed."""
     if status == "not configured":
         return True, "code given to the admin (no mail configured)"
-    if status == "sent":
-        return False, "emailed to the user only (never shown to the admin)"
+    if status in ("sent", "queued"):
+        return False, ("emailed to the user only (never shown to the admin)" if status == "sent" else
+                       "queued for email to the user only (never shown to the admin); the result is in the audit log")
     return False, f"email to the user FAILED ({status}); the code was not shown to the admin: issue a new one"
 
 
@@ -235,8 +243,10 @@ def _usable(h: str | None) -> bool:
 
 
 class _Limiter:
-    """Failed logins per key (account, source address): LOGIN_MAX_FAILS within LOGIN_WINDOW_S locks that key for
-    LOGIN_LOCK_S. Bounded memory: at most LOGIN_MAX_KEYS keys, the least recently touched dropped first."""
+    """Failed logins per key: LOGIN_MAX_FAILS within LOGIN_WINDOW_S locks that key for LOGIN_LOCK_S. Bounded memory: at
+    most LOGIN_MAX_KEYS keys, the least recently touched dropped first. The login keys are (address, account) pairs
+    (INFRA-612): behind a proxy every browser shares one address, so a key on the address alone would lock everyone out
+    after one person's typos. A second limiter with a much higher cap counts failures from everywhere."""
 
     def __init__(self, max_fails=LOGIN_MAX_FAILS, window=LOGIN_WINDOW_S, lock=LOGIN_LOCK_S, max_keys=LOGIN_MAX_KEYS,
                  clock=time.monotonic):
@@ -356,12 +366,30 @@ def default_path() -> Path:
     return config.state_dir() / "accounts.db"
 
 
+def secure_state(db: Path) -> None:
+    """INFRA-595 (F17): the state directory is 0700 and the database and its -wal/-shm files are 0600, whatever the umask.
+    The database file is created here (O_CREAT, 0600) before SQLite opens it, so SQLite's own -wal/-shm inherit 0600
+    instead of the umask; files that already exist with looser modes are tightened."""
+    d = db.parent
+    if not d.exists():
+        d.mkdir(parents=True, mode=0o700)
+    if d.is_dir() and not d.is_symlink() and (d.stat().st_mode & 0o077) and (not hasattr(os, "getuid") or d.stat().st_uid == os.getuid()):
+        os.chmod(d, 0o700)
+    if not db.exists():
+        os.close(os.open(db, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600))
+    for suffix in ("", "-wal", "-shm"):
+        f = db.with_name(db.name + suffix)
+        if f.is_file() and not f.is_symlink() and (f.stat().st_mode & 0o077):
+            os.chmod(f, 0o600)
+
+
 class Accounts:
     def __init__(self, path: str | os.PathLike | None = None):
         self.path = Path(path) if path else default_path()
         self._limit = _Limiter()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        new = not self.path.exists()
+        self.notices_refused = 0                                       # shown on the hub status page (INFRA-626)
+        self._global = _Limiter(max_fails=LOGIN_GLOBAL_MAX_FAILS, lock=LOGIN_GLOBAL_LOCK_S)
+        secure_state(self.path)                                         # INFRA-595: 0700 dir, 0600 db before sqlite opens it
         con = self._con()
         try:
             con.executescript(SCHEMA)
@@ -371,8 +399,7 @@ class Accounts:
                     con.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
         finally:
             con.close()
-        if new:
-            os.chmod(self.path, 0o600)
+        secure_state(self.path)                                         # -wal / -shm exist now: bring them to 0600 too
 
     # ---------- plumbing ----------
     def _con(self) -> sqlite3.Connection:
@@ -420,6 +447,42 @@ class Accounts:
         return a
 
     # ---------- setup code + registration (INFRA-579) ----------
+    def recover_admin(self, email: str | None = None) -> dict:
+        """INFRA-585 (F3): reset an administrator's password from the hub's own console (a local shell; there is no web
+        or API route to this). Picks the only active admin, or the one named by EMAIL. A new generated password
+        replaces the old one, every session of that admin is revoked, unused reset codes end, and a `admin.recovery_reset`
+        audit row records it (actor = none: a console action). Returns {"email", "new_password", "sessions_revoked"};
+        the password is shown once to the person at the console and is not kept anywhere else."""
+        new_pw = generated_password()
+        new_hash = hash_password(new_pw)                                # before the lock: scrypt is slow on purpose
+        con = self._tx()
+        try:
+            rows = con.execute("SELECT id, email FROM account WHERE kind='admin' AND status='active' ORDER BY id").fetchall()
+            if email:
+                rows = [r for r in rows if r["email"] == email.strip().lower()]
+            if not rows:
+                raise BackupError("no active administrator with that email on this hub" if email else
+                                  "this hub has no active administrator (use `hub setup-code` for a first registration)")
+            if len(rows) > 1:
+                raise BackupError("several administrators: name one with --email (" +
+                                  ", ".join(r["email"] for r in rows) + ")")
+            acc = rows[0]
+            con.execute("UPDATE account SET pw_hash=?, old_pw_hash=NULL, sealed_pw=NULL, must_ack_force_open=0, "
+                        "must_set_password=0 WHERE id=?", (new_hash, acc["id"]))
+            self._end_codes(con, acc["id"])
+            n = con.execute("UPDATE session SET revoked_at=? WHERE account_id=? AND revoked_at IS NULL",
+                            (_iso(_now()), acc["id"])).rowcount
+            self._audit(con, None, "admin.recovery_reset", acc["email"], via="hub console", sessions_revoked=n,
+                        password="replaced by a generated one (shown once at the console, not kept)")
+            con.execute("COMMIT")
+        except BaseException:
+            if con.in_transaction:
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+        return {"email": acc["email"], "new_password": new_pw, "sessions_revoked": n}
+
     def new_setup_code(self) -> str:
         """One-time code for the FIRST registration, printed on the hub console by `hub setup-code`."""
         code = " ".join(secrets.choice(_WORDS) for _ in range(6))
@@ -517,11 +580,11 @@ class Accounts:
         * the user's OLD password                      -> 'notice' (may acknowledge, then set their own password)
         * a password the user set with a reset code    -> 'notice'
         * a password the administrator knows (the generated one) -> 'gated': READ the notice, nothing else, ever.
-        Any other password -> refused. F10: at most LOGIN_MAX_FAILS failures per minute per account and per source
-        address, then a 1-minute lock; an unknown email costs the same two scrypt checks as a real one."""
+        Any other password -> refused. F10 / INFRA-612: at most LOGIN_MAX_FAILS failures per minute per (source
+        address, account) pair and LOGIN_GLOBAL_MAX_FAILS from everywhere, then a 1-minute lock; an unknown email costs the same two scrypt checks as a real one."""
         email = email.strip().lower()
-        keys = [f"acct:{kind}:{email}"] + ([f"ip:{ip}"] if ip else [])
-        wait = max(self._limit.wait(k) for k in keys)
+        keys = [f"pair:{ip or '-'}|{kind}:{email}"]
+        wait = max(max(self._limit.wait(k) for k in keys), self._global.wait(GLOBAL_KEY))
         if wait:
             raise BackupError(f"too many failed logins; try again in {int(wait) + 1} s")
         acc = self._one("SELECT * FROM account WHERE email=? AND kind=?", (email, kind))
@@ -541,6 +604,8 @@ class Accounts:
             scope, proof = "full", "password"
         else:
             locked = [k for k in keys if self._limit.fail(k)]
+            if self._global.fail(GLOBAL_KEY):
+                locked.append(GLOBAL_KEY)
             self._log(acc["id"] if acc else None, "login.fail", email, kind=kind, ip=ip, ua=(ua or "")[:200],
                       **({"locked": locked, "lock_s": LOGIN_LOCK_S} if locked else {}))
             raise BackupError("wrong email or password")
@@ -799,11 +864,17 @@ class Accounts:
         return {"new_password": new_pw if shown else None, "email_status": status, "user_email": t["email"],
                 "code_delivery": delivery}
 
-    @staticmethod
-    def _mail(mailer, to: str, subject: str, body: str) -> str:
-        if mailer is None:
-            from .mail import send as mailer
-        return mailer(to, subject, body)
+    def _mail(self, mailer, to: str, subject: str, body: str) -> str:
+        """The email outcome string. An injected `mailer` (tests, tools) is called here and now. The real mailer is NEVER
+        called inside the web request (INFRA-606): "not configured" is answered at once; otherwise the message goes to
+        the bounded background outbox and this returns "queued" (or "failed: ..." when the queue is full). The outbox's
+        real outcome (sent / failed) is written to the audit log as `mail.result` when the worker finishes."""
+        if mailer is not None:
+            return mailer(to, subject, body)
+        from . import mail
+        if mail.settings_or_none() is None:
+            return "not configured"
+        return mail.OUTBOX.submit(to, subject, body, on_done=lambda st: self._log(None, "mail.result", to, status=st))
 
     def key_path(self) -> Path:
         return self.path.with_name(self.path.name + ".key")
@@ -1052,7 +1123,7 @@ class Accounts:
     def add_device(self, actor: int, name: str, primary_user: int | None = None, pc_admin: int | None = None) -> str:
         """Register a computer; returns its check-in token (shown once, stored hashed)."""
         if not valid_device_name(name):
-            raise BackupError(f"computer name must be 1-64 characters from A-Z a-z 0-9 . _ - (got {str(name)[:40]!r})")
+            raise BackupError(f"computer name must be 1-63 characters from A-Z a-z 0-9 . _ - , starting with a letter or digit (got {str(name)[:40]!r})")
         token = secrets.token_urlsafe(24)
         con = self._tx()
         try:
@@ -1199,15 +1270,30 @@ class Accounts:
             d = con.execute("SELECT id FROM device WHERE name=?", (device,)).fetchone()
             if not d:
                 raise BackupError(f"no device {device}")
-            nid = con.execute("INSERT INTO notice(device_id, kind, text, created_at) VALUES (?,?,?,?)",
+            open_n = con.execute("SELECT COUNT(*) FROM notice WHERE device_id=? AND dismissed_at IS NULL",
+                                 (d["id"],)).fetchone()[0]
+            if open_n >= NOTICE_CAP_PER_DEVICE:                       # INFRA-610: refused loudly, never dropped quietly
+                self.notices_refused += 1
+                self._audit(con, None, "notice.refused", device, kind=kind[:40], open_notices=open_n,
+                            cap=NOTICE_CAP_PER_DEVICE)
+                con.execute("COMMIT")
+                refused = open_n
+            else:
+                refused = 0
+            nid = 0 if refused else con.execute("INSERT INTO notice(device_id, kind, text, created_at) VALUES (?,?,?,?)",
                               (d["id"], kind[:40], text[:8000], _iso(_now()))).lastrowid
-            self._audit(con, None, "notice.add", device, kind=kind[:40], notice_id=nid)
-            con.execute("COMMIT")
+            if not refused:
+                self._audit(con, None, "notice.add", device, kind=kind[:40], notice_id=nid)
+                con.execute("COMMIT")
         except BaseException:
-            con.execute("ROLLBACK")
+            if con.in_transaction:
+                con.execute("ROLLBACK")
             raise
         finally:
             con.close()
+        if refused:
+            raise BackupError(f"{device} already has {refused} open notices (limit {NOTICE_CAP_PER_DEVICE}); "
+                              "an administrator must dismiss some")
         return nid
 
     def open_notices(self, account_id: int) -> list[dict]:
@@ -1283,27 +1369,29 @@ def _reload_rest_server() -> str:
 def cut_htpasswd(path: Path, names: list[str]) -> tuple[str, list[str]]:
     """Remove the htpasswd line of each computer in NAMES (F6). The removed lines are kept aside in
     PATH.removed (mode 600) so an admin can put a computer back; the file is replaced atomically and stays 600.
+    INFRA-613 (S3): the whole read-modify-write runs under an exclusive lock (two disables at once cannot lose each
+    other's change), and a symlinked htpasswd is REFUSED, never followed.
     Returns (status for the admin and the audit, names removed). Never raises for a missing file: says so."""
+    if path.is_symlink():
+        return (f"REFUSED: {path} is a symbolic link; HavnVard does not edit through links. Remove the line(s) for "
+                f"{', '.join(names)} from the real file by hand"), []
     if not path.is_file():
         return (f"no htpasswd file at {path} on this hub: remove the line(s) for {', '.join(names)} from the "
                 "rest-server's htpasswd by hand"), []
-    lines = path.read_text().splitlines(keepends=True)
-    keep, gone = [], []
-    for ln in lines:
-        (gone if ln.split(":", 1)[0].strip() in names else keep).append(ln)
-    if not gone:
-        return f"no line for {', '.join(names)} in {path} (already removed?)", []
-    side = path.with_name(path.name + ".removed")
-    fd = os.open(side, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "a") as f:
-        f.write(f"# removed {_iso(_now())} (user disabled)\n" + "".join(x if x.endswith("\n") else x + "\n" for x in gone))
-    tmp = path.with_name(f".{path.name}.{secrets.token_hex(6)}.tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "w") as f:
-        f.write("".join(keep))
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)  # atomic write of HavnVard's own hub htpasswd (allowlisted in test_crosshost_verify)
+    with config.file_lock(path):
+        if path.is_symlink():
+            return f"REFUSED: {path} became a symbolic link; nothing was changed", []
+        lines = path.read_text().splitlines(keepends=True)
+        keep, gone = [], []
+        for ln in lines:
+            (gone if ln.split(":", 1)[0].strip() in names else keep).append(ln)
+        if not gone:
+            return f"no line for {', '.join(names)} in {path} (already removed?)", []
+        side = path.with_name(path.name + ".removed")
+        fd = os.open(side, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "a") as f:
+            f.write(f"# removed {_iso(_now())} (user disabled)\n" + "".join(x if x.endswith("\n") else x + "\n" for x in gone))
+        config.atomic_write_text(path, "".join(keep))
     removed = sorted({ln.split(":", 1)[0].strip() for ln in gone})
     return f"removed from {path}: {', '.join(removed)} (kept aside in {side})", removed
 
@@ -1356,12 +1444,10 @@ def revoke_device_keys(restic: str, repo: str, store_key: str, accts: Accounts, 
             fd = os.open(side, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
             with os.fdopen(fd, "w") as f:
                 f.write(old_pw)
-            fd = os.open(hub_pass_file, os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW)
-            with os.fdopen(fd, "w") as f:
-                f.write(new_pw)
-                f.flush()
-                os.fsync(f.fileno())
-            os.chmod(hub_pass_file, 0o600)
+            if hub_pass_file.is_symlink():
+                raise BackupError(f"{hub_pass_file} is a symbolic link; refusing to replace it (a new hub key was added "
+                                  "and nothing was removed)")
+            config.atomic_write_text(hub_pass_file, new_pw)          # INFRA-614: temp + fsync + rename, never empty
             out["hub_key"] = f"new hub key in {hub_pass_file} (the old one, now dead, kept as {side.name})"
         for k in gone:
             r = run([restic, "key", "remove", k["id"]], env=env)

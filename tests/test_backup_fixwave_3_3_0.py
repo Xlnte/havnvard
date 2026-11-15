@@ -396,7 +396,7 @@ def test_f9_missed_checkins_during_an_outage_do_not_push_the_next_backup_back(tm
 
 # ---------- F10: login rate limit and constant work for unknown emails ----------
 
-def test_f10_login_is_rate_limited_per_account_and_per_address_with_bounded_memory(db, monkeypatch):
+def test_f10_login_is_rate_limited_per_address_account_pair_and_globally_with_bounded_memory(db, monkeypatch):
     a, adm, u, _ = db
     now = [1000.0]
     a._limit = accounts._Limiter(clock=lambda: now[0])
@@ -404,15 +404,21 @@ def test_f10_login_is_rate_limited_per_account_and_per_address_with_bounded_memo
         with pytest.raises(BackupError, match="wrong email or password"):
             a.login("al@example.com", "not it at all!!", ip="10.0.0.1")
     with pytest.raises(BackupError, match="too many failed logins"):
-        a.login("al@example.com", PW, ip="10.0.0.2")                            # the account is locked
+        a.login("al@example.com", PW, ip="10.0.0.1")                            # that (address, account) pair is locked
     assert sum(1 for x in a.audit_rows() if x["action"] == "login.fail" and "locked" in x["detail"]) == 1
     now[0] += 61
-    assert a.login("al@example.com", PW, ip="10.0.0.2")["scope"] == "full"      # the lock ends
-    for i in range(5):                                                           # one address, many emails
-        with pytest.raises(BackupError):
+    assert a.login("al@example.com", PW, ip="10.0.0.1")["scope"] == "full"      # the lock ends
+    # INFRA-612 (3.3.6): one address, many emails is NOT locked by address (behind a proxy that is everybody) ...
+    a._global = accounts._Limiter(max_fails=6, lock=60.0, clock=lambda: now[0])
+    for i in range(5):
+        with pytest.raises(BackupError, match="wrong email or password"):
             a.login(f"guess{i}@example.com", "whatever whatever", ip="10.6.6.6")
+    assert a.login("al@example.com", PW, ip="10.6.6.6")["scope"] == "full"
+    # ... the global cap is what stops it
+    with pytest.raises(BackupError, match="wrong email or password"):
+        a.login("guess9@example.com", "whatever whatever", ip="10.6.6.7")
     with pytest.raises(BackupError, match="too many failed logins"):
-        a.login("al@example.com", PW, ip="10.6.6.6")
+        a.login("al@example.com", PW, ip="10.7.7.7")
     small = accounts._Limiter(max_keys=3, clock=lambda: now[0])
     for i in range(50):
         small.fail(f"k{i}")

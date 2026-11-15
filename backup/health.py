@@ -94,6 +94,8 @@ def collect(now: float | None = None) -> list[tuple[str, bool, str]]:
             free = shutil.disk_usage(root).free / GB
             lim = float(h.get("hub_min_free_gb", 125))
             res.append(("hub free space", free >= lim, f"{free:.0f} GB free (limit {lim:g} GB)"))
+    if cfg.get("hub_web"):
+        res.append(_hub_web_check(str(cfg["hub_web"])))
     nas = cfg.get("nas")
     if nas:
         mp = Path(nas["mountpoint"])
@@ -131,6 +133,23 @@ def collect(now: float | None = None) -> list[tuple[str, bool, str]]:
     if not res:
         raise BackupError("nothing to check: no hub, NAS, device or offsite target is configured")
     return res
+
+
+def _hub_web_check(base: str) -> tuple[str, bool, str]:
+    """INFRA-626: ask the running hub web (set `hub_web = "http://127.0.0.1:8001"` in backup.toml) for /healthz.
+    Red when it cannot be reached, answers badly, or has counted an internal error or a failed/refused mail since it started."""
+    import json as _json
+    import urllib.error
+    import urllib.request
+    try:
+        with urllib.request.urlopen(base.rstrip("/") + "/healthz", timeout=5) as r:
+            st = _json.loads(r.read().decode())
+        e, m = st["errors"], st["mail"]
+        bad = e["internal"] > 0 or m["failed"] > 0 or m["rejected_full"] > 0
+        return ("hub web", not bad, f"{e['internal']} internal error(s), {e['bad_request']} bad request(s), mail failed "
+                                    f"{m['failed']}, refused {m['rejected_full']}, notices refused {st['notices_refused']}")
+    except (OSError, urllib.error.URLError, ValueError, KeyError, TypeError) as e:
+        return ("hub web", False, f"cannot read {base}/healthz: {type(e).__name__}: {e}")
 
 
 def _list_snapshots(repo_dir: Path, repo: str, h: dict) -> list[dict]:

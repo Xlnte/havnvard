@@ -6,7 +6,10 @@ hub-passwords/DEVICE.pass  hub-side copies of device repo passwords, for catalog
 """
 from __future__ import annotations
 
+import contextlib
 import os
+import re
+import secrets
 import tomllib
 from pathlib import Path
 
@@ -16,6 +19,45 @@ ERROR_EXIT = 2     # the tool could not do what was asked (never a silent succes
 
 class BackupError(Exception):
     """A failure the caller must see; the CLI turns it into exit code 2."""
+
+
+# INFRA-626: ONE computer-name rule for the client (`enroll`) and the hub (`add_device`): starts with a letter or digit,
+# then letters, digits, . _ - ; 1-63 characters. LEGACY_DEVICE_NAME_PATTERN is only what the device API route still
+# accepts, so a computer registered under 3.3.0-3.3.5 (a name like "-pc" or 64 characters) keeps checking in.
+DEVICE_NAME_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._-]{0,62}"
+DEVICE_NAME_RE = re.compile(rf"^{DEVICE_NAME_PATTERN}$")
+LEGACY_DEVICE_NAME_PATTERN = r"[A-Za-z0-9._-]{1,64}"
+
+
+@contextlib.contextmanager
+def file_lock(path: Path):
+    """An exclusive advisory lock (flock) on a sibling `.lock` file, so two processes never read-then-rewrite the same
+    state file at once (INFRA-609, INFRA-613). The lock file is ours, 600, and never a symlink we would follow."""
+    import fcntl
+    lk = path.with_name(f".{path.name}.lock")
+    fd = os.open(lk, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)                                     # closing releases the lock
+
+
+def atomic_write_text(path: Path, text: str, mode: int = 0o600) -> None:
+    """Write PATH whole or not at all (INFRA-614): a private temp file in the same directory, fsynced, then renamed over
+    PATH. A crash at any point leaves the old file or the new one, never an empty or half-written one."""
+    tmp = path.with_name(f".{path.name}.{secrets.token_hex(6)}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)  # atomic write of HavnVard's own state file (allowlisted in test_crosshost_verify)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)  # our own temp file, never a user file (allowlisted in test_crosshost_verify)
+        raise
 
 
 def config_dir() -> Path:

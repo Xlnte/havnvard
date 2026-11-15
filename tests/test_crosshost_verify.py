@@ -425,6 +425,9 @@ _ALLOWED_FORBIDDEN_SITES = {
     # backup/accounts.py (3.3.0 fix wave, F6): atomic write of HavnVard's OWN hub htpasswd (config dir) after a
     # disabled user's computer line is cut; the removed line is kept in hub.htpasswd.removed. Never a scanned path.
     ("accounts.py", "os.replace(tmp, path)  # atomic write of HavnVard's own hub htpasswd (allowlisted in test_crosshost_verify)"),
+    # backup/config.py (3.3.6, INFRA-614): atomic_write_text, the one place HavnVard's OWN state files (hub htpasswd, hub
+    # password file, pending-report queues in ~/.config|.local/state/havnvard) are replaced; temp file in the same dir.
+    ("config.py", "os.replace(tmp, path)  # atomic write of HavnVard's own state file (allowlisted in test_crosshost_verify)"),
 }
 _REPLACE_PATTERN_SRC = r"os\.replace\("
 
@@ -435,6 +438,8 @@ _REPLACE_PATTERN_SRC = r"os\.replace\("
 # delete call anywhere NOT in this list fails the test until a human adds it
 # here deliberately (that review step is the entire point of this guard).
 _ALLOWED_DELETE_SITES = {
+    # backup/config.py atomic_write_text (3.3.6): on a failed write, removes its OWN just-created private temp file.
+    ("config.py", "os.unlink(tmp)  # our own temp file, never a user file (allowlisted in test_crosshost_verify)"),
     ("load_nas_inventory.py", "os.remove(tmppath)"),          # own sshpass password tempfile
     ("load_nas_inventory.py", "os.remove(p)"),                 # own downloaded .tsv/.errs/.symlinks scratch files
     ("load_nas_inventory.py", 'nas_ssh(f"rm -f {remote_glob} {_shq(remote_script)}", check=False)'),  # own NAS scratch dir

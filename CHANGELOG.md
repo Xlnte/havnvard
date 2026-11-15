@@ -2,6 +2,31 @@
 
 Older releases are described in `FEATURES.md` and `docs/*_RELEASE_*.md`.
 
+## 3.3.6 (20261115)
+
+Hub hardening from the 3.3.0 and 3.3.5 reviews (INFRA-626, 612, 613, 614, 609, 610, 605, 606, 596, 595, 585):
+
+- **Web error counters are visible (INFRA-626).** `GET /healthz` (JSON: web errors, mail outbox counts, refused notices) and a status line
+  on the Schedules page. Opt-in: set `hub_web = "http://127.0.0.1:8001"` in backup.toml and `health` checks it.
+  `TypeError`/`AttributeError` at the web boundary are bugs: logged WITH traceback (server log only), counted, plain 500 with an error id.
+  One computer-name rule (`config.DEVICE_NAME_RE`: letter/digit first, 1-63 characters) for `enroll` and `add_device`; the device API
+  route still accepts the old pattern so a computer added before 3.3.6 keeps checking in.
+- **Login limiter (INFRA-612, S2).** Keyed on (address, account) plus one global cap (100 failures a minute), not on the address alone, so one
+  person's typos behind a proxy no longer lock everyone out. `X-Forwarded-For` is believed only when `REMOTE_ADDR` is listed in
+  `HAVNVARD_TRUSTED_PROXIES` (comma-separated); otherwise ignored.
+- **htpasswd edits (INFRA-613, 614).** `cut_htpasswd` runs under a lock and refuses a symlinked file; the hub's own password file is replaced
+  by temp file + fsync + rename (a crash can no longer leave it empty).
+- **Check-in queue files (INFRA-609).** Appends and the rewrite after a flush are locked, and the rewrite removes only the lines it sent, so a
+  line appended during a flush is kept. **Hub notices (INFRA-610):** at most 50 open per computer; the 51st is refused (audited `notice.refused`,
+  device gets a 400 and keeps it).
+- **Mail (INFRA-605, 606).** AUTH is only attempted over TLS (`ssl` or a successful STARTTLS), else `failed: ... cleartext`; `ssl`/`starttls`
+  are parsed strictly (the string "false" is false). The hub no longer sends mail inside the web request: a bounded queue (50) and one worker;
+  the request sees `queued`, the real outcome is audited as `mail.result` and counted.
+- **Schedules (INFRA-596, F18):** the change and its `schedule.set` audit row are one transaction; an unknown computer is refused.
+- **Permissions (INFRA-595, F17):** state directory 0700, database and `-wal`/`-shm` 0600 whatever the umask.
+- **Admin recovery (INFRA-585, F3):** `python -m backup hub admin-reset --confirm "RESET ADMIN PASSWORD" [--email ...]` on the hub console
+  (no web or API route): new generated password shown once, sessions ended, `admin.recovery_reset` audit row.
+
 ## 3.3.5 (20261115)
 
 Hub web and accounts hardening from the 3.3.0 review (INFRA-592, 591, 593, 600, 623, 589, 574; INFRA-582 was already fixed in 3.3.4):

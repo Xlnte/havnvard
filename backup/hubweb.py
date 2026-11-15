@@ -21,6 +21,7 @@ import hmac
 import html
 import json
 import logging
+import os
 import re
 import secrets
 import threading
@@ -28,7 +29,8 @@ import uuid
 from http.cookies import SimpleCookie
 from urllib.parse import parse_qs
 
-from .accounts import DEVICE_NAME_RE, Accounts
+from . import mail
+from .accounts import LEGACY_DEVICE_NAME_RE, Accounts
 from .config import BackupError
 from .schedules import MODES, NotFound, Schedules
 
@@ -36,6 +38,25 @@ COOKIE = "hv_session"
 PRE_COOKIE = "hv_csrf"                      # INFRA-592: pre-session token for /login, /register, /reset (no session yet)
 PRE_FORMS = ("/register", "/login", "/reset")
 log = logging.getLogger("havnvard.hubweb")
+TRUSTED_PROXIES_ENV = "HAVNVARD_TRUSTED_PROXIES"       # INFRA-612: comma-separated addresses whose X-Forwarded-For we believe
+
+
+def trusted_proxies() -> frozenset:
+    return frozenset(x.strip() for x in os.environ.get(TRUSTED_PROXIES_ENV, "").split(",") if x.strip())
+
+
+def client_address(env) -> str | None:
+    """The browser's address. REMOTE_ADDR, unless that is a configured trusted proxy: then the right-most X-Forwarded-For
+    entry that is not itself a trusted proxy (the left side is whatever the browser claimed). Without the setting,
+    X-Forwarded-For is ignored, so a client cannot choose its own address (INFRA-612)."""
+    remote = env.get("REMOTE_ADDR")
+    proxies = trusted_proxies()
+    if not proxies or remote not in proxies:
+        return remote
+    for hop in reversed([h.strip() for h in (env.get("HTTP_X_FORWARDED_FOR") or "").split(",") if h.strip()]):
+        if hop not in proxies:
+            return hop
+    return remote
 CSS = ("body{font-family:system-ui,sans-serif;max-width:1000px;margin:24px auto;padding:0 16px;color:#1b1f23}"
        "table{border-collapse:collapse;width:100%}td,th{border:1px solid #d0d7de;padding:6px 8px;text-align:left}"
        ".ok{background:#e6f4ea}.late{background:#fff4ce}.failed,.silent{background:#fde2e1}.warn{border:3px solid #c62828;"
@@ -68,6 +89,11 @@ class App:
         self._req = threading.local()                    # client address + browser of the request being handled
         self.errors = {"bad_request": 0, "internal": 0}   # counted so persistent trouble is visible (five-point rule)
 
+    def status(self) -> dict:
+        """What /healthz and the admin status line show (INFRA-626): error counters and the mail outbox, in this process."""
+        return {"errors": dict(self.errors), "mail": dict(mail.OUTBOX.stats), "notices_refused": self.a.notices_refused,
+                "ok": self.errors["internal"] == 0}
+
     @property
     def ip(self) -> str | None:
         return getattr(self._req, "ip", None)
@@ -84,7 +110,7 @@ class App:
 
     def handle(self, env) -> tuple[str, list, str]:
         path, method = env.get("PATH_INFO", "/"), env.get("REQUEST_METHOD", "GET")
-        self._req.ip, self._req.ua = env.get("REMOTE_ADDR"), (env.get("HTTP_USER_AGENT") or "")[:200]
+        self._req.ip, self._req.ua = client_address(env), (env.get("HTTP_USER_AGENT") or "")[:200]
         self._req.pre, self._req.pre_new = None, False
         out = self._handle(env, path, method)
         if path in PRE_FORMS and self._req.pre_new:      # hand the browser its pre-session token (INFRA-592)
@@ -96,6 +122,8 @@ class App:
         try:
             if path.startswith("/api/v1/devices/"):
                 return self.api(env, path, method)
+            if path == "/healthz":
+                return self._json("200 OK", self.status())
             form = self._form(env) if method == "POST" else {k: v[0] for k, v in parse_qs(env.get("QUERY_STRING", "")).items()}
             token = self._cookie(env)
             sess = self.a.session(token)
@@ -121,9 +149,10 @@ class App:
             return self._redirect(r.to)
         except BackupError as e:
             return self._page("400 Bad Request", "Problem", f"<p class='warn'>{_e(e)}</p><p><a href='javascript:history.back()'>Back</a></p>")
-        except (KeyError, ValueError, TypeError, AttributeError) as e:
+        except (KeyError, ValueError) as e:
             # INFRA-593: bad input (a missing or non-numeric field, a malformed body) is the caller's mistake: 400 with a
             # plain message. Logged with the real exception and counted; never a traceback to the browser.
+            # INFRA-626: TypeError / AttributeError are NOT bad input, they are bugs: they fall through to the 500 below.
             self.errors["bad_request"] += 1
             log.warning("hubweb bad request %s %s: %s: %s", method, path, type(e).__name__, e)
             what = f"the field {e.args[0]!r} is missing" if isinstance(e, KeyError) and e.args else \
@@ -388,7 +417,7 @@ class App:
                           if r["new_password"] else f"New password: {_e(r['code_delivery'])}")
                     note = (f"<div class='warn'><p>Force-open started and logged. {_e(r['user_email'])}'s password was "
                             f"replaced. {pw}</p><p>Email to the user: <b>{_e(r['email_status'])}</b>"
-                            + ("" if r["email_status"] == "sent" else " - tell them yourself") + "</p>"
+                            + ("" if r["email_status"] in ("sent", "queued") else " - tell them yourself") + "</p>"
                             "<p>This password only shows the notice: it cannot acknowledge it or set a password. The "
                             "user acknowledges with their OWN old password (or a reset code they redeem themselves), "
                             "after reading that you reset their password and accessed all their files, and why; then "
@@ -451,12 +480,11 @@ class App:
         if path == "/admin/schedules":
             if method == "POST":
                 self.s.set(me, f["device"], f["mode"], int(f["every_min"]) if f.get("every_min") else None,
-                           int(f.get("min_gap_s") or 60))
-                self.a._log(me, "schedule.set", f["device"], mode=f["mode"], every_min=f.get("every_min"),
-                            min_gap_s=f.get("min_gap_s"))
+                           int(f.get("min_gap_s") or 60))      # the audit row is written inside the same transaction (INFRA-596)
             ov = self.s.overview()
             silent = [r["device"] for r in ov if r["health"] == "silent"]
             banner = (f"<p class='warn'>{len(silent)} computer(s) have not checked in: {_e(', '.join(silent))}</p>" if silent else "")
+            banner += self._status_line()
             opts = "".join(f"<option>{m}</option>" for m in MODES)
             rows = "".join(
                 f"<tr class='{_e(r['health'])}'><td>{_e(r['device'])}</td><td>{_e(r['mode'])}"
@@ -483,13 +511,23 @@ class App:
             return self._page("200 OK", "Audit log", body, token, sess)
         return self._page("404 Not Found", "Not found", "", token, sess)
 
+    def _status_line(self) -> str:
+        """Hub status (INFRA-626): the web error counters, mail outbox and refused notices since this process started."""
+        st = self.status()
+        e, m = st["errors"], st["mail"]
+        bad = e["internal"] or e["bad_request"] or m["failed"] or m["rejected_full"] or st["notices_refused"]
+        return (f"<p class='{'warn' if bad else 'ok'}'>Hub web since start: {e['internal']} internal error(s), "
+                f"{e['bad_request']} bad request(s); mail: {m['sent']} sent, {m['failed']} failed, {m['queued'] - m['sent'] - m['failed'] - m['not_configured']} waiting, "
+                f"{m['rejected_full']} refused (queue full); notices refused (computer at its limit): {st['notices_refused']}. "
+                "Details: <a href='/healthz'>/healthz</a>.</p>")
+
     def _btn(self, token, action, target, label, extra="") -> str:
         return (f"<form method='post' style='display:inline'>{self._csrf(token)}<input type='hidden' name='action' "
                 f"value='{action}'><input type='hidden' name='target' value='{target}'>{extra}<button>{label}</button></form>")
 
     # ---------- device API (INFRA-576) ----------
     def api(self, env, path, method) -> tuple[str, list, str]:
-        m = re.fullmatch(rf"/api/v1/devices/({DEVICE_NAME_RE})/(checkin|run|late|notice)", path)
+        m = re.fullmatch(rf"/api/v1/devices/({LEGACY_DEVICE_NAME_RE})/(checkin|run|late|notice)", path)
         if not m or method != "POST":
             return self._json("404 Not Found", {"error": "not found"})
         name, what = m.groups()
