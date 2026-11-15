@@ -292,7 +292,10 @@ def _force_open_cli(a: argparse.Namespace) -> int:
     users = [u for u in accts.list_accounts(kind="user") if u["email"] == a.user_email.strip().lower()]
     if not users:
         raise BackupError(f"no user account {a.user_email}")
-    r = accts.force_open(adm["account_id"], users[0]["id"], a.reason, a.confirm)
+    # 3.3.6 review: a console command exits right after this call, so the background mail outbox (INFRA-606, for the
+    # single-threaded web server) would die with the process and the mail would never go. Send synchronously here.
+    from .mail import send
+    r = accts.force_open(adm["account_id"], users[0]["id"], a.reason, a.confirm, mailer=send)
     print(f"force-open of {r['user_email']} started and logged.")
     print(f"New password (shown once, not kept): {r['new_password']}" if r["new_password"] else
           f"New password: {r['code_delivery']}")
