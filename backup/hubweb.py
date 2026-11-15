@@ -17,18 +17,25 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import hmac
 import html
 import json
+import logging
 import re
+import secrets
 import threading
+import uuid
 from http.cookies import SimpleCookie
 from urllib.parse import parse_qs
 
-from .accounts import Accounts
+from .accounts import DEVICE_NAME_RE, Accounts
 from .config import BackupError
 from .schedules import MODES, NotFound, Schedules
 
 COOKIE = "hv_session"
+PRE_COOKIE = "hv_csrf"                      # INFRA-592: pre-session token for /login, /register, /reset (no session yet)
+PRE_FORMS = ("/register", "/login", "/reset")
+log = logging.getLogger("havnvard.hubweb")
 CSS = ("body{font-family:system-ui,sans-serif;max-width:1000px;margin:24px auto;padding:0 16px;color:#1b1f23}"
        "table{border-collapse:collapse;width:100%}td,th{border:1px solid #d0d7de;padding:6px 8px;text-align:left}"
        ".ok{background:#e6f4ea}.late{background:#fff4ce}.failed,.silent{background:#fde2e1}.warn{border:3px solid #c62828;"
@@ -49,11 +56,17 @@ def csrf_for(token: str) -> str:
     return hashlib.sha256((token + "|csrf").encode()).hexdigest()[:32]
 
 
+def csrf_ok(got, token: str | None) -> bool:
+    """Constant-time compare of a submitted CSRF value with the one for `token` (INFRA-592). No token = never ok."""
+    return bool(token) and isinstance(got, str) and hmac.compare_digest(got.encode(), csrf_for(token).encode())
+
+
 class App:
     def __init__(self, accounts: Accounts | None = None, schedules: Schedules | None = None):
         self.a = accounts or Accounts()
         self.s = schedules or Schedules(self.a.path)
         self._req = threading.local()                    # client address + browser of the request being handled
+        self.errors = {"bad_request": 0, "internal": 0}   # counted so persistent trouble is visible (five-point rule)
 
     @property
     def ip(self) -> str | None:
@@ -72,14 +85,29 @@ class App:
     def handle(self, env) -> tuple[str, list, str]:
         path, method = env.get("PATH_INFO", "/"), env.get("REQUEST_METHOD", "GET")
         self._req.ip, self._req.ua = env.get("REMOTE_ADDR"), (env.get("HTTP_USER_AGENT") or "")[:200]
+        self._req.pre, self._req.pre_new = None, False
+        out = self._handle(env, path, method)
+        if path in PRE_FORMS and self._req.pre_new:      # hand the browser its pre-session token (INFRA-592)
+            st, hdrs, body = out
+            out = st, hdrs + [("Set-Cookie", f"{PRE_COOKIE}={self._req.pre}; Path=/; HttpOnly; SameSite=Strict; Max-Age=3600")], body
+        return out
+
+    def _handle(self, env, path, method) -> tuple[str, list, str]:
         try:
             if path.startswith("/api/v1/devices/"):
                 return self.api(env, path, method)
             form = self._form(env) if method == "POST" else {k: v[0] for k, v in parse_qs(env.get("QUERY_STRING", "")).items()}
             token = self._cookie(env)
             sess = self.a.session(token)
-            if method == "POST" and path not in ("/register", "/login", "/reset") and \
-                    (not sess or form.get("csrf") != csrf_for(token or "")):
+            if path in PRE_FORMS:
+                pre = self._cookie(env, PRE_COOKIE)
+                if not pre:
+                    pre, self._req.pre_new = secrets.token_urlsafe(24), True
+                self._req.pre = pre
+                if method == "POST" and not csrf_ok(form.get("csrf"), None if self._req.pre_new else pre):
+                    return self._page("403 Forbidden", "Not allowed", "<p>The form is stale or came from another site. "
+                                      f"<a href='{path}'>Open it again</a>.</p>")
+            elif method == "POST" and (not sess or not csrf_ok(form.get("csrf"), token)):
                 return self._page("403 Forbidden", "Not allowed", "<p>Your session ended or the form is stale. "
                                   "<a href='/login'>Log in again</a>.</p>")
             route = {"/register": self.register, "/login": self.login, "/logout": self.logout, "/reset": self.reset,
@@ -93,19 +121,40 @@ class App:
             return self._redirect(r.to)
         except BackupError as e:
             return self._page("400 Bad Request", "Problem", f"<p class='warn'>{_e(e)}</p><p><a href='javascript:history.back()'>Back</a></p>")
+        except (KeyError, ValueError, TypeError, AttributeError) as e:
+            # INFRA-593: bad input (a missing or non-numeric field, a malformed body) is the caller's mistake: 400 with a
+            # plain message. Logged with the real exception and counted; never a traceback to the browser.
+            self.errors["bad_request"] += 1
+            log.warning("hubweb bad request %s %s: %s: %s", method, path, type(e).__name__, e)
+            what = f"the field {e.args[0]!r} is missing" if isinstance(e, KeyError) and e.args else \
+                "a value is missing or not in the expected form"
+            return self._page("400 Bad Request", "Problem", f"<p class='warn'>Could not read your request: {_e(what)}.</p>"
+                              "<p><a href='javascript:history.back()'>Back</a></p>")
+        except Exception:  # noqa: BLE001 - the web boundary: report, log, count; never a traceback to the browser
+            err = uuid.uuid4().hex[:12]
+            self.errors["internal"] += 1
+            log.exception("hubweb internal error %s %s error_id=%s", method, path, err)
+            return self._page("500 Internal Server Error", "Something went wrong",
+                              f"<p class='warn'>The hub could not complete this. Error id <code>{err}</code> (it is in the hub log).</p>")
 
     @staticmethod
     def _form(env) -> dict:
-        n = int(env.get("CONTENT_LENGTH") or 0)
-        raw = env["wsgi.input"].read(min(n, 1 << 20)).decode() if n else ""
+        try:
+            n = int(env.get("CONTENT_LENGTH") or 0)
+        except ValueError as e:
+            raise BackupError("bad Content-Length") from e
+        raw = env["wsgi.input"].read(min(max(n, 0), 1 << 20)).decode() if n > 0 else ""
         if (env.get("CONTENT_TYPE") or "").startswith("application/json"):
-            return json.loads(raw or "{}")
+            body = json.loads(raw or "{}")
+            if not isinstance(body, dict):
+                raise BackupError("the request body must be a JSON object")
+            return body
         return {k: v[0] for k, v in parse_qs(raw).items()}
 
     @staticmethod
-    def _cookie(env) -> str | None:
+    def _cookie(env, name: str = COOKIE) -> str | None:
         c = SimpleCookie(env.get("HTTP_COOKIE", ""))
-        return c[COOKIE].value if COOKIE in c else None
+        return c[name].value if name in c else None
 
     def _page(self, status: str, title: str, body: str, token: str | None = None, sess: dict | None = None,
               extra_headers: list | None = None) -> tuple[str, list, str]:
@@ -130,7 +179,7 @@ class App:
 
     @staticmethod
     def _set_cookie(token: str) -> list:
-        return [("Set-Cookie", f"{COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000")]
+        return [("Set-Cookie", f"{COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000")]
 
     def _need(self, sess, admin: bool = False):
         if not sess:
@@ -147,8 +196,8 @@ class App:
             if f.get("password") != f.get("password2"):
                 raise BackupError("the two passwords differ")
             r = self.a.register(f.get("email", ""), f.get("password", ""), setup_code=f.get("setup_code") if first else None,
-                                invite_code=f.get("invite") or None, company=f.get("company"))
-            lg = self.a.login(f["email"], f["password"], kind=r["kind"])
+                                invite_code=f.get("invite") or None, company=f.get("company"), ip=self.ip, ua=self.ua)
+            lg = self.a.login(f.get("email", ""), f.get("password", ""), kind=r["kind"], ip=self.ip, ua=self.ua)
             body = f"<p>Account created: <b>{_e(r['kind'])}</b>.</p>"
             if r.get("store_key"):
                 body += ("<div class='warn'><h2>Your company's store key (recovery kit)</h2><p>This key opens every backup "
@@ -156,14 +205,14 @@ class App:
                          f"password manager now.</p><p><code style='font-size:1.3em'>{_e(r['store_key'])}</code></p>"
                          "<p>Add a second administrator soon: if you are the only one and lose this key, recovery needs the "
                          "hub's console.</p></div>")
-            body += f"<p><a href='/me'>Continue</a></p>"
+            body += "<p><a href='/me'>Continue</a></p>"
             return self._page("200 OK", "Welcome", body, lg["token"], self.a.session(lg["token"]), self._set_cookie(lg["token"]))
         fields = ("<p>This is a new hub. The first account becomes the <b>administrator</b>. Enter the setup code shown on "
                   "the hub's console (<code>python -m backup hub setup-code</code>).</p>"
                   "<label>Company or household <input name='company' required></label><br>"
                   "<label>Setup code <input name='setup_code' required size='50'></label><br>") if first else \
                  f"<label>Invite code <input name='invite' value='{_e(f.get('invite'))}' required></label><br>"
-        return self._page("200 OK", "Register", f"<form method='post'>{fields}<label>Email <input name='email' type='email' "
+        return self._page("200 OK", "Register", f"<form method='post'>{self._csrf(self._req.pre)}{fields}<label>Email <input name='email' type='email' "
                           "required></label><br><label>Password (12+ characters) <input name='password' type='password' "
                           "required></label><br><label>Again <input name='password2' type='password' required></label><br>"
                           "<button>Register</button></form>")
@@ -173,8 +222,8 @@ class App:
             lg = self.a.login(f.get("email", ""), f.get("password", ""), kind=f.get("kind", "user"), ip=self.ip,
                               ua=self.ua)
             return self._redirect("/ack" if lg["must_ack"] else "/me", self._set_cookie(lg["token"]))
-        return self._page("200 OK", "Log in", "<form method='post'><label>Email <input name='email' type='email' required>"
-                          "</label><br><label>Password <input name='password' type='password' required></label><br>"
+        return self._page("200 OK", "Log in", f"<form method='post'>{self._csrf(self._req.pre)}<label>Email <input name='email' "
+                          "type='email' required></label><br><label>Password <input name='password' type='password' required></label><br>"
                           "<label>As <select name='kind'><option value='user'>user</option><option value='admin'>"
                           "administrator</option></select></label><br><button>Log in</button></form>"
                           "<p>New here? <a href='/register'>Register</a></p>")
@@ -191,7 +240,7 @@ class App:
             r = self.a.set_password_with_reset(f.get("code", ""), f.get("password", ""), redeemer=sess, ip=self.ip,
                                                ua=self.ua)
             return self._redirect("/ack" if r["must_ack"] else "/me", self._set_cookie(r["token"]))
-        return self._page("200 OK", "Set a new password", f"<form method='post'><label>Reset code <input name='code' "
+        return self._page("200 OK", "Set a new password", f"<form method='post'>{self._csrf(self._req.pre)}<label>Reset code <input name='code' "
                           f"value='{_e(f.get('code'))}' required></label><br><label>New password <input name='password' "
                           "type='password' required></label><br><label>Again <input name='password2' type='password' "
                           "required></label><br><button>Save</button></form>")
@@ -440,7 +489,7 @@ class App:
 
     # ---------- device API (INFRA-576) ----------
     def api(self, env, path, method) -> tuple[str, list, str]:
-        m = re.fullmatch(r"/api/v1/devices/([A-Za-z0-9._-]{1,64})/(checkin|run|late|notice)", path)
+        m = re.fullmatch(rf"/api/v1/devices/({DEVICE_NAME_RE})/(checkin|run|late|notice)", path)
         if not m or method != "POST":
             return self._json("404 Not Found", {"error": "not found"})
         name, what = m.groups()

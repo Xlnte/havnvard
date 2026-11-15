@@ -2,6 +2,22 @@
 
 Older releases are described in `FEATURES.md` and `docs/*_RELEASE_*.md`.
 
+## 3.3.5 (20261115)
+
+Hub web and accounts hardening from the 3.3.0 review (INFRA-592, 591, 593, 600, 623, 589, 574; INFRA-582 was already fixed in 3.3.4):
+
+- **CSRF on /login, /register, /reset (INFRA-592, F14).** A pre-session token cookie (`hv_csrf`) is issued with each of these forms and
+  must come back in the form; without it the POST is a 403. Every CSRF compare now uses `hmac.compare_digest`.
+- **Server-side session expiry (INFRA-591, F13).** Checked on every request, audited as `session.expired`. Administrators: 12 h
+  absolute, 30 min idle. Users: 30 days absolute, no idle limit (they stay remembered). `last_seen_at` is now kept. Override with
+  `HAVNVARD_SESSION_ADMIN_ABS_H`, `_USER_ABS_H`, `_ADMIN_IDLE_MIN`, `_USER_IDLE_MIN` (0 = no limit).
+- **Bad input is a 400 (INFRA-593, F15):** missing or non-numeric fields, bad Content-Length, non-object JSON. Any other error is a plain
+  500 page with an error id; both are logged with the exception and counted (`App.errors`). No traceback reaches the browser.
+- **`add_device` uses the API's name rule (INFRA-600, F22):** `A-Za-z0-9._-`, 1-64 characters, one shared pattern.
+- **/register audit row and its auto-login now record address and browser (INFRA-623).**
+- Lint and script fixes: F541 in `hubweb.register` (INFRA-589); `report.py` run as a script no longer raises NameError (INFRA-574).
+- INFRA-582 (`pullback --vanished` for a file made and deleted the same day) was fixed in 3.3.4; 3.3.5 adds a three-snapshot regression test.
+
 ## 3.3.4 (20261114)
 
 NAS within-host dedup (`nas_trigkey_dedup.py`, `hash_stat_batch.sh`, `nas_dedup_core.py`), INFRA-520:
