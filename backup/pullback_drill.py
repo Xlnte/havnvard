@@ -21,10 +21,12 @@ pinned to 0 so it never makes a device look fresh. Nothing is ever deleted from 
 """
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -40,6 +42,7 @@ KEY = "havnvard-pullback-drill"
 PARALLEL = 20
 CHECKS = 50
 CHILD_TIMEOUT_S = 600
+HOLD_S = 3.0          # lock leg: how long the drill's own exclusive tag is held paused in the pullback's way
 NOT_COVERED = ("not covered by this drill: a pullback over the network from another computer (network loss "
                "mid-pullback); the test suite covers a cut stream (reported PARTIAL/FAILED, exit 1)")
 _HASH_LINE = re.compile(r"^([0-9a-fA-F]{64}) [ *]?(/.*)$")
@@ -110,8 +113,45 @@ def ensure_marker(restic: str, env: dict) -> dict:
     m = _marker(restic, env)
     if not m:
         raise BackupError("the drill marker snapshot was written but is not listed")
-    catalog._set_mtime(env, m["id"], 0)           # never makes the device look fresh (health reads file times)
+    _pin(restic, env, m)
     return m
+
+
+def markers_path() -> Path:
+    return config.state_dir() / "drill-markers.json"
+
+
+def marker_ids() -> set[str]:
+    """Every snapshot id the drill marker ever had on this hub (review L11: health skips them, like catalog copies, so a
+    crash before the file time is pinned can never make a device look freshly backed up)."""
+    try:
+        d = json.loads(markers_path().read_text())
+    except (OSError, ValueError):
+        return set()
+    return {i for ids in (d.values() if isinstance(d, dict) else []) for i in ids if isinstance(i, str)}
+
+
+def _remember(repo: str, snap_id: str) -> None:
+    p = markers_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with config.file_lock(p):
+        try:
+            d = json.loads(p.read_text()) if p.is_file() else {}
+        except (OSError, ValueError):
+            d = {}
+        ids = d.setdefault(repo, [])
+        if snap_id not in ids:
+            ids.append(snap_id)
+        config.atomic_write_text(p, json.dumps(d))
+
+
+def _pin(restic: str, env: dict, m: dict | None = None) -> None:
+    """Record the marker's current id (health skip set), then pin its file time to 0."""
+    m = m or _marker(restic, env)
+    if not m:
+        return
+    _remember(precedence.repo_label(env), m["id"])
+    catalog._set_mtime(env, m["id"], 0)           # never makes the device look fresh (health reads file times)
 
 
 EPOCH = "1970-01-01T00:00:00Z"
@@ -122,7 +162,11 @@ def tag_marker(restic: str, env: dict, repo: str, tag: str) -> bool:
     m = _marker(restic, env)
     if not m:
         raise BackupError("the drill marker snapshot is gone")
-    return catalog.tag_or_defer(restic, env, repo, m["id"], tag, EPOCH, job="pullback-drill")
+    _remember(repo, m["id"])
+    done = catalog.tag_or_defer(restic, env, repo, m["id"], tag, EPOCH, job="pullback-drill")
+    if done:
+        _pin(restic, env)
+    return done
 
 
 def catch_up(restic: str, env: dict, repo: str) -> list[dict]:
@@ -181,6 +225,86 @@ def _main_case(device: str, folder: str, tset: list[tuple[str, str]], out: Path,
     rep["bad"] = bad[:20]
     rep["contention"] = ("error: " + res["error"]) if "error" in res else \
         ("yielded" if res.get("tagged") is False else "NOT exercised (the tag step did not see the pullback)")
+
+
+def _lock_files(d: Path) -> set[str]:
+    try:
+        return {n for n in os.listdir(d) if re.fullmatch(r"[0-9a-f]{64}", n)}
+    except OSError:
+        return set()
+
+
+def _resume(p: subprocess.Popen) -> None:
+    with contextlib.suppress(ProcessLookupError):
+        os.kill(p.pid, signal.SIGCONT)
+
+
+def _lock_case(device: str, tset: list[tuple[str, str]], out: Path, restic: str, env: dict, stamp: str,
+               rep: dict) -> None:
+    """Review F1 (spec 3.3 + 3.6 step 3): a REAL exclusive restic lock already held when the pullback's restic call
+    starts, the T4 failure mode. From on_start (intent written, before the first restic call) the drill starts its own
+    `restic tag` on the marker WITHOUT the intent check, under a pullback-drill job record, waits for its lock file in
+    locks/, and pauses that restic (SIGSTOP) for HOLD_S seconds, so the pullback must meet the lock. A timer and a
+    finally always resume it (restic then finishes its tag). Pass = LockGate named the drill's step, GOT THE LOCK, and
+    the pullback ended with 0 FAILED. Anything else, including the lock not being in the way, is a FAILED leg."""
+    m = _marker(restic, env)
+    lock_tag = f"havnvard-drill-lock-{stamp}"
+    locks = Path(str(env.get("RESTIC_REPOSITORY", ""))) / "locks"
+    st: dict = {}
+    stack = contextlib.ExitStack()
+
+    def on_start(_intent):
+        if not m or not locks.is_dir():
+            st["why"] = "no marker snapshot or no local locks/ folder"
+            return
+        stack.enter_context(precedence.job_record(device, "pullback-drill", f"drill lock step {lock_tag}"))
+        before = _lock_files(locks)
+        errf = stack.enter_context(tempfile.TemporaryFile())
+        p = subprocess.Popen([restic, "tag", "--retry-lock", "2m", "--add", lock_tag, m["id"]],
+                             env={**os.environ, **env}, stdout=subprocess.DEVNULL, stderr=errf,
+                             stdin=subprocess.DEVNULL)
+        st["proc"] = p
+        deadline = time.time() + 60
+        while time.time() < deadline and p.poll() is None:
+            if _lock_files(locks) - before:
+                os.kill(p.pid, signal.SIGSTOP)
+                st["held"] = True
+                t = threading.Timer(HOLD_S, _resume, args=(p,))
+                t.daemon = True
+                t.start()
+                return
+            time.sleep(0.002)
+        st["why"] = "the drill's tag finished before its lock could be held in the pullback's way (a race)"
+
+    small = min(tset, key=lambda hp: (out.parent / "main" / hp[1].lstrip("/")).stat().st_size
+                if (out.parent / "main" / hp[1].lstrip("/")).is_file() else 1 << 62)
+    stats: dict = {}
+    rc = None
+    try:
+        rc = archive_pullback(paths=[small[1]], from_device=device, target=str(out), on_start=on_start, stats=stats)
+    finally:
+        p = st.get("proc")
+        if p is not None:
+            _resume(p)
+            try:
+                st["tag_rc"] = p.wait(timeout=180)
+            except subprocess.TimeoutExpired:
+                st["tag_rc"] = "still running after 180 s"
+        stack.close()
+        with contextlib.suppress(BackupError, OSError):
+            _pin(restic, env)
+    got = [w for w in stats.get("lock_waits", []) if w.get("outcome") == "got the lock"
+           and "pullback drill" in str(w.get("holder"))]
+    if got and rc == 0 and stats.get("failed", 0) == 0:
+        rep["lock_leg"] = (True, f"lock gate exercised: GOT THE LOCK after {got[0]['seconds']}s "
+                                 f"(holder: {got[0]['holder']}), 0 FAILED")
+    elif not st.get("held"):
+        rep["lock_leg"] = (False, f"lock gate NOT exercised: {st.get('why', 'the lock was not held')}")
+    else:
+        rep["lock_leg"] = (False, f"lock gate FAILED: exit {rc}, {stats.get('failed')} FAILED, waits "
+                                  f"{stats.get('lock_waits')}")
+    if st.get("tag_rc") not in (None, 0):
+        rep["lock_leg"] = (False, rep["lock_leg"][1] + f"; the drill's tag step ended rc={st['tag_rc']}")
 
 
 def archive_pullback(**kw) -> int:
@@ -265,20 +389,29 @@ def _drill(device: str, set_name: str, hashes: str | None, scratch: str | None, 
     with tempfile.TemporaryDirectory(prefix="havnvard-pullback-drill-", dir=scratch) as td:
         tdp = Path(td)
         (tdp / "main").mkdir()
-        _main_case(device, folder, tset, tdp / "main", restic, env, tag, rep)
-        from .archive import plan
-        jobs = plan(restic, env, None, [folder], None, None, False)
-        if not jobs:
-            raise BackupError(f"no backup of {device} holds {folder}")
-        _concurrency_case(device, tset, jobs[0][0]["id"], tdp, rep, parallel, checks)
         rep["scratch"] = td
+        try:
+            _main_case(device, folder, tset, tdp / "main", restic, env, tag, rep)
+            (tdp / "lockleg").mkdir()
+            _lock_case(device, tset, tdp / "lockleg", restic, env, stamp, rep)
+            from .archive import plan
+            jobs = plan(restic, env, None, [folder], None, None, False)
+            if not jobs:
+                raise BackupError(f"no backup of {device} holds {folder}")
+            _concurrency_case(device, tset, jobs[0][0]["id"], tdp, rep, parallel, checks)
+        finally:
+            # review F3: whatever happened above, the drill's own deferral is caught up now (never left for the
+            # catalog, which cannot clear it); a catch-up that fails makes this a FAILED drill.
+            try:
+                rep["caught"] = catch_up(restic, env, device)
+            except BackupError as e:
+                rep["caught"], rep["catchup_error"] = [], str(e)
     rep["scratch_removed"] = not Path(rep["scratch"]).exists()
-    deferred = [o for o in precedence.open_deferrals(job="pullback-drill", repo=device) if o.get("tag") == tag]
-    caught = catch_up(restic, env, device)
-    mine = [o for o in caught if o.get("tag") == tag]
+    mine = [o for o in rep["caught"] if o.get("tag") == tag]
     m = _marker(restic, env)
-    rep["deferred"] = len(deferred)
-    rep["caught_up"] = sum(1 for _ in mine) if m and tag in (m.get("tags") or []) else 0
+    rep["deferred"] = sum(1 for o in precedence._read_deferred()
+                          if o.get("job") == "pullback-drill" and o.get("repo") == device and o.get("tag") == tag)
+    rep["caught_up"] = len(mine) if m and tag in (m.get("tags") or []) else 0
     after_snaps = catalog.snapshots(restic, env)
     rep["snapshots"] = (before, len(after_snaps))
     rep["marker_created"] = not had_marker
@@ -296,8 +429,10 @@ def _verdict(rep: dict) -> list[tuple[str, bool, str]]:
         ("pullback", rep["pullback_rc"] == 0 and rep["pullback_failed"] == 0,
          f"exit {rep['pullback_rc']}, {rep['pullback_failed']} FAILED"),
         ("contention", rep["contention"] == "yielded", f"the exclusive tag step {rep['contention']}"),
-        ("catch-up", rep["deferred"] >= 1 and rep["caught_up"] == rep["deferred"],
-         f"deferred {rep['deferred']}, caught up {rep['caught_up']}/{rep['deferred']}"),
+        ("catch-up", rep["deferred"] >= 1 and rep["caught_up"] == rep["deferred"] and not rep.get("catchup_error"),
+         f"deferred {rep['deferred']}, caught up {rep['caught_up']}/{rep['deferred']}"
+         + (f" ({rep['catchup_error']})" if rep.get("catchup_error") else "")),
+        ("lock gate", *rep.get("lock_leg", (False, "lock gate leg did not run"))),
         ("concurrency pullbacks", c.get("exit0") == c.get("pullbacks") == c.get("restored"),
          f"{c.get('exit0')}/{c.get('pullbacks')} parallel pullbacks exit 0, {c.get('restored')} file(s) SHA-256 ok"),
         ("intents", c.get("intents_written_removed") == c.get("pullbacks"),
@@ -318,6 +453,12 @@ def pullback_drill(device: str, set_name: str, hashes: str | None = None, scratc
                    parallel: int = PARALLEL, checks: int = CHECKS) -> int:
     """Exit 0 the drill passed, 1 it FAILED (including: it could not run). Never a skip."""
     started = time.time()
+    interrupted: BaseException | None = None
+    old = None
+    if threading.current_thread() is threading.main_thread():   # a systemd stop (SIGTERM) also records FAILED
+        def _term(signum, frame):
+            raise SystemExit(128 + signum)
+        old = signal.signal(signal.SIGTERM, _term)
     try:
         rep = _drill(device, set_name, hashes, scratch, parallel, checks)
         verdict = _verdict(rep)
@@ -329,12 +470,19 @@ def pullback_drill(device: str, set_name: str, hashes: str | None = None, scratc
                    + ("yielded+caught up" if rep["contention"] == "yielded" and rep["caught_up"] == rep["deferred"] >= 1
                       else rep["contention"])
                    + f", {rep['pullback_failed']} FAILED; deferred {rep['deferred']}, caught up "
-                   f"{rep['caught_up']}/{rep['deferred']}; {len(verdict) - len(failed_steps)}/{len(verdict)} checks passed")
+                   f"{rep['caught_up']}/{rep['deferred']}; "
+                   + rep.get("lock_leg", (False, "lock gate leg did not run"))[1]
+                   + f"; {len(verdict) - len(failed_steps)}/{len(verdict)} checks passed")
         ok = not failed_steps
     except BackupError as e:
         ok, summary, verdict = False, f"drill could not run: {e}", []
     except OSError as e:          # a scratch disk or state-dir failure is a FAILED drill, never a skip
         ok, summary, verdict = False, f"drill could not run: {type(e).__name__}: {e}", []
+    except BaseException as e:  # noqa: BLE001 - review F2: ANY crash, hang-kill (SIGTERM) or Ctrl-C is a FAILED drill:
+        # recorded and alerted below, then SystemExit / KeyboardInterrupt are raised again
+        ok, summary, verdict = False, f"drill crashed: {type(e).__name__}: {e}", []
+        if isinstance(e, (SystemExit, KeyboardInterrupt)):
+            interrupted = e
     print(NOT_COVERED)
     line = f"pullback-drill {device}/{set_name}: {'PASSED' if ok else 'FAILED'}: {summary}"
     print(line)
@@ -352,6 +500,10 @@ def pullback_drill(device: str, set_name: str, hashes: str | None = None, scratc
     else:
         sent, detail = alerts.fire(KEY, f"HavnVard {line}")
         print(f"alert: {detail}" if sent else f"ALERT NOT SENT: {detail} (health-relay raises it from the result)")
+    if old is not None:
+        signal.signal(signal.SIGTERM, old)
+    if interrupted is not None:
+        raise interrupted
     return 0 if ok else config.PROBLEM_EXIT
 
 
