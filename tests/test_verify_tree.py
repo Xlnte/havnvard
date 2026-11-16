@@ -483,3 +483,45 @@ def test_cli_rejects_non_share_nas_path(pair, capsys):
     local, nas, t = pair
     _tree(local, {"a": b"1"})
     assert vt.cmd_verify(_args(local, "/tmp/../etc"), target=t, connect=None) == vt.EXIT_USAGE
+
+
+# ---------------------------------------------------------------- 3.3.7 (INFRA-541 / 539)
+
+def test_nas_floor_env_override_infra541(monkeypatch):
+    monkeypatch.delenv("NAS_FLOOR_BPS", raising=False)
+    big = 100_000_000_000
+    assert vt.nas_timeout(big) == big // vt.NAS_HASH_FLOOR_BPS + 1
+    monkeypatch.setenv("NAS_FLOOR_BPS", "2000000")
+    assert vt.nas_timeout(big) == big // 2_000_000 + 1
+    for bad in ("abc", "0", "-5", ""):
+        monkeypatch.setenv("NAS_FLOOR_BPS", bad)
+        assert vt.nas_floor_bps() == vt.NAS_HASH_FLOOR_BPS
+
+
+def test_stale_canary_sweep_infra539(tmp_path):
+    t = LocalShellTarget(tmp_path)
+    now = 2_000_000_000
+    old = f"{t.scratch_dir}/verify_tree_canary_7_{now - 2 * 86400}"
+    fresh = f"{t.scratch_dir}/verify_tree_canary_8_{now - 3600}"
+    foreign = f"{t.scratch_dir}/verify_tree_canary_x_1"      # not digits_digits
+    other = f"{t.scratch_dir}/something_else_1_1"
+    for d in (old, fresh, foreign, other):
+        os.makedirs(d)
+    for n in vt.CANARY_NAMES:
+        open(f"{old}/{n}", "w").close()
+    # dry run: logs, removes nothing
+    assert vt.sweep_stale_canaries(t, now=now, dry_run=True) == [old]
+    assert os.path.exists(old)
+    assert vt.sweep_stale_canaries(t, now=now, dry_run=False) == [old]
+    assert not os.path.exists(old)
+    assert all(os.path.exists(d) for d in (fresh, foreign, other))
+    assert all("rm -rf" not in c for c, _ in t.calls)
+
+
+def test_sweep_never_raises_and_run_canary_sweeps(tmp_path):
+    t = LocalShellTarget(tmp_path)
+    t.ssh_rc = None
+    old = f"{t.scratch_dir}/verify_tree_canary_7_1"
+    os.makedirs(old)
+    ok, _ = vt.run_canary(t)
+    assert ok and not os.path.exists(old)
