@@ -19,6 +19,9 @@ INFRA-644 re-review items R1-R4 (must land before the pullback drill runs, even 
 - **The drill pauses only its own exclusive lock (R2).** It pauses first, then checks the new lock with `restic cat
   lock` (exclusive and the tag's pid); otherwise it resumes and keeps waiting.
 - **R4.** ctypes/prctl is resolved in the parent; the forked child only calls it.
+- **Review N1/N2.** If the drill's ownership check of a paused lock fails (timeout, start failure, Ctrl-C), the tag is
+  resumed before the error goes on, so it is never left paused holding the exclusive lock. Every hourly `catalog run` now
+  records and pins every drill marker from the snapshot list it already reads (no extra restic call).
 
 ## 3.3.13 (20261116)
 

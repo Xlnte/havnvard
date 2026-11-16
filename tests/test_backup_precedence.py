@@ -877,3 +877,48 @@ def test_r2_hold_tag_never_pauses_on_a_lock_that_is_not_its_own_exclusive_lock(h
         finally:
             pullback_drill._resume(p)
             p.wait(timeout=60)
+
+
+# ---------- review N1 / N2 (3.3.14) ----------
+
+def _state(pid: int) -> str:
+    try:
+        st = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return "gone"
+    return st[st.rfind(")") + 2]
+
+
+@needs_restic
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="/proc and PR_SET_PDEATHSIG are Linux only")
+def test_n1_a_failing_ownership_check_never_leaves_the_tag_paused(hub, monkeypatch):
+    m = pullback_drill.ensure_marker("restic", hub["env"])
+    seen = []
+
+    def boom(restic, env, lid, pid):
+        seen.append(pid)
+        raise BackupError("timed out after 60s: restic cat lock")
+    monkeypatch.setattr(pullback_drill, "_is_our_exclusive", boom)
+    import tempfile
+    with tempfile.TemporaryFile() as e, pytest.raises(BackupError, match="timed out"):
+        pullback_drill.hold_tag("restic", hub["env"], m["id"], "havnvard-drill-lock-n1", hub["repo"] / "locks", e)
+    pid = seen[0]
+    try:
+        time.sleep(0.3)
+        assert _state(pid) != "T", "the tag was left stopped holding the exclusive lock"
+        assert wait_for(lambda: _state(pid) in ("gone", "Z"), 60)         # it ran on and finished
+    finally:
+        with __import__("contextlib").suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGCONT)
+
+
+@needs_restic
+def test_n2_hourly_catalog_run_pins_and_records_drill_markers(hub):
+    f = hub["tmp"] / "m.txt"
+    f.write_text("marker left by a killed tag")
+    restic(hub["repo"], hub["pw"], "backup", "--host", "havnvard-drill", "--tag", catalog.DRILL_TAG, str(f))
+    mid = [s["id"] for s in catalog.snapshots("restic", hub["env"]) if catalog.DRILL_TAG in (s.get("tags") or [])][0]
+    assert os.stat(hub["repo"] / "snapshots" / mid).st_mtime > 0
+    assert catalog.catalog_run() == 0
+    assert mid in pullback_drill.marker_ids()
+    assert os.stat(hub["repo"] / "snapshots" / mid).st_mtime == 0
