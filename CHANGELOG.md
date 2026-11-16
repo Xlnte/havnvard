@@ -2,6 +2,12 @@
 
 Older releases are described in `FEATURES.md` and `docs/*_RELEASE_*.md`.
 
+## 3.3.7 (20261116)
+
+- **verify_tree NAS hash floor is tunable (INFRA-541).** Env `NAS_FLOOR_BPS` (the knob `backup/lib-nas.sh` already uses) or `verify --nas-floor-bps`; default stays 10 MB/s.
+- **NAS backup credentials are read directly (INFRA-540).** `sudo cat` only after a PermissionError; readers/creds injectable for tests. Contents never logged.
+- **Stale canary sweep (INFRA-539).** Each canary run first removes `.diskaudit_scratch/verify_tree_canary_<pid>_<ts>` dirs older than 1 day (exact prefix only, named-file removal + rmdir). `VERIFY_TREE_SWEEP_DRY_RUN=1` only logs.
+
 ## 3.3.6 (20261115)
 
 Hub hardening from the 3.3.0 and 3.3.5 reviews (INFRA-626, 612, 613, 614, 609, 610, 605, 606, 596, 595, 585):

@@ -620,3 +620,41 @@ def test_run_with_timeout_per_call_override_and_default():
     ok = cv._run_with_timeout(["true"], capture_output=True, text=True)
     assert ok.returncode == 0
     assert cv._REMOTE_CALL_TIMEOUT_SEC == 600
+
+
+# ---------------------------------------------------------------- 3.3.7 (INFRA-540)
+
+def test_nas_backup_creds_reads_directly_without_sudo(monkeypatch):
+    import subprocess as sp
+    monkeypatch.setattr(cv, "_read_nas_token_text", lambda p: "NAS_USER=u\nNAS_HOST=h\nNAS_PASS=p\n")
+    def boom(*a, **k): raise AssertionError("sudo must not run")
+    monkeypatch.setattr(sp, "run", boom)
+    assert cv._nas_backup_creds() == ("u", "h", "p")
+    assert cv._nas_backup_creds(reader=lambda p: "NAS_USER=a\nNAS_HOST=b\nNAS_PASS=c") == ("a", "b", "c")
+
+
+def test_read_token_direct_then_sudo_only_on_permission_error(monkeypatch, tmp_path):
+    import subprocess as sp
+    f = tmp_path / "tok"
+    f.write_text("NAS_USER=u\n")
+    monkeypatch.setattr(sp, "run", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no sudo")))
+    assert cv._read_nas_token_text(str(f)) == "NAS_USER=u\n"
+    with pytest.raises(FileNotFoundError):
+        cv._read_nas_token_text(str(tmp_path / "missing"))
+    calls = []
+    def fake_run(argv, **k):
+        calls.append(argv)
+        return sp.CompletedProcess(argv, 0, stdout="X", stderr="")
+    monkeypatch.setattr(sp, "run", fake_run)
+    import builtins
+    real = builtins.open
+    def deny(p, *a, **k):
+        if str(p) == "/denied": raise PermissionError
+        return real(p, *a, **k)
+    monkeypatch.setattr(builtins, "open", deny)
+    assert cv._read_nas_token_text("/denied") == "X" and calls == [["sudo", "cat", "/denied"]]
+
+
+def test_nas_target_accepts_injected_creds():
+    t = cv._NasTarget(creds=("u", "h", "p"))
+    assert (t.user, t.host) == ("u", "h")

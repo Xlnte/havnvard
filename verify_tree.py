@@ -50,7 +50,7 @@ EXIT_CANARY = 4
 NAS_HOST = cv._site.nas_host()   # 3.0.0: from the site file
 # Measured 20261110 01:10: NAS sha256sum 36.7 MB/s (7.05 GiB / 201.5 s) under a concurrent
 # HavnVard dedup run. The timeout assumes a floor 3.7x slower than that.
-NAS_HASH_FLOOR_BPS = 10_000_000
+NAS_HASH_FLOOR_BPS = 10_000_000   # default; INFRA-541: override with env NAS_FLOOR_BPS (same name as backup/lib-nas.sh) or --nas-floor-bps
 NAS_HASH_MIN_TIMEOUT = 600
 
 _HASH_LINE_RE = re.compile(r"^([0-9a-f]{64})  (\./.*)$")
@@ -241,8 +241,15 @@ def parse_remote(stdout: str, rc: int) -> RemoteTree:
     return t
 
 
-def nas_timeout(total_bytes: int) -> int:
-    return max(NAS_HASH_MIN_TIMEOUT, int(total_bytes / NAS_HASH_FLOOR_BPS) + 1)
+def nas_floor_bps(env=None) -> int:
+    """NAS hash floor in bytes/s. Env NAS_FLOOR_BPS (the knob backup/lib-nas.sh uses) wins over the
+    built-in default; an unset, non-numeric or non-positive value is ignored (default kept)."""
+    raw = (os.environ if env is None else env).get("NAS_FLOOR_BPS", "").strip()
+    return int(raw) if raw.isdigit() and int(raw) > 0 else NAS_HASH_FLOOR_BPS
+
+
+def nas_timeout(total_bytes: int, floor_bps: Optional[int] = None) -> int:
+    return max(NAS_HASH_MIN_TIMEOUT, int(total_bytes / (floor_bps or nas_floor_bps())) + 1)
 
 
 def hash_remote(target, nas_path: str, total_bytes: int) -> tuple[RemoteTree, float]:
@@ -397,6 +404,7 @@ def run_canary(target, planted_index: Optional[int] = None) -> tuple[bool, str]:
     original, mutated = canary_texts()
     idx = secrets.randbelow(CANARY_COPIES) if planted_index is None else planted_index
     planted = CANARY_NAMES[idx]
+    sweep_stale_canaries(target)
     tag = f"verify_tree_canary_{os.getpid()}_{int(time.time())}"
     nas_dir = f"{target.scratch_dir}/{tag}"
     with tempfile.TemporaryDirectory(prefix="verify_tree_canary_") as tmp:
@@ -437,6 +445,43 @@ def run_canary(target, planted_index: Optional[int] = None) -> tuple[bool, str]:
         return False, f"canary: 6 identical copies did not all read equal ({got}; {why_same}); the NAS hash path is broken"
     return True, (f"canary ok: 5 copies + 1 m->M = only {planted} different, other 5 equal; "
                   f"6 identical = all equal")
+
+
+CANARY_SWEEP_MAX_AGE_S = 86400
+_CANARY_DIR_RE = re.compile(r"^verify_tree_canary_(\d+)_(\d+)$")
+
+
+def sweep_stale_canaries(target, now: Optional[float] = None, dry_run: Optional[bool] = None,
+                         max_age_s: int = CANARY_SWEEP_MAX_AGE_S) -> list[str]:
+    """INFRA-539: a run killed between the canary scp_put and cleanup leaves
+    <scratch>/verify_tree_canary_<pid>_<ts>/ on the NAS forever. Remove those older than 1 day.
+    Only entries whose name matches exactly that prefix + digits_digits directly inside the scratch
+    dir are ever touched (age from the <ts> in the name); anything else is ignored and the removal
+    goes through _remove_canary_dir (named files + rmdir, no recursive delete). dry_run (default:
+    env VERIFY_TREE_SWEEP_DRY_RUN=1) only logs. Best effort: never raises, never blocks a verify.
+    Returns the dirs removed (or that would be)."""
+    if dry_run is None:
+        dry_run = os.environ.get("VERIFY_TREE_SWEEP_DRY_RUN", "") == "1"
+    now = time.time() if now is None else now
+    done: list[str] = []
+    try:
+        ls = target.ssh(f"ls -1 {shlex.quote(target.scratch_dir)}")
+        if ls.returncode != 0:
+            print(f"[verify_tree] canary sweep: ls rc={ls.returncode}, skipped", file=sys.stderr)
+            return done
+        for name in ls.stdout.splitlines():
+            m = _CANARY_DIR_RE.match(name.strip())
+            if not m or now - int(m.group(2)) < max_age_s:
+                continue
+            nas_dir = f"{target.scratch_dir}/{name.strip()}"
+            print(f"[verify_tree] canary sweep: {'WOULD remove' if dry_run else 'removing'} stale {nas_dir}",
+                  file=sys.stderr)
+            if not dry_run:
+                _remove_canary_dir(target, target.scratch_dir, nas_dir)
+            done.append(nas_dir)
+    except Exception as e:  # noqa: BLE001 -- housekeeping must not fail a verification; reported
+        print(f"[verify_tree] canary sweep failed ({type(e).__name__}: {e})", file=sys.stderr)
+    return done
 
 
 def _remove_canary_dir(target, scratch_dir: str, nas_dir: str) -> None:
@@ -639,12 +684,16 @@ def main(argv=None) -> int:
     v.add_argument("--purpose", required=True)
     v.add_argument("--local-host", default=cv._site.local_host())
     v.add_argument("--nas-host", default=NAS_HOST, help=argparse.SUPPRESS)
+    v.add_argument("--nas-floor-bps", type=int, default=None,
+                   help="NAS hash floor bytes/s for the timeout (default env NAS_FLOOR_BPS, else 10000000)")
     m = sub.add_parser("mark-deleted")
     m.add_argument("--run-id", type=int, required=True)
     sub.add_parser("canary")
     args = ap.parse_args(argv)
     try:
         if args.cmd == "verify":
+            if args.nas_floor_bps and args.nas_floor_bps > 0:
+                os.environ["NAS_FLOOR_BPS"] = str(args.nas_floor_bps)
             return cmd_verify(args)
         if args.cmd == "mark-deleted":
             return cmd_mark_deleted(args)
