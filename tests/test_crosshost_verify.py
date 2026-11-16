@@ -454,7 +454,8 @@ _ALLOWED_DELETE_SITES = {
     # verify_tree.py (INFRA-538): the canary's OWN six 8.5 MB book_N.txt copies (1.6.0) in
     # <NAS scratch>/verify_tree_canary_<pid>_<ts>/ (prefix-guarded in _remove_canary_dir),
     # then `rmdir` of that dir. Never a scanned path; no recursive delete.
-    ("verify_tree.py", 'target.ssh(f"rm -f {files}; rmdir {shlex.quote(nas_dir)}")'),
+    # 3.3.7 review (INFRA-539 sweep): the remote side also refuses a symlink or non-directory before the rm -f.
+    ("verify_tree.py", 'return target.ssh(f"if [ -d {d} ] && [ ! -L {d} ]; then rm -f {files}; rmdir {d}; else exit 3; fi")'),
     # backup/catalog.py (2.2.0): only files the catalog job itself wrote in ~/.local/state/havnvard/catalog/:
     # the previous per-device live listing (live/<repo>.<NNNNNN>.tsv, superseded once state.json commits the new one)
     # and the previous staged catalog copy (stage/*_catalog.tsv). Never a backed-up or scanned path.

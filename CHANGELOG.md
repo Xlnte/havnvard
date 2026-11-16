@@ -4,9 +4,9 @@ Older releases are described in `FEATURES.md` and `docs/*_RELEASE_*.md`.
 
 ## 3.3.7 (20261116)
 
-- **verify_tree NAS hash floor is tunable (INFRA-541).** Env `NAS_FLOOR_BPS` (the knob `backup/lib-nas.sh` already uses) or `verify --nas-floor-bps`; default stays 10 MB/s.
+- **verify_tree NAS hash floor is tunable (INFRA-541).** Env `NAS_FLOOR_BPS` (same name and unit, bytes/s, as the backup scripts' `lib-nas.sh`) or `verify --nas-floor-bps`; default stays 10 MB/s. A bad env value is ignored with a warning on stderr; a bad CLI value is a usage error.
 - **NAS backup credentials are read directly (INFRA-540).** `sudo cat` only after a PermissionError; readers/creds injectable for tests. Contents never logged.
-- **Stale canary sweep (INFRA-539).** Each canary run first removes `.diskaudit_scratch/verify_tree_canary_<pid>_<ts>` dirs older than 1 day (exact prefix only, named-file removal + rmdir). `VERIFY_TREE_SWEEP_DRY_RUN=1` only logs.
+- **Stale canary sweep (INFRA-539).** Each canary run first removes `.diskaudit_scratch/verify_tree_canary_<pid>_<ts>` dirs older than 1 day (exact ASCII name only; the NAS side refuses a symlink or non-directory; named-file removal + rmdir). `VERIFY_TREE_SWEEP_DRY_RUN=1` only logs. Failures are logged as `CANARY_SWEEP_FAILED` and summarised on stdout as `CANARY_SWEEP=...` (only when something was found or failed).
 
 ## 3.3.6 (20261115)
 
