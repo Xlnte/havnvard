@@ -24,6 +24,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 from . import config
@@ -338,10 +339,22 @@ def catalog_run(first_run_latest_only: bool = True, recover: bool = False) -> in
     except BlockingIOError as e:
         raise BackupError("another catalog run is in progress") from e
     from . import precedence
-    run_started = precedence.record_catalog_start()        # the overdue rule follows the real catalog run (3.2)
-    rc = _catalog_run(cdir, repo_root, hub, first_run_latest_only, recover)
-    precedence.record_catalog_finish(run_started)
-    return rc
+    try:                                                   # the overdue rule follows the real catalog run (3.2)
+        run_started = precedence.record_catalog_start()
+    except OSError as e:          # review L5: a full disk must not stop the catalog run; loud, and the run goes on
+        print(f"catalog: WARNING could not record this run in {precedence.runs_path()}: {e}", file=sys.stderr)
+        run_started = None
+    ok = False
+    try:
+        rc = _catalog_run(cdir, repo_root, hub, first_run_latest_only, recover)
+        ok = True
+        return rc
+    finally:                      # review L5: a crashed run is recorded as FAILED, never left "still running"
+        if run_started is not None:
+            try:
+                precedence.record_catalog_finish(run_started, failed=not ok)
+            except OSError as e:
+                print(f"catalog: WARNING could not record the end of this run: {e}", file=sys.stderr)
 
 
 def _catalog_run(cdir: Path, repo_root: Path, hub: dict, first_run_latest_only: bool, recover: bool) -> int:
