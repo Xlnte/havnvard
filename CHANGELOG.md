@@ -9,6 +9,11 @@ INFRA-637 (one credential-file reader). Built on fix/infra-566-565 (3.3.11) with
 - **One reader (INFRA-637).** `crosshost_verify._read_nas_token_text` is now a one-line wrapper over `token_file.read_token_text` (same name, tests patch it). `infra126/.../transport.py` (`SshpassSshTransport._load_credentials`, was an unconditional `sudo cat`) and `backup_coverage._nas_env` (was `sudo -n cat`) use the same helper: direct read first, `sudo` only after a PermissionError. The infra126 package finds `token_file.py` in the checkout root (`$HAVNVARD_HOME`, else three levels above `transport.py`).
 - **Fail fast (INFRA-637).** The sudo fallback is `sudo -n cat` with stdin closed and a 30 s timeout, so a service with no terminal gets an exit code at once instead of a hung password prompt. Failure raises `token_file.TokenReadError`, which names the file and the exit code and never carries the file's text or sudo's stderr. Every caller already lets it reach a top-level handler that records the message (`load_nas_inventory`, `crosshost_verify` run rows) or the traceback (`backup_coverage`, infra126 CLI).
 - **Guard.** `tests/test_token_file.py` fails if any other non-test `.py` file runs `sudo cat` / `sudo -n cat` on a file.
+- **Review fix (3.3.12).** infra126 `transport._read_token_text` tried a plain `import token_file` first, so any `token_file.py` on `sys.path`
+  (the cwd of `python -m`, a stale `/srv/diskaudit.bak-*`, a worktree) won over `$HAVNVARD_HOME` and the checkout the package is installed from,
+  and it put the checkout root in front of `sys.path` for every later import. It now follows `validate_live.py`'s order (`$HAVNVARD_HOME`, then
+  the checkout root), loads `token_file.py` by path without touching `sys.path`, and keeps the plain import as the last resort. Two tests.
+  The `TokenReadError` text also names `sudo -v` for a run by hand.
 
 ## 3.3.11 (20261117)
 

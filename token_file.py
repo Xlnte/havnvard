@@ -30,7 +30,7 @@ def read_token_text(path: str) -> str:
     except subprocess.CalledProcessError as e:
         raise TokenReadError(
             f"cannot read credential file {path}: not readable by this user and `sudo -n cat` failed (exit {e.returncode}); "
-            f"run as root or grant passwordless sudo for cat on that file"
+            f"run as root, grant passwordless sudo for cat on that file, or (by hand) run `sudo -v` first"
         ) from None
     except subprocess.TimeoutExpired:
         raise TokenReadError(f"cannot read credential file {path}: `sudo -n cat` timed out after {SUDO_TIMEOUT_SEC}s") from None

@@ -13,6 +13,7 @@ explicitly closed stdin on every subprocess call.
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 import os
 import shlex
@@ -33,20 +34,36 @@ _SSH_OPTS_COMMON = ["-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTime
 
 def _read_token_text():
     """The repo's one credential-file reader, token_file.read_token_text (INFRA-637): direct read, else `sudo -n cat`, and a
-    TokenReadError that names the file. token_file.py sits in the HavnVard checkout root (three levels above this file);
-    $HAVNVARD_HOME names it when this package is installed elsewhere. Imported lazily so importing this module needs no checkout."""
+    TokenReadError that names the file. Same lookup order as scripts/validate_live.py: $HAVNVARD_HOME, else the checkout
+    root three levels above this file (the editable install). The file is loaded BY PATH, so a token_file.py that happens
+    to be importable (cwd of `python -m`, a stale /srv/diskaudit.bak-* or a worktree on sys.path) never wins, and sys.path is
+    not changed. A plain import is the last resort only. Loaded lazily so importing this module needs no checkout."""
+    for root in (os.environ.get("HAVNVARD_HOME"), str(Path(__file__).resolve().parents[3])):
+        if root and (Path(root) / "token_file.py").is_file():
+            return _load_token_file(Path(root) / "token_file.py").read_token_text
     try:
         from token_file import read_token_text  # noqa: PLC0415
         return read_token_text
     except ImportError:
         pass
-    for root in (os.environ.get("HAVNVARD_HOME"), str(Path(__file__).resolve().parents[3])):
-        if root and (Path(root) / "token_file.py").is_file():
-            if root not in sys.path:
-                sys.path.insert(0, root)
-            from token_file import read_token_text  # noqa: PLC0415
-            return read_token_text
     raise RuntimeError("token_file.py not found; set HAVNVARD_HOME to the HavnVard checkout")
+
+
+def _load_token_file(path: Path):
+    """The token_file module at `path`: the one already imported when it is that same file, else loaded under a private name."""
+    path = path.resolve()
+    loaded = sys.modules.get("token_file")
+    if loaded is not None and getattr(loaded, "__file__", None) and Path(loaded.__file__).resolve() == path:
+        return loaded
+    name = "_havnvard_token_file"
+    mod = sys.modules.get(name)
+    if mod is not None and Path(mod.__file__).resolve() == path:
+        return mod
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    sys.modules[name] = mod
+    return mod
 
 
 def _run(argv: list[str], *, timeout: int, check: bool) -> subprocess.CompletedProcess[str]:
