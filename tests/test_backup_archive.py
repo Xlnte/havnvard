@@ -335,6 +335,30 @@ def test_cut_stream_reports_partial_and_fifo_never_hangs(dev, capsys, monkeypatc
 
 
 @needs_restic
+def test_lock_refused_dump_is_not_counted_restored_infra645(dev, capsys, monkeypatch):
+    """INFRA-645 (live 20261116 T4): restic refused one `dump` on an exclusive lock (rc 11, no bytes). The run said
+    '1641 restored' and '1641/1641 accounted for' while that file was FAILED. Restored must exclude it."""
+    tmp, repo, pw, owner, photos = dev
+    restic(repo, pw, "backup", str(photos))
+    snap = json.loads(restic(repo, pw, "snapshots", "--json"))[-1]
+    ok_f, bad_f = str(photos / "2019" / "p2.jpg"), str(photos / "2019" / "p1.jpg")
+    wrapper = tmp / "restic-locked.sh"
+    wrapper.write_text('#!/bin/sh\nfor a in "$@"; do if [ "$a" = "%s" ] && [ "$1" = dump ]; then '
+                       'echo "unable to create lock in backend: repository is already locked exclusively" >&2; exit 11; fi; done\n'
+                       'exec restic "$@"\n' % bad_f)
+    wrapper.chmod(0o755)
+    monkeypatch.setenv("HAVNVARD_RESTIC", str(wrapper))
+    tgt = tmp / "t4"
+    tgt.mkdir()
+    assert archive.pullback(paths=[ok_f, bad_f], snapshot=snap["id"][:8], target=str(tgt)) == config.PROBLEM_EXIT
+    out = capsys.readouterr().out
+    assert "pullback: 1 restored, 1 NOT restored" in out, out
+    assert "1/2 files accounted for" in out, out
+    assert "FAILED" in out and "locked exclusively" in out
+    assert (tgt / ok_f.lstrip("/")).read_bytes() == (photos / "2019" / "p2.jpg").read_bytes()
+
+
+@needs_restic
 def test_pullback_snapshot_honours_the_file_list_infra578(dev, capsys):
     """INFRA-578: `pullback FILE --snapshot ID` restored the WHOLE snapshot (live: 29,019 files for one asked)."""
     tmp, repo, pw, owner, photos = dev
