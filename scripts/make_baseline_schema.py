@@ -8,15 +8,19 @@ CURRENT schema, taken from a working database with pg_dump, made generic, plus s
 Maintainer use (after a schema change has been applied to a working database):
 
     pg_dump "$POSTGRES_URL" --schema-only --no-owner --no-privileges -n diskaudit -f /tmp/diskaudit.sql
-    python3 scripts/make_baseline_schema.py /tmp/diskaudit.sql -o schema/baseline.sql
+    python3 scripts/make_baseline_schema.py /tmp/diskaudit.sql --site-names ~/private/baseline_site_rules.txt -o schema/baseline.sql
 
-    (add  --site-names <your private rules file>  so your own host and person names are rewritten and forbidden)
+    --site-names <your private rules file> is REQUIRED (INFRA-568): it rewrites and forbids your own host and person names.
+    Without the flag the file named by the HAVNVARD_SITE_NAMES environment variable is used. A site that really has no
+    private names must say so with --no-site-names; leaving both out is an error, so a regeneration can never
+    silently drop the private rules.
 
 The script refuses (exit 1) if any forbidden name survives, so a private name cannot be published by accident.
 """
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 from pathlib import Path
@@ -134,10 +138,22 @@ def main() -> int:
     ap.add_argument("dump", help="pg_dump --schema-only -n diskaudit output")
     ap.add_argument("-o", "--output", help="write here, only after the checks pass; default stdout. Use this, not '>', so a "
                     "refusal never leaves an empty baseline")
-    ap.add_argument("--site-names", help="PRIVATE rules file (never commit it): `regex => replacement` per line "
-                    "to rewrite your host/person/share names in comments, or a bare `regex` to forbid it")
+    grp = ap.add_mutually_exclusive_group()
+    grp.add_argument("--site-names", help="PRIVATE rules file (never commit it): `regex => replacement` per line "
+                     "to rewrite your host/person/share names in comments, or a bare `regex` to forbid it. REQUIRED unless "
+                     "--no-site-names; defaults to $HAVNVARD_SITE_NAMES")
+    grp.add_argument("--no-site-names", action="store_true",
+                     help="explicitly opt out: this site has no private names to rewrite or forbid")
     a = ap.parse_args()
-    rules = read_site_rules(a.site_names) if a.site_names else []
+    rules_path = a.site_names or (None if a.no_site_names else os.environ.get("HAVNVARD_SITE_NAMES"))
+    if not rules_path and not a.no_site_names:
+        print("refusing: no site-names rules. Pass --site-names <file>, set HAVNVARD_SITE_NAMES, or pass --no-site-names "
+              "if this site has no private names.", file=sys.stderr)
+        return 2
+    if rules_path and not Path(rules_path).is_file():
+        print(f"refusing: site-names file not found: {rules_path}", file=sys.stderr)
+        return 2
+    rules = read_site_rules(rules_path) if rules_path else []
     text = build(Path(a.dump).read_text(encoding="utf-8"), rules)
     bad = leaks(text, rules)
     if bad:
