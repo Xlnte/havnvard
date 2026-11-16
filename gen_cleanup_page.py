@@ -28,8 +28,8 @@ import os
 import subprocess
 from datetime import datetime, timezone
 
-import psycopg2
-import psycopg2.extras
+import psycopg
+from psycopg.rows import dict_row
 
 import havnvard_site as _site  # noqa: E402  (3.0.0)
 
@@ -158,9 +158,10 @@ JS = """
 
 
 def main() -> None:
-    conn = psycopg2.connect(dsn())
-    conn.set_session(readonly=True, autocommit=True)
-    with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+    conn = psycopg.connect(dsn(), autocommit=True)
+    # Read-only for the whole session: this page only reads.
+    conn.execute("SET default_transaction_read_only = on")
+    with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(SUMMARY)
         summary = cur.fetchall()
         cur.execute(DETAIL, (list(_site.source_hosts()), TOP_N))
