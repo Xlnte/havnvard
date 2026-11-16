@@ -754,3 +754,40 @@ def test_l11_drill_marker_ids_are_skipped_by_the_file_age_check(hub):
     assert {n: o for n, o, _ in health.collect()}["snapshot age dev9"] is True     # fooled without the skip
     pullback_drill._remember("dev9", "b" * 64)
     assert {n: o for n, o, _ in health.collect()}["snapshot age dev9"] is False
+
+
+def _gone(pid: int) -> bool:
+    try:
+        st = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return True
+    return st[st.rfind(")") + 2] in "ZX"                     # dead, waiting only to be reaped
+
+
+@needs_restic
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="PR_SET_PDEATHSIG is Linux only")
+def test_f1_kill_9_of_the_drill_kills_its_paused_tag_and_the_lock_is_stale_at_once(hub, capsys):
+    """F1 follow-up: the drill's paused `restic tag` dies with the drill (PR_SET_PDEATHSIG), even on kill -9, so it can
+    never hold a live repository's exclusive lock; the lock it leaves is stale at once and the next pullback gets past it."""
+    script = ("import sys, tempfile, time\nfrom pathlib import Path\nfrom backup import pullback_drill as d\n"
+              "env = {'RESTIC_REPOSITORY': sys.argv[1], 'RESTIC_PASSWORD_FILE': sys.argv[2]}\n"
+              "m = d.ensure_marker('restic', env)\n"
+              "with tempfile.TemporaryFile() as e:\n"
+              "    p, held = d.hold_tag('restic', env, m['id'], 'havnvard-drill-lock-killtest', Path(sys.argv[1]) / 'locks', e)\n"
+              "    print(p.pid, held, flush=True)\n"
+              "    time.sleep(120)\n")
+    drill = subprocess.Popen([sys.executable, "-c", script, str(hub["repo"]), str(hub["pw"])], cwd=str(REPO_DIR),
+                             env=_cli_env(), stdout=subprocess.PIPE, text=True)
+    pid_s, held = drill.stdout.readline().split()
+    tag_pid = int(pid_s)
+    assert held == "True" and not _gone(tag_pid) and len(_locks(hub["repo"])) == 1
+    os.kill(drill.pid, signal.SIGKILL)
+    drill.wait()
+    assert wait_for(lambda: _gone(tag_pid), 5), "the paused restic tag outlived the killed drill"
+    assert len(_locks(hub["repo"])) == 1                     # its lock file is left behind ...
+    tgt = hub["tmp"] / "back"
+    tgt.mkdir()
+    rc = archive.pullback(paths=[str(hub["data"] / "a")], snapshot=_snap(hub)["id"][:8], target=str(tgt))
+    out = capsys.readouterr().out
+    assert rc == 0, out                                      # ... and is stale at once: unlocked, pullback completes
+    assert f"STALE LOCK on dev1: a lock left by process {tag_pid}" in out and _locks(hub["repo"]) == []

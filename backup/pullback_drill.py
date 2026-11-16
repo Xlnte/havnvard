@@ -239,6 +239,38 @@ def _resume(p: subprocess.Popen) -> None:
         os.kill(p.pid, signal.SIGCONT)
 
 
+def _die_with_parent(parent: int):
+    """preexec_fn: the kernel SIGKILLs this child when the thread that started it dies, in any way, kill -9 included
+    (Linux PR_SET_PDEATHSIG). A killed `restic tag` leaves its lock file with no live pid on this host, so restic and
+    LockGate see it as stale at once. A tag killed mid-way can leave a duplicate MARKER snapshot: marker only, never
+    device data, and it is excluded from data_snapshots like the marker itself."""
+    def setup():
+        import ctypes
+        libc = ctypes.CDLL(None, use_errno=True)
+        if libc.prctl(1, 9, 0, 0, 0) != 0:      # PR_SET_PDEATHSIG = 1, SIGKILL = 9
+            os._exit(1)
+        if os.getppid() != parent:              # the drill died before the death signal was armed
+            os._exit(1)
+    return setup
+
+
+def hold_tag(restic: str, env: dict, snap_id: str, tag: str, locks: Path, errf, timeout: float = 60.0):
+    """Start the drill's own exclusive `restic tag` (dies with the drill), wait for its lock file, pause it (SIGSTOP).
+    Returns (process, True if the lock is now held). Must be called from the thread that lives as long as the hold
+    (the death signal follows the creating thread): the drill calls it from the pullback's main thread."""
+    before = _lock_files(locks)
+    p = subprocess.Popen([restic, "tag", "--retry-lock", "2m", "--add", tag, snap_id], env={**os.environ, **env},
+                         stdout=subprocess.DEVNULL, stderr=errf, stdin=subprocess.DEVNULL,
+                         preexec_fn=_die_with_parent(os.getpid()))  # noqa: PLW1509 - prctl must run in the child
+    deadline = time.time() + timeout
+    while time.time() < deadline and p.poll() is None:
+        if _lock_files(locks) - before:
+            os.kill(p.pid, signal.SIGSTOP)
+            return p, True
+        time.sleep(0.002)
+    return p, False
+
+
 def _lock_case(device: str, tset: list[tuple[str, str]], out: Path, restic: str, env: dict, stamp: str,
                rep: dict) -> None:
     """Review F1 (spec 3.3 + 3.6 step 3): a REAL exclusive restic lock already held when the pullback's restic call
@@ -257,24 +289,21 @@ def _lock_case(device: str, tset: list[tuple[str, str]], out: Path, restic: str,
         if not m or not locks.is_dir():
             st["why"] = "no marker snapshot or no local locks/ folder"
             return
+        if not sys.platform.startswith("linux"):
+            st["why"] = ("not Linux: the paused tag step needs PR_SET_PDEATHSIG so a killed drill can never leave it "
+                         "holding the lock; leg skipped")
+            return
         stack.enter_context(precedence.job_record(device, "pullback-drill", f"drill lock step {lock_tag}"))
-        before = _lock_files(locks)
         errf = stack.enter_context(tempfile.TemporaryFile())
-        p = subprocess.Popen([restic, "tag", "--retry-lock", "2m", "--add", lock_tag, m["id"]],
-                             env={**os.environ, **env}, stdout=subprocess.DEVNULL, stderr=errf,
-                             stdin=subprocess.DEVNULL)
+        p, held = hold_tag(restic, env, m["id"], lock_tag, locks, errf)
         st["proc"] = p
-        deadline = time.time() + 60
-        while time.time() < deadline and p.poll() is None:
-            if _lock_files(locks) - before:
-                os.kill(p.pid, signal.SIGSTOP)
-                st["held"] = True
-                t = threading.Timer(HOLD_S, _resume, args=(p,))
-                t.daemon = True
-                t.start()
-                return
-            time.sleep(0.002)
-        st["why"] = "the drill's tag finished before its lock could be held in the pullback's way (a race)"
+        if held:
+            st["held"] = True
+            t = threading.Timer(HOLD_S, _resume, args=(p,))
+            t.daemon = True
+            t.start()
+        else:
+            st["why"] = "the drill's tag finished before its lock could be held in the pullback's way (a race)"
 
     small = min(tset, key=lambda hp: (out.parent / "main" / hp[1].lstrip("/")).stat().st_size
                 if (out.parent / "main" / hp[1].lstrip("/")).is_file() else 1 << 62)
