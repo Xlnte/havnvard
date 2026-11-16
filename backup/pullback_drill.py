@@ -145,6 +145,16 @@ def _remember(repo: str, snap_id: str) -> None:
         config.atomic_write_text(p, json.dumps(d))
 
 
+def pin_all_markers(restic: str, env: dict, repo: str) -> int:
+    """Re-review R3: EVERY snapshot tagged as the drill marker (a tag killed mid-way can leave an extra one with a fresh
+    file time) is recorded for health's skip set and its file time pinned to 0. Returns how many."""
+    ms = [s for s in catalog.snapshots(restic, env) if catalog.DRILL_TAG in (s.get("tags") or [])]
+    for m in ms:
+        _remember(repo, m["id"])
+        catalog._set_mtime(env, m["id"], 0)
+    return len(ms)
+
+
 def _pin(restic: str, env: dict, m: dict | None = None) -> None:
     """Record the marker's current id (health skip set), then pin its file time to 0."""
     m = m or _marker(restic, env)
@@ -244,10 +254,11 @@ def _die_with_parent(parent: int):
     (Linux PR_SET_PDEATHSIG). A killed `restic tag` leaves its lock file with no live pid on this host, so restic and
     LockGate see it as stale at once. A tag killed mid-way can leave a duplicate MARKER snapshot: marker only, never
     device data, and it is excluded from data_snapshots like the marker itself."""
+    import ctypes                               # re-review R4: resolved in the parent; the child only calls it
+    prctl = ctypes.CDLL(None, use_errno=True).prctl
+
     def setup():
-        import ctypes
-        libc = ctypes.CDLL(None, use_errno=True)
-        if libc.prctl(1, 9, 0, 0, 0) != 0:      # PR_SET_PDEATHSIG = 1, SIGKILL = 9
+        if prctl(1, 9, 0, 0, 0) != 0:           # PR_SET_PDEATHSIG = 1, SIGKILL = 9
             os._exit(1)
         if os.getppid() != parent:              # the drill died before the death signal was armed
             os._exit(1)
@@ -259,16 +270,32 @@ def hold_tag(restic: str, env: dict, snap_id: str, tag: str, locks: Path, errf, 
     Returns (process, True if the lock is now held). Must be called from the thread that lives as long as the hold
     (the death signal follows the creating thread): the drill calls it from the pullback's main thread."""
     before = _lock_files(locks)
+    seen = set(before)
     p = subprocess.Popen([restic, "tag", "--retry-lock", "2m", "--add", tag, snap_id], env={**os.environ, **env},
                          stdout=subprocess.DEVNULL, stderr=errf, stdin=subprocess.DEVNULL,
                          preexec_fn=_die_with_parent(os.getpid()))  # noqa: PLW1509 - prctl must run in the child
     deadline = time.time() + timeout
     while time.time() < deadline and p.poll() is None:
-        if _lock_files(locks) - before:
-            os.kill(p.pid, signal.SIGSTOP)
-            return p, True
+        new = _lock_files(locks) - seen
+        if new:
+            os.kill(p.pid, signal.SIGSTOP)     # pause first (the tag holds its lock only briefly), then check it
+            if any(_is_our_exclusive(restic, env, lid, p.pid) for lid in new):
+                return p, True
+            seen |= new                        # re-review R2: someone else's lock, or not exclusive: let it go on
+            _resume(p)
         time.sleep(0.002)
     return p, False
+
+
+def _is_our_exclusive(restic: str, env: dict, lock_id: str, pid: int) -> bool:
+    r = run([restic, "cat", "lock", lock_id, "--no-lock"], env=env, timeout=60)
+    if r.returncode != 0:
+        return False
+    try:
+        rec = json.loads(r.stdout)
+    except ValueError:
+        return False
+    return isinstance(rec, dict) and bool(rec.get("exclusive")) and int(rec.get("pid") or 0) == pid
 
 
 def _lock_case(device: str, tset: list[tuple[str, str]], out: Path, restic: str, env: dict, stamp: str,
@@ -408,13 +435,15 @@ def _drill(device: str, set_name: str, hashes: str | None, scratch: str | None, 
         print(f"pullback-drill: test set {set_name} of {device}: {n} SHA-256 line(s) stored at {set_path(device, set_name)}")
     tset = load_set(device, set_name)
     env, restic = _env_for(device), restic_bin()
+    precedence.clear_dead_locks(restic, env, device, "pullback-drill")   # re-review R1: a killed earlier drill
+    pinned = pin_all_markers(restic, env, device)                        # re-review R3
     before = len(catalog.snapshots(restic, env))
     had_marker = _marker(restic, env) is not None
     ensure_marker(restic, env)
     folder = _folder_of([p for _, p in tset])
     stamp = dt.datetime.now().strftime("%Y%m%d%H%M%S")
     tag = f"havnvard-drill-{stamp}"
-    rep: dict = {"device": device, "set": set_name, "folder": folder, "tag": tag}
+    rep: dict = {"device": device, "set": set_name, "folder": folder, "tag": tag, "markers_pinned": pinned}
     with tempfile.TemporaryDirectory(prefix="havnvard-pullback-drill-", dir=scratch) as td:
         tdp = Path(td)
         (tdp / "main").mkdir()
