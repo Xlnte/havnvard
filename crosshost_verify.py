@@ -398,15 +398,23 @@ NAS_HOST_TOKEN_FILE = _site.nas("backup_token_file") or "/etc/havnvard/nas_backu
 # (3.0.0: one class per remote agent machine, settings from [agents.NAME] in the site file.)
 
 
-def _nas_backup_creds() -> tuple[str, str, str]:
+def _read_nas_token_text(path: str) -> str:
+    """Token file text. INFRA-540: read it directly when this process may (root, or the file's
+    group); only a PermissionError falls back to `sudo cat`. A missing file is NOT retried via sudo."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+    except PermissionError:
+        return subprocess.run(["sudo", "cat", path], capture_output=True, text=True, check=True).stdout
+
+
+def _nas_backup_creds(reader=None) -> tuple[str, str, str]:
     """(user, host, password) from the NAS backup token file ([nas] backup_token_file), root-owned.
-    Never inline these. Mirrors load_nas_inventory.py's `sudo cat` pattern,
-    just against the backup token file instead of the admin one."""
-    result = subprocess.run(
-        ["sudo", "cat", NAS_HOST_TOKEN_FILE], capture_output=True, text=True, check=True,
-    )
+    Never inline these. `reader(path) -> text` is injectable so tests never touch the real file
+    or sudo. Contents are never logged; a parse error names the file only."""
+    text = (reader or _read_nas_token_text)(NAS_HOST_TOKEN_FILE)
     user = host = pw = None
-    for line in result.stdout.splitlines():
+    for line in text.splitlines():
         if line.startswith("NAS_USER="):
             user = line.split("=", 1)[1].strip()
         elif line.startswith("NAS_HOST="):
@@ -484,8 +492,8 @@ class _RemoteHashTarget:
 class _NasTarget(_RemoteHashTarget):
     scratch_dir = NAS_SCRATCH_DIR
 
-    def __init__(self):
-        self.user, self.host, self.password = _nas_backup_creds()
+    def __init__(self, creds: tuple[str, str, str] | None = None):
+        self.user, self.host, self.password = creds if creds else _nas_backup_creds()
 
     def ssh(self, remote_cmd: str, timeout_sec: int | None = None) -> subprocess.CompletedProcess:
         argv = ["ssh"] + _SSH_OPTS_COMMON + ["-o", "PubkeyAuthentication=no", f"{self.user}@{self.host}", remote_cmd]
