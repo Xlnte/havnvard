@@ -138,7 +138,7 @@ NAS_EXCLUDE_COMPONENTS = DEFAULT_EXCLUDE_COMPONENTS + NAS_EXTRA_EXCLUDE_COMPONEN
 def _nas_creds(reader=None) -> tuple[str, str]:
     """Read NAS_ADMIN_USER/NAS_ADMIN_PASS from the root:600 token file.
     Never inline these -- SoT is /etc/havnvard/nas_admin.env, root-owned.
-    INFRA-633: read directly (we usually run as root); `sudo cat` only after a PermissionError (token_file.py).
+    INFRA-633: read directly (we usually run as root); `sudo -n cat` only after a PermissionError (token_file.py, INFRA-637).
     `reader(path) -> text` is injectable for tests. Contents are never logged; a parse error names the file only."""
     out = (reader or read_token_text)(NAS_TOKEN_FILE)
     user = pw = None

@@ -69,7 +69,7 @@ NAS_HOST = _site.nas_host()
 
 # Legacy NAS-side restic repos (before HavnVard Backup 2.0). All site-specific, so all in the site file:
 #   [legacy_restic]
-#   nas_env = "/etc/havnvard/nas_backup.env"          # NAS_USER / NAS_HOST / NAS_PATH (read with sudo -n cat)
+#   nas_env = "/etc/havnvard/nas_backup.env"          # NAS_USER / NAS_HOST / NAS_PATH (token_file: direct, else sudo -n cat)
 #   password_file = "/etc/havnvard/restic_backup.pass"
 #   dir_targets = { app1 = "/srv/app1", docs = "/home/me/docs" }   # repo name -> backed-up directory
 #   file_list_target = "config-files"                  # optional: a repo holding an explicit list of files

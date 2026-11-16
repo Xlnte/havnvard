@@ -325,3 +325,43 @@ def test_build_transport_rejects_pubkey_without_ssh_target():
     host = HostConfig("nowhere", "remote", None, "/scratch")
     with pytest.raises(RuntimeError, match="ssh_target"):
         build_transport(host)
+
+
+# --------------------------------------------------------------------------
+# 6. which token_file.py the package loads (INFRA-637 review)
+# --------------------------------------------------------------------------
+
+CHECKOUT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _stray_token_file(tmp_path, tag):
+    d = tmp_path / tag
+    d.mkdir()
+    (d / "token_file.py").write_text(f"def read_token_text(path):\n    return {tag!r}\n", encoding="utf-8")
+    return d
+
+
+def test_token_reader_comes_from_the_checkout_root_not_a_stray_module_on_sys_path(monkeypatch, tmp_path):
+    """A token_file.py that happens to be importable (cwd of `python -m`, a stale /srv/diskaudit.bak-* checkout, a
+    worktree on PYTHONPATH) must not win over the checkout this package was installed from."""
+    import sys
+
+    from havnvard_bitrot import transport
+
+    monkeypatch.delenv("HAVNVARD_HOME", raising=False)
+    monkeypatch.syspath_prepend(str(_stray_token_file(tmp_path, "STRAY")))
+    monkeypatch.delitem(sys.modules, "token_file", raising=False)
+    before = list(sys.path)
+    reader = transport._read_token_text()
+    assert Path(sys.modules[reader.__module__].__file__).resolve() == CHECKOUT_ROOT / "token_file.py"
+    assert sys.path == before  # the lookup does not put the checkout root in front of every later import
+
+
+def test_havnvard_home_names_the_token_reader_first(monkeypatch, tmp_path):
+    import sys
+
+    from havnvard_bitrot import transport
+
+    monkeypatch.setenv("HAVNVARD_HOME", str(_stray_token_file(tmp_path, "HOME")))
+    monkeypatch.delitem(sys.modules, "token_file", raising=False)
+    assert transport._read_token_text()("/any") == "HOME"
