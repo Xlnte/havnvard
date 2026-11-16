@@ -2,6 +2,20 @@
 
 Older releases are described in `FEATURES.md` and `docs/*_RELEASE_*.md`.
 
+## 3.3.9 (20261116)
+
+Follow-ups from the 3.1.0 baseline review (INFRA-564, 563, 562). Built on the open branch fix/infra-569-568-567 (3.3.8); 3.3.7 is held by fix/infra-541-540-539.
+
+- **make_baseline_schema.py hardening (INFRA-564).** A COMMENT whose text ends in a doubled quote (`''a'';`) is now matched whole, so its later
+  lines get the same name rewrites. A column comment goes with its dropped view. `SET transaction_timeout` (pg_dump 17) is stripped, so the
+  baseline loads on PostgreSQL 15 and 16. The generator drops no object by default any more.
+- **SLA rows from the site file (INFRA-563).** New `init_site_hosts.py` inserts one `hash_verification_sla` row per (host, tier A/B/C/E) for
+  every host in the site file, only where missing, so tuned values stay. `infra126/scripts/validate_live.py` now expects hosts x 4 (and names
+  the missing or unexpected rows) instead of a literal 12.
+- **Generic NAS-orphan view (INFRA-562).** New table `diskaudit.site_hosts (host, role)`; `v_nas_orphans` is back in `schema/baseline.sql`
+  and takes the NAS from it instead of naming one host. Same name and columns. Migration `20261116_diskaudit_site_hosts_v1.sql`.
+- **Deploy:** apply the migration, then run `python3 init_site_hosts.py` (until it runs, `v_nas_orphans` returns no rows), then deploy code.
+
 ## 3.3.8 (20261116)
 
 Follow-ups from the 3.1.1 review (INFRA-569, 568, 567). 3.3.7 is held by the open branch fix/infra-541-540-539.

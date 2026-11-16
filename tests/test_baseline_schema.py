@@ -73,10 +73,11 @@ COMMENT ON TABLE diskaudit.files IS 'scanned on zebra-box by Zed, see /home/some
 RULES = [("zebra-box", "server-1"), (r"\bZed\b", "the operator"), ("okapi-nas", None)]
 
 
-def test_generator_strips_defaults_drops_host_view_and_rewrites_comments():
+def test_generator_strips_defaults_drops_host_view_and_rewrites_comments(monkeypatch):
+    monkeypatch.setattr(mbs, "DROP_OBJECTS", {"v_nas_orphans"})   # empty in 3.3.9; the mechanism is still tested
     out = mbs.build(_DUMP.replace("HOSTNAME", "generic"), RULES)
     assert "host text NOT NULL" in out
-    assert "v_nas_orphans" not in out
+    assert "CREATE VIEW diskaudit.v_nas_orphans" not in out
     assert "scanned on server-1 by the operator, see the project runbook" in out
     assert mbs.leaks(out, RULES) == []
 
@@ -210,3 +211,33 @@ def test_site_names_and_opt_out_are_mutually_exclusive(tmp_path):
     rules.write_text("x\n", encoding="utf-8")
     r, _ = _gen(tmp_path, "--site-names", str(rules), "--no-site-names")
     assert r.returncode == 2 and "not allowed" in r.stderr
+
+
+# ---- generator hardening (INFRA-564, 3.3.9) -----------------------------------------------------------
+
+def _block(name: str, typ: str, body: str) -> str:
+    return f"--\n-- Name: {name}; Type: {typ}; Schema: diskaudit; Owner: -\n--\n\n{body}\n\n"
+
+
+def test_comment_ending_in_doubled_quote_is_fully_rewritten():
+    """A COMMENT whose line ends `''a'';` used to end the regex early, so the next line kept its site name."""
+    dump = _block("TABLE t", "COMMENT", "COMMENT ON TABLE diskaudit.t IS 'first ''x'';\nsecond zebra-box';")
+    out = mbs.build(dump, RULES)
+    assert "zebra-box" not in out and "second server-1" in out
+    assert mbs.leaks(out, RULES) == []
+
+
+def test_column_comment_of_a_dropped_view_is_dropped_too(monkeypatch):
+    monkeypatch.setattr(mbs, "DROP_OBJECTS", {"v_gone"})
+    dump = (_block("v_gone", "VIEW", "CREATE VIEW diskaudit.v_gone AS SELECT 1 AS a;")
+            + _block("COLUMN v_gone.a", "COMMENT", "COMMENT ON COLUMN diskaudit.v_gone.a IS 'x';")
+            + _block("VIEW v_gone", "COMMENT", "COMMENT ON VIEW diskaudit.v_gone IS 'x';")
+            + _block("COLUMN v_kept.a", "COMMENT", "COMMENT ON COLUMN diskaudit.v_kept.a IS 'y';"))
+    out = mbs.build(dump, [])
+    assert "v_gone" not in out and "v_kept.a" in out
+
+
+def test_pg17_transaction_timeout_line_is_stripped():
+    dump = "SET statement_timeout = 0;\nSET transaction_timeout = 0;\nSET lock_timeout = 0;\n\n" + _DUMP
+    out = mbs.build(dump, [])
+    assert "transaction_timeout" not in out and "SET lock_timeout = 0;" in out

@@ -37,7 +37,7 @@ delete/move decision is yours (the operator's) alone, made by reading these repo
 | Load-bearing override (protect cold-but-live infra files) | **WORKING** | `python refresh_load_bearing_paths.py` |
 | Backup-coverage check (critical_patterns-scoped) | **WORKING** | query `diskaudit.v_backup_coverage` |
 | TRUE backup-coverage classifier (complete file universe) | **WORKING** (new, 2026-07-25) | `python backup_coverage.py classify --host server-1 \| agent-1` |
-| NAS-orphan detection | **WORKING** | query `diskaudit.v_nas_orphans` (original deployment only: the view names one NAS host, so `schema/baseline.sql` leaves it out) |
+| NAS-orphan detection | **WORKING** | query `diskaudit.v_nas_orphans` (3.3.9: reads the NAS host from `diskaudit.site_hosts`; fill it with `python3 init_site_hosts.py`) |
 | Stale/failed run monitor + TG alert | **WORKING** | `python monitor.py` (runs every 5 min via timer) |
 | Daily metadata report to TG PRESI | **WORKING** | `python havnvard_report.py` |
 | Weekly PRESCAB operational review | **WORKING** | `python weekly_prescab_review.py` |
@@ -323,7 +323,7 @@ copy elsewhere (candidates for "is this actually the only copy of this").
 select * from diskaudit.v_nas_orphans limit 50;
 ```
 
-Original deployment only: the view names one NAS host, so `schema/baseline.sql` (new installs) leaves it out.
+Since 3.3.9 the view takes the NAS host(s) from `diskaudit.site_hosts` (role `nas`), filled from the site file by `python3 init_site_hosts.py`; it returns no rows until that has run.
 
 **Advisory only** — "orphan" here means "only known copy," not "safe to
 delete." No automatic action follows from this label.

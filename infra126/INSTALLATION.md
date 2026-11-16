@@ -4,9 +4,8 @@
 and function and seeds the mutable/immutable file rules. Skip §1 and §4 (they are for upgrading the original
 deployment, and migration 001 seeds that deployment's host names), add your hosts' verification schedule as shown
 in the README "Database" section, then continue at §5.
-On a new site expect (number of hosts × 4) verification-schedule rows. `scripts/validate_live.py` still checks
-for exactly 12 (the original three-host deployment), so its SLA-row check fails on other host counts until that is
-fixed (Plane ticket filed with 3.1.0).
+Run `python3 init_site_hosts.py` (repo root) to create them from the site file: expect (number of hosts × 4)
+verification-schedule rows. `scripts/validate_live.py` checks exactly that, reading the hosts from the same site file.
 
 ## 1. Do not install over an unknown prototype
 
@@ -84,7 +83,7 @@ Run files 000 through 004 a second time. They must complete without schema error
 
 Expected minimums:
 
-- 12 scheduled SLA rows: three hosts × A/B/C/E
+- scheduled SLA rows: (hosts in your site file) × A/B/C/E (`python3 init_site_hosts.py` creates them)
 - at least 20 registry rules
 - all existing content hashes have `first_hash` and `first_hashed_at`
 - zero rows where `verification_count > 0` but `last_verified_at IS NULL`

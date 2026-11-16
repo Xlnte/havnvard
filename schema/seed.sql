@@ -87,9 +87,7 @@ ON CONFLICT(host,path_pattern,reason) DO UPDATE
 SET score=EXCLUDED.score,is_regex=EXCLUDED.is_regex,
     pattern_kind=EXCLUDED.pattern_kind,priority=EXCLUDED.priority;
 
--- Bit-rot verification schedule: one row per host and tier. Add your hosts after install, for example:
---   INSERT INTO diskaudit.hash_verification_sla (host, tier, target_recheck_days, schedule_mode)
---   SELECT h, t, d, m FROM unnest(ARRAY['server-1','nas-1']) AS h,
---        (VALUES ('A',7,'weekly'),('B',30,'monthly'),('C',90,'quarterly'),('E',1,'daily')) AS s(t,d,m)
---   ON CONFLICT (host, tier) DO NOTHING;
--- Without these rows the monitor's overdue-verification alarm has nothing to check.
+-- Hosts and the bit-rot verification schedule come from YOUR site file, not from this seed. After install run
+--   python3 init_site_hosts.py
+-- It fills diskaudit.site_hosts (which host is the NAS: v_nas_orphans reads it) and one hash_verification_sla row per
+-- (host, tier A/B/C/E). Without those rows the monitor's overdue-verification alarm has nothing to check.
