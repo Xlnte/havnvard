@@ -766,9 +766,11 @@ def _gone(pid: int) -> bool:
 
 @needs_restic
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="PR_SET_PDEATHSIG is Linux only")
-def test_f1_kill_9_of_the_drill_kills_its_paused_tag_and_the_lock_is_stale_at_once(hub, capsys):
+def test_f1_kill_9_of_the_drill_kills_its_paused_tag_and_lockgate_unlocks_its_dead_lock(hub, capsys):
     """F1 follow-up: the drill's paused `restic tag` dies with the drill (PR_SET_PDEATHSIG), even on kill -9, so it can
-    never hold a live repository's exclusive lock; the lock it leaves is stale at once and the next pullback gets past it."""
+    never hold a live repository's exclusive lock. It does leave a DEAD exclusive lock: restic itself does not ignore
+    it (every new job fails rc 11 until `restic unlock`); LockGate treats it as stale at once and unlocks it, and the
+    next catalog run or drill clears it too (re-review R1, test_r1_*)."""
     script = ("import sys, tempfile, time\nfrom pathlib import Path\nfrom backup import pullback_drill as d\n"
               "env = {'RESTIC_REPOSITORY': sys.argv[1], 'RESTIC_PASSWORD_FILE': sys.argv[2]}\n"
               "m = d.ensure_marker('restic', env)\n"
@@ -791,3 +793,87 @@ def test_f1_kill_9_of_the_drill_kills_its_paused_tag_and_the_lock_is_stale_at_on
     out = capsys.readouterr().out
     assert rc == 0, out                                      # ... and is stale at once: unlocked, pullback completes
     assert f"STALE LOCK on dev1: a lock left by process {tag_pid}" in out and _locks(hub["repo"]) == []
+
+
+
+# ---------- re-review R1-R4 (3.3.14) ----------
+
+def _dead_lock(h) -> int:
+    holder = hold_exclusive(h)
+    os.kill(holder.pid, signal.SIGKILL)
+    holder.wait()
+    assert len(_locks(h["repo"])) == 1
+    return holder.pid
+
+
+@needs_restic
+def test_r1_catalog_run_clears_a_dead_exclusive_lock_from_this_host_first(hub, capsys, monkeypatch):
+    pid = _dead_lock(hub)
+    real = catalog.run
+    monkeypatch.setattr(catalog, "run", lambda cmd, **k: real([("5s" if c == "30m" else c) for c in cmd], **k))
+    accounts.Accounts()
+    assert catalog.catalog_run() == 0, capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "dead exclusive lock(s) on dev1 from this host" in out and f"pid {pid}" in out
+    assert _locks(hub["repo"]) == []
+    rows = [r for r in accounts.Accounts().audit_rows() if r["action"] == "job.stale_unlock"]
+    assert len(rows) == 1 and '"job": "catalog"' in rows[0]["detail"]
+
+
+@needs_restic
+def test_r1_drill_start_clears_a_dead_exclusive_lock(hub, capsys, monkeypatch):
+    _dead_lock(hub)
+
+    def stop(*a, **k):
+        raise BackupError("stop after the lock check")
+    monkeypatch.setattr(pullback_drill, "pin_all_markers", stop)
+    assert pullback_drill.pullback_drill("dev1", "hv-test", hashes=str(_hashes(hub))) == config.PROBLEM_EXIT
+    assert _locks(hub["repo"]) == []
+    assert '"job": "pullback-drill"' in precedence.log_path().read_text()
+
+
+@needs_restic
+def test_r1_live_other_user_and_other_host_locks_are_never_unlocked(hub, monkeypatch):
+    holder = hold_exclusive(hub)
+    try:
+        assert precedence.clear_dead_locks("restic", hub["env"], "dev1", "catalog") == 0
+        assert len(_locks(hub["repo"])) == 1                                   # a live lock stays
+    finally:
+        release(holder)
+    calls = []
+    monkeypatch.setattr(precedence, "lock_records", lambda r, e: [
+        {"id": "a" * 64, "exclusive": True, "hostname": "elsewhere", "pid": 2 ** 22 + 7, "username": "x"},
+        {"id": "b" * 64, "exclusive": True, "hostname": precedence.host(), "pid": 1, "username": "root"},  # alive, EPERM
+        {"id": "c" * 64, "exclusive": False, "hostname": precedence.host(), "pid": 2 ** 22 + 7, "username": "x"}])
+    import backup.util as util
+    monkeypatch.setattr(util, "run", lambda *a, **k: calls.append(a) or None)
+    assert precedence.clear_dead_locks("restic", hub["env"], "dev1", "catalog") == 0 and calls == []
+
+
+@needs_restic
+def test_r3_drill_pins_and_records_every_marker_snapshot(hub, capsys):
+    f = hub["tmp"] / "m.txt"
+    for body in ("one", "two"):                                             # two markers: one left by a killed tag
+        f.write_text(body)
+        restic(hub["repo"], hub["pw"], "backup", "--host", "havnvard-drill", "--tag", catalog.DRILL_TAG, str(f))
+    ids = [s["id"] for s in catalog.snapshots("restic", hub["env"]) if catalog.DRILL_TAG in (s.get("tags") or [])]
+    oldest = sorted(catalog.snapshots("restic", hub["env"]), key=lambda s: s["time"])
+    oldest = [s["id"] for s in oldest if s["id"] in ids][0]
+    assert pullback_drill.pullback_drill("dev1", "hv-test", hashes=str(_hashes(hub)), parallel=2, checks=5) == 0
+    assert oldest in pullback_drill.marker_ids()
+    assert os.stat(hub["repo"] / "snapshots" / oldest).st_mtime == 0
+
+
+@needs_restic
+def test_r2_hold_tag_never_pauses_on_a_lock_that_is_not_its_own_exclusive_lock(hub, monkeypatch):
+    m = pullback_drill.ensure_marker("restic", hub["env"])
+    monkeypatch.setattr(pullback_drill, "_is_our_exclusive", lambda *a: False)
+    import tempfile
+    with tempfile.TemporaryFile() as e:
+        p, held = pullback_drill.hold_tag("restic", hub["env"], m["id"], "havnvard-drill-lock-r2", hub["repo"] / "locks", e)
+        try:
+            assert held is False
+            assert p.wait(timeout=60) == 0                                    # never left paused; the tag finished
+        finally:
+            pullback_drill._resume(p)
+            p.wait(timeout=60)
