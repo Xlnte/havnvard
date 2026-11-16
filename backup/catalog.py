@@ -390,6 +390,13 @@ def _catalog_run(cdir: Path, repo_root: Path, hub: dict, first_run_latest_only: 
     envs = {r: _env(repo_root, r) for r in _repos(repo_root)}
     for repo in [r for r, e in envs.items() if e is None]:
         problems.append(f"{repo}: no hub-side password at {hub_password_dir() / (repo + '.pass')}")
+    for repo, env in envs.items():                       # re-review R1: a dead exclusive lock would block everything
+        if env is None:
+            continue
+        try:
+            precedence.clear_dead_locks(restic, env, repo, "catalog")
+        except BackupError as e:
+            problems.append(f"{repo}: cannot check for dead locks: {e}")
     snap_cache: dict[str, list[dict]] = {}
     for repo, env in envs.items():
         if env is None:
