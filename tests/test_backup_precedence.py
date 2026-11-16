@@ -416,7 +416,7 @@ def test_c9d_overdue_follows_the_real_catalog_run(hub):
     precedence.deferred_path().write_text("")
     with precedence.announce("dev1", "t") as it:
         precedence.defer("catalog", "dev1", "s", "T", precedence.read_intents("dev1")[0][0])
-        assert precedence.overdue(time.time() + 10 * 3600)[0] == []
+        assert precedence.overdue(time.time() + 2 * 3600)[0] == []      # live and under 3 h (over 3 h: F4)
     assert precedence.open_deferrals()[0]["pullback_ended_at"]
     assert it.closed
 
