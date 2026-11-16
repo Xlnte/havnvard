@@ -2,7 +2,7 @@
 
 **Know that every file you care about is backed up, prove the backups restore, and find any file in any backup.**
 HavnVard is a self-hosted storage-assurance toolkit for a home or small-office fleet: a few Linux machines, a NAS and
-a cloud account. Version 3.3.9.
+a cloud account. Version 3.3.10.
 
 > **Absolute rule: HavnVard never deletes, moves or overwrites a scanned file.** Every "duplicate", "stale" or
 > "not backed up" result is a report for you to read. Deleting anything is always your decision, made by hand.
@@ -350,6 +350,7 @@ schedule; the monitor's overdue alarm and `v_nas_orphans` read them). Safe to re
 
 ```bash
 python3 init_site_hosts.py            # --dry-run prints the rows without writing
+python3 init_site_hosts.py --prune --confirm-prune   # 3.3.10: also delete site_hosts rows the site file no longer lists (add --include-sla for tuned SLA rows; --dry-run --prune lists them)
 ```
 
 `schema/baseline.sql` is the current schema plus generic starting rules (`schema/seed.sql`: OS, cache and temp paths

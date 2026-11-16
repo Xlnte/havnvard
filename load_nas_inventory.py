@@ -64,6 +64,7 @@ import stat as statmod
 
 # ---- NAS connection facts ----
 import havnvard_site as _site  # noqa: E402  (3.0.0)
+from token_file import read_token_text  # noqa: E402  (3.3.10, INFRA-633)
 
 NAS_HOST = _site.nas_host()
 NAS_SHARE_BASE = _site.nas_share_base()
@@ -134,12 +135,12 @@ NAS_EXCLUDE_COMPONENTS = DEFAULT_EXCLUDE_COMPONENTS + NAS_EXTRA_EXCLUDE_COMPONEN
 
 # ---- NAS credential + SSH/SCP helpers ----
 
-def _nas_creds() -> tuple[str, str]:
-    """Read NAS_ADMIN_USER/NAS_ADMIN_PASS from the root:600 token file via sudo cat.
-    Never inline these -- SoT is /etc/havnvard/nas_admin.env, root-owned."""
-    out = subprocess.run(
-        ["sudo", "cat", NAS_TOKEN_FILE], capture_output=True, text=True, check=True
-    ).stdout
+def _nas_creds(reader=None) -> tuple[str, str]:
+    """Read NAS_ADMIN_USER/NAS_ADMIN_PASS from the root:600 token file.
+    Never inline these -- SoT is /etc/havnvard/nas_admin.env, root-owned.
+    INFRA-633: read directly (we usually run as root); `sudo cat` only after a PermissionError (token_file.py).
+    `reader(path) -> text` is injectable for tests. Contents are never logged; a parse error names the file only."""
+    out = (reader or read_token_text)(NAS_TOKEN_FILE)
     user = pw = None
     for line in out.splitlines():
         line = line.strip()

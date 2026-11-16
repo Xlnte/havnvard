@@ -169,3 +169,44 @@ def test_rollback_file_needs_the_nas_host_and_names_no_host():
     assert "\\if :{?nas_host}" in rb and "RAISE EXCEPTION" in rb and "\\set ON_ERROR_STOP on" in rb
     assert "f.host = :'nas_host'" in rb and "nas-1" not in rb
     assert rb.index("CREATE OR REPLACE VIEW") < rb.index("DROP TABLE IF EXISTS diskaudit.site_hosts")
+
+
+# ---- 3.3.10: INFRA-635 exact site_hosts, prune ----------------------------------------------------------
+
+def test_validate_live_site_hosts_must_equal_the_site_file():
+    want = {("server-1", "source"), ("agent-1", "source"), ("nas-1", "nas")}
+    assert vl.site_hosts_failures(set(want), want) == []
+    assert "missing [('nas-1', 'nas')]" in vl.site_hosts_failures(want - {("nas-1", "nas")}, want)[0]
+    assert "extra [('old', 'source')]" in vl.site_hosts_failures(want | {("old", "source")}, want)[0]
+    wrong_role = (want - {("nas-1", "nas")}) | {("nas-1", "source")}          # a changed NAS role
+    assert vl.site_hosts_failures(wrong_role, want)
+    assert vl.site_host_roles() == want
+
+
+def test_prune_requires_confirmation(monkeypatch, capsys):
+    monkeypatch.setattr("sys.argv", ["init_site_hosts.py", "--prune"])
+    with pytest.raises(SystemExit) as e:
+        ish.main()
+    assert e.value.code == 2 and "--confirm-prune" in capsys.readouterr().err
+
+
+def test_prune_deletes_extra_site_hosts_keeps_tuned_sla_unless_asked(schema):
+    name, conn = schema
+    sh = _Shim(conn, name)
+    ish.apply(sh)
+    with conn.cursor() as cur:
+        cur.execute(f"INSERT INTO {name}.site_hosts (host,role) VALUES ('old','source')")        # removed from the site file
+        cur.execute(f"UPDATE {name}.site_hosts SET role='source' WHERE host='nas-1'")            # NAS role changed
+        cur.execute(f"INSERT INTO {name}.hash_verification_sla (host,tier,target_recheck_days,schedule_mode) VALUES ('old','A',2,'daily')")
+    extra = ish.extra_rows(sh)
+    assert sorted(extra["site_hosts"]) == [("nas-1", "source"), ("old", "source")]
+    assert extra["hash_verification_sla"] == [("old", "A")]
+    assert ish.prune(sh) == {"site_hosts": 2, "hash_verification_sla": 0}                     # tuned SLA row kept
+    ish.apply(sh)                                                                             # restores nas-1 as 'nas'
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT host, role FROM {name}.site_hosts ORDER BY host")
+        assert cur.fetchall() == [("agent-1", "source"), ("nas-1", "nas"), ("server-1", "source")]
+        cur.execute(f"SELECT count(*) FROM {name}.hash_verification_sla WHERE host='old'")
+        assert cur.fetchone()[0] == 1
+    assert ish.prune(sh, include_sla=True) == {"site_hosts": 0, "hash_verification_sla": 1}
+    assert ish.extra_rows(sh) == {"site_hosts": [], "hash_verification_sla": []}

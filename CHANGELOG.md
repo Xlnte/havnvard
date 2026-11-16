@@ -2,6 +2,18 @@
 
 Older releases are described in `FEATURES.md` and `docs/*_RELEASE_*.md`.
 
+## 3.3.10 (20261116)
+
+Follow-ups INFRA-633 and INFRA-635. Built on fix/infra-564-563-562 (3.3.9). 3.3.7 (INFRA-541/540/539) is held by fix/infra-541-540-539; 3.3.8 by fix/infra-569-568-567.
+
+- **No `sudo cat` when already root (INFRA-633).** `load_nas_inventory._nas_creds()` read the NAS admin token with `sudo cat` on every call. New
+  `token_file.read_token_text()` reads the file directly and falls back to `sudo cat` only after a PermissionError; a missing file raises and is
+  not retried via sudo; `_nas_creds(reader=...)` is injectable for tests; no credential content is logged. Same rule as INFRA-540 in crosshost_verify.py.
+- **site_hosts must match the site file exactly (INFRA-635).** `infra126/scripts/validate_live.py` now compares `diskaudit.site_hosts` to the
+  site file as (host, role) and names the missing and the extra rows. New `init_site_hosts.py --prune --confirm-prune` deletes the extra
+  site_hosts rows (a removed host, or a NAS role that changed; apply() then re-inserts the changed one). `--dry-run --prune` lists what would go.
+  `hash_verification_sla` rows of removed hosts are tuned data and are kept unless `--include-sla` is added. `--prune` alone refuses.
+
 ## 3.3.9 (20261116)
 
 Follow-ups from the 3.1.0 baseline review (INFRA-564, 563, 562). Built on the open branch fix/infra-569-568-567 (3.3.8); 3.3.7 is held by fix/infra-541-540-539.
