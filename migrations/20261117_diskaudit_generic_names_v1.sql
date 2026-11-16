@@ -39,17 +39,41 @@ END $$;
 ALTER INDEX IF EXISTS diskaudit.idx_diskaudit_integrity_checks_spark
     RENAME TO idx_diskaudit_integrity_checks_source;
 
--- operator_verdict: move the value, then the CHECK (rows first would violate the old CHECK's complement).
+-- operator_verdict: drop BOTH old CHECKs, move the value in both tables, then add both new CHECKs.
+-- The infra126 trigger trg_infra126_sync_suspect_review copies a suspect's verdict onto its latest divergence on
+-- UPDATE. It is switched off for the two UPDATEs (and back on only if it was on): with it on, the suspect UPDATE wrote
+-- 'investigate_server' into hash_divergences while that table's old CHECK still stood and the whole migration failed
+-- (3.3.11 review), and it would also copy a suspect verdict over a different divergence verdict. This is a rename only.
+SELECT set_config('havnvard.m20261117_trg', COALESCE((
+    SELECT t.tgenabled::text FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = 'diskaudit' AND c.relname = 'corruption_suspects'
+       AND t.tgname = 'trg_infra126_sync_suspect_review'), 'absent'), true);
+DO $$
+BEGIN
+    IF current_setting('havnvard.m20261117_trg') NOT IN ('absent', 'D') THEN
+        ALTER TABLE diskaudit.corruption_suspects DISABLE TRIGGER trg_infra126_sync_suspect_review;
+    END IF;
+END $$;
 ALTER TABLE diskaudit.corruption_suspects DROP CONSTRAINT IF EXISTS corruption_suspects_operator_verdict_check;
+ALTER TABLE diskaudit.hash_divergences DROP CONSTRAINT IF EXISTS hash_divergences_operator_verdict_check;
 UPDATE diskaudit.corruption_suspects SET operator_verdict = 'investigate_server' WHERE operator_verdict = 'investigate_spark';
+UPDATE diskaudit.hash_divergences SET operator_verdict = 'investigate_server' WHERE operator_verdict = 'investigate_spark';
 ALTER TABLE diskaudit.corruption_suspects ADD CONSTRAINT corruption_suspects_operator_verdict_check
     CHECK (operator_verdict IS NULL OR operator_verdict = ANY (ARRAY['benign','suspicious','confirmed_corruption',
            'investigate_server','investigate_nas','investigate_restic','unresolved']));
-ALTER TABLE diskaudit.hash_divergences DROP CONSTRAINT IF EXISTS hash_divergences_operator_verdict_check;
-UPDATE diskaudit.hash_divergences SET operator_verdict = 'investigate_server' WHERE operator_verdict = 'investigate_spark';
 ALTER TABLE diskaudit.hash_divergences ADD CONSTRAINT hash_divergences_operator_verdict_check
     CHECK (operator_verdict IS NULL OR operator_verdict = ANY (ARRAY['benign','suspicious','confirmed_corruption',
            'investigate_server','investigate_nas','investigate_restic','unresolved']));
+DO $$
+BEGIN
+    CASE current_setting('havnvard.m20261117_trg')      -- put back exactly the mode it had
+        WHEN 'O' THEN ALTER TABLE diskaudit.corruption_suspects ENABLE TRIGGER trg_infra126_sync_suspect_review;
+        WHEN 'A' THEN ALTER TABLE diskaudit.corruption_suspects ENABLE ALWAYS TRIGGER trg_infra126_sync_suspect_review;
+        WHEN 'R' THEN ALTER TABLE diskaudit.corruption_suspects ENABLE REPLICA TRIGGER trg_infra126_sync_suspect_review;
+        ELSE NULL;                                         -- 'absent' or 'D': nothing was switched off
+    END CASE;
+END $$;
 
 ALTER TABLE diskaudit.git_repo_roots ALTER COLUMN discovered_via SET DEFAULT 'manual';
 
@@ -63,6 +87,5 @@ CREATE OR REPLACE VIEW diskaudit.v_report_snapshots_legacy_names AS
            nas_files, nas_bytes, dup_files, dup_groups, reclaimable_bytes, scan_errors, created_at
       FROM diskaudit.report_snapshots;
 COMMIT;
--- Rollback (only while no 3.3.11 code runs; also restore 3.3.10 code): rename the columns back, rename the index back,
--- UPDATE ... 'investigate_spark' for both tables after re-creating the CHECK with the old value, ALTER COLUMN
--- discovered_via SET DEFAULT 'find-scan-20260718', DROP VIEW both *_legacy_names views.
+-- Rollback: migrations/20261117_diskaudit_generic_names_v1_rollback.sql (stop every writer first; restore 3.3.10 code on
+-- Spark AND the agent host before any timer runs again).

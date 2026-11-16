@@ -18,6 +18,7 @@ import pytest
 from conftest import REPO_ROOT, connect_retry
 
 MIGRATION = os.path.join(REPO_ROOT, "migrations", "20261117_diskaudit_generic_names_v1.sql")
+ROLLBACK = os.path.join(REPO_ROOT, "migrations", "20261117_diskaudit_generic_names_v1_rollback.sql")
 OLD_VERDICTS = ("'benign','suspicious','confirmed_corruption','investigate_spark',"
                 "'investigate_nas','investigate_restic','unresolved'")
 
@@ -113,12 +114,13 @@ def old_shape():
         yield name, conn
     finally:
         with conn.cursor() as cur:
+            cur.execute("ROLLBACK")                       # a failed migration leaves its BEGIN block aborted
             cur.execute(f"DROP SCHEMA IF EXISTS {name} CASCADE")
         conn.close()
 
 
-def _migrate(cur, name):
-    with open(MIGRATION, encoding="utf-8") as f:
+def _migrate(cur, name, path=MIGRATION):
+    with open(path, encoding="utf-8") as f:
         cur.execute(f.read().replace("diskaudit.", name + ".").replace("'diskaudit'", f"'{name}'"))
 
 
@@ -159,3 +161,59 @@ def test_migration_on_a_fresh_baseline_changes_nothing_but_adds_the_legacy_views
 def test_generator_keeps_the_legacy_views_out_of_the_baseline():
     text = open(os.path.join(REPO_ROOT, "schema", "baseline.sql"), encoding="utf-8").read()
     assert "legacy_names" not in text and "spark" not in text.lower()
+
+
+def _link_suspect_to_a_divergence(cur, name, suspect_verdict, divergence_verdict):
+    """Give the old-shape suspect a latest divergence, so the infra126 sync trigger has something to copy onto."""
+    cur.execute(f"""
+        ALTER TABLE {name}.hash_divergences DROP CONSTRAINT IF EXISTS hash_divergences_item_id_fkey;
+        ALTER TABLE {name}.hash_divergences DROP CONSTRAINT IF EXISTS hash_divergences_run_id_fkey;""")
+    cur.execute(f"""INSERT INTO {name}.hash_divergences (run_id, item_id, tier, host, path, file_key, new_hash,
+                       new_hashed_at, divergence_type, decision_state, operator_verdict)
+                    VALUES (gen_random_uuid(), 1, 'A', '_test_h', '/a', repeat('a',64), repeat('b',64), now(),
+                            'unclassified', 'two_copy_conflict', %s)""", (divergence_verdict,))
+    cur.execute(f"ALTER TABLE {name}.corruption_suspects DISABLE TRIGGER trg_infra126_sync_suspect_review")
+    cur.execute(f"UPDATE {name}.corruption_suspects SET operator_verdict = %s, latest_divergence_id = "
+                f"(SELECT max(divergence_id) FROM {name}.hash_divergences)", (suspect_verdict,))
+    cur.execute(f"ALTER TABLE {name}.corruption_suspects ENABLE TRIGGER trg_infra126_sync_suspect_review")
+
+
+def test_migration_with_a_linked_divergence_renames_only_and_keeps_the_trigger_on(old_shape):
+    """3.3.11 review FIX-NOW: the suspect UPDATE fired trg_infra126_sync_suspect_review, which wrote the NEW value into
+    hash_divergences while its OLD CHECK still stood, so the migration failed on any suspect with a divergence."""
+    name, conn = old_shape
+    with conn.cursor() as cur:
+        _link_suspect_to_a_divergence(cur, name, "investigate_spark", "benign")
+        _migrate(cur, name)
+        cur.execute(f"SELECT operator_verdict FROM {name}.corruption_suspects")
+        assert cur.fetchall() == [("investigate_server",)]
+        cur.execute(f"SELECT operator_verdict FROM {name}.hash_divergences")
+        assert cur.fetchall() == [("benign",)]                # renamed only: the suspect verdict was NOT copied over
+        cur.execute("SELECT t.tgenabled FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n "
+                    "ON n.oid=c.relnamespace WHERE n.nspname=%s AND t.tgname='trg_infra126_sync_suspect_review'", (name,))
+        assert cur.fetchone()[0] == "O"                       # back on afterwards
+        cur.execute(f"UPDATE {name}.corruption_suspects SET operator_verdict='suspicious'")
+        cur.execute(f"SELECT operator_verdict FROM {name}.hash_divergences")
+        assert cur.fetchall() == [("suspicious",)]            # and still working
+
+
+def test_rollback_restores_the_old_names_and_is_idempotent(old_shape):
+    name, conn = old_shape
+    with conn.cursor() as cur:
+        _link_suspect_to_a_divergence(cur, name, "investigate_spark", "investigate_spark")
+        _migrate(cur, name)
+        for _ in range(2):
+            _migrate(cur, name, ROLLBACK)
+        cur.execute(f"SELECT spark_host, spark_path FROM {name}.integrity_checks")
+        assert cur.fetchall() == [("_test_h", "/a")]
+        cur.execute(f"SELECT spark_files, spark_bytes FROM {name}.report_snapshots")
+        assert cur.fetchall() == [(7, 9)]
+        cur.execute(f"SELECT operator_verdict FROM {name}.corruption_suspects UNION ALL "
+                    f"SELECT operator_verdict FROM {name}.hash_divergences")
+        assert cur.fetchall() == [("investigate_spark",), ("investigate_spark",)]
+        cur.execute(f"INSERT INTO {name}.git_repo_roots (repo_root) VALUES ('/r') RETURNING discovered_via")
+        assert cur.fetchone()[0] == "find-scan-20260718"
+        cur.execute("SELECT count(*) FROM pg_views WHERE schemaname=%s AND viewname LIKE '%%legacy_names'", (name,))
+        assert cur.fetchone()[0] == 0
+        cur.execute("SELECT count(*) FROM pg_indexes WHERE schemaname=%s AND indexname='idx_diskaudit_integrity_checks_spark'", (name,))
+        assert cur.fetchone()[0] == 1
