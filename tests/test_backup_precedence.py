@@ -90,6 +90,19 @@ def release(p: subprocess.Popen) -> None:
     p.wait(timeout=30)
 
 
+def release_once_waiting(holder: subprocess.Popen) -> threading.Thread:
+    """Release the held lock only after the pullback has really met it (its `pullback.lock_met` log line), plus 1 s,
+    so a slow machine can never let the pullback start after the lock is already gone (no fixed timer)."""
+    def go():
+        wait_for(lambda: precedence.log_path().is_file() and "pullback.lock_met" in precedence.log_path().read_text(),
+                 120)
+        time.sleep(1.0)
+        release(holder)
+    t = threading.Thread(target=go, daemon=True)
+    t.start()
+    return t
+
+
 def fake_job(repo: str, job: str, pid: int, who: str = "hubowner", started: float | None = None) -> Path:
     d = precedence.jobs_dir(repo)
     d.mkdir(parents=True, exist_ok=True)
@@ -158,7 +171,7 @@ def test_c1_c9_pullback_waits_out_a_catalog_tag_already_in_flight(hub, capsys):
     snap = _snap(hub)
     holder = hold_exclusive(hub)
     fake_job("dev1", "catalog", holder.pid, started=time.time() - 3)
-    threading.Timer(1.5, release, args=(holder,)).start()
+    release_once_waiting(holder)
     tgt = hub["tmp"] / "back"
     tgt.mkdir()
     rc = archive.pullback(paths=[str(hub["data"] / "a")], snapshot=snap["id"][:8], target=str(tgt))
@@ -254,7 +267,7 @@ def test_c9_waiting_line_names_a_running_prune_and_who_started_it(hub, capsys, m
     sid = _snap(hub)["id"][:8]
     tgt = hub["tmp"] / "back"
     tgt.mkdir()
-    threading.Timer(3.0, release, args=(holder,)).start()
+    release_once_waiting(holder)
     assert archive.pullback(paths=[str(hub["data"] / "a")], snapshot=sid, target=str(tgt)) == 0
     out = capsys.readouterr().out
     assert "WAITING for the backup delete hubowner started at" in out and f"on {precedence.host()}" in out
