@@ -141,7 +141,7 @@ def _cleanup_test_rows_after_session():
     try:
         with c.cursor() as cur:
             cur.execute(
-                "DELETE FROM diskaudit.integrity_checks WHERE spark_host ~ '^_test_' OR spark_path LIKE %s",
+                "DELETE FROM diskaudit.integrity_checks WHERE source_host ~ '^_test_' OR source_path LIKE %s",
                 (_TEST_PATH_PREFIX + "%",),
             )
             cur.execute(
@@ -369,7 +369,7 @@ def test_match_groups_same_hash_across_hosts_and_writes_integrity_match(conn):
 
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT verdict FROM diskaudit.integrity_checks WHERE spark_host=%s AND spark_path=%s ORDER BY id DESC LIMIT 1",
+            "SELECT verdict FROM diskaudit.integrity_checks WHERE source_host=%s AND source_path=%s ORDER BY id DESC LIMIT 1",
             (source_host, source_path),
         )
         verdict_row = cur.fetchone()
@@ -388,7 +388,7 @@ def test_match_reports_missing_when_no_nas_counterpart(conn):
 
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT verdict FROM diskaudit.integrity_checks WHERE spark_host=%s AND spark_path=%s ORDER BY id DESC LIMIT 1",
+            "SELECT verdict FROM diskaudit.integrity_checks WHERE source_host=%s AND source_path=%s ORDER BY id DESC LIMIT 1",
             (source_host, source_path),
         )
         row = cur.fetchone()
@@ -447,10 +447,10 @@ _ALLOWED_DELETE_SITES = {
     ("crosshost_verify.py", "os.remove(p)"),                   # own local batch tempfiles (paths/hashes/hasherrs)
     ("crosshost_verify.py", 'target.ssh(f"rm -f {remote_list} {remote_hashes} {remote_errs}")'),  # own remote scratch batch files
     ("crosshost_verify.py", 'target.ssh(f"rm -f {remote_script}")'),  # own remote scratch copy of hash_batch.sh
-    # nas_trigkey_dedup.py (1.4.0): ONE site. Every remote cleanup goes through _remote_cleanup(), which
+    # nas_host_dedup.py (1.4.0): ONE site. Every remote cleanup goes through _remote_cleanup(), which
     # only ever names this tool's own scratch files (<batch>.paths/.hashes/.hasherrs, hash_stat_batch.sh)
     # under the scratch dir; local temp files live in TemporaryDirectory (no os.remove at all).
-    ("nas_trigkey_dedup.py", 'r = target.ssh("rm -f " + " ".join(remote_paths))'),
+    ("nas_host_dedup.py", 'r = target.ssh("rm -f " + " ".join(remote_paths))'),
     # verify_tree.py (INFRA-538): the canary's OWN six 8.5 MB book_N.txt copies (1.6.0) in
     # <NAS scratch>/verify_tree_canary_<pid>_<ts>/ (prefix-guarded in _remove_canary_dir),
     # then `rmdir` of that dir. Never a scanned path; no recursive delete.
@@ -614,7 +614,7 @@ def test_scp_get_timeout_is_a_loud_failure_not_zero_hashes(monkeypatch):
 
 def test_run_with_timeout_per_call_override_and_default():
     """INFRA-520: _run_with_timeout gained an optional per-call timeout_sec
-    (nas_trigkey_dedup's byte-scaled batch timeout). None keeps 600 s."""
+    (nas_host_dedup's byte-scaled batch timeout). None keeps 600 s."""
     r = cv._run_with_timeout(["sleep", "5"], timeout_sec=1, capture_output=True, text=True)
     assert r.returncode == 124 and "timed out after 1s" in r.stderr
     ok = cv._run_with_timeout(["true"], capture_output=True, text=True)

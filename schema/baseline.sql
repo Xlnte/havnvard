@@ -425,7 +425,7 @@ CREATE TABLE diskaudit.corruption_suspects (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT corruption_suspects_mutable_score_check CHECK (((mutable_score >= 0) AND (mutable_score <= 100))),
     CONSTRAINT corruption_suspects_operator_action_check CHECK (((operator_action IS NULL) OR (operator_action = ANY (ARRAY['monitored'::text, 'isolated'::text, 'investigated'::text, 'dismissed'::text])))),
-    CONSTRAINT corruption_suspects_operator_verdict_check CHECK (((operator_verdict IS NULL) OR (operator_verdict = ANY (ARRAY['benign'::text, 'suspicious'::text, 'confirmed_corruption'::text, 'investigate_spark'::text, 'investigate_nas'::text, 'investigate_restic'::text, 'unresolved'::text]))))
+    CONSTRAINT corruption_suspects_operator_verdict_check CHECK (((operator_verdict IS NULL) OR (operator_verdict = ANY (ARRAY['benign'::text, 'suspicious'::text, 'confirmed_corruption'::text, 'investigate_server'::text, 'investigate_nas'::text, 'investigate_restic'::text, 'unresolved'::text]))))
 );
 
 
@@ -834,7 +834,7 @@ COMMENT ON COLUMN diskaudit.files_staging.scan_id IS '1.4.3: the scan_runs.scan_
 
 CREATE TABLE diskaudit.git_repo_roots (
     repo_root text NOT NULL,
-    discovered_via text DEFAULT 'find-scan-20260718'::text NOT NULL,
+    discovered_via text DEFAULT 'manual'::text NOT NULL,
     added_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
@@ -975,7 +975,7 @@ CREATE TABLE diskaudit.hash_divergences (
     CONSTRAINT hash_divergences_decision_state_check CHECK ((decision_state = ANY (ARRAY['insufficient_evidence'::text, 'all_agree'::text, 'two_copy_conflict'::text, 'majority_odd_copy'::text, 'three_way_split'::text]))),
     CONSTRAINT hash_divergences_divergence_type_check CHECK ((divergence_type = ANY (ARRAY['legitimate_drift'::text, 'unconfirmed_corruption'::text, 'unclassified'::text]))),
     CONSTRAINT hash_divergences_mutable_score_check CHECK (((mutable_score >= 0) AND (mutable_score <= 100))),
-    CONSTRAINT hash_divergences_operator_verdict_check CHECK (((operator_verdict IS NULL) OR (operator_verdict = ANY (ARRAY['benign'::text, 'suspicious'::text, 'confirmed_corruption'::text, 'investigate_spark'::text, 'investigate_nas'::text, 'investigate_restic'::text, 'unresolved'::text])))),
+    CONSTRAINT hash_divergences_operator_verdict_check CHECK (((operator_verdict IS NULL) OR (operator_verdict = ANY (ARRAY['benign'::text, 'suspicious'::text, 'confirmed_corruption'::text, 'investigate_server'::text, 'investigate_nas'::text, 'investigate_restic'::text, 'unresolved'::text])))),
     CONSTRAINT hash_divergences_tier_check CHECK ((tier = ANY (ARRAY['A'::bpchar, 'B'::bpchar, 'C'::bpchar, 'D'::bpchar, 'E'::bpchar])))
 );
 
@@ -1247,8 +1247,8 @@ ALTER SEQUENCE diskaudit.infra126_critical_paths_critical_path_id_seq OWNED BY d
 CREATE TABLE diskaudit.integrity_checks (
     id bigint NOT NULL,
     checked_at timestamp with time zone DEFAULT now() NOT NULL,
-    spark_path text NOT NULL,
-    spark_host text NOT NULL,
+    source_path text NOT NULL,
+    source_host text NOT NULL,
     nas_path text,
     size_bytes bigint,
     sha_source text,
@@ -1569,8 +1569,8 @@ CREATE TABLE diskaudit.report_snapshots (
     snap_date date NOT NULL,
     total_files bigint,
     total_bytes bigint,
-    spark_files bigint,
-    spark_bytes bigint,
+    local_files bigint,
+    local_bytes bigint,
     nas_files bigint,
     nas_bytes bigint,
     dup_files bigint,
@@ -2616,10 +2616,10 @@ CREATE INDEX idx_diskaudit_integrity_checks_checked_at ON diskaudit.integrity_ch
 
 
 --
--- Name: idx_diskaudit_integrity_checks_spark; Type: INDEX; Schema: diskaudit; Owner: -
+-- Name: idx_diskaudit_integrity_checks_source; Type: INDEX; Schema: diskaudit; Owner: -
 --
 
-CREATE INDEX idx_diskaudit_integrity_checks_spark ON diskaudit.integrity_checks USING btree (spark_host, spark_path);
+CREATE INDEX idx_diskaudit_integrity_checks_source ON diskaudit.integrity_checks USING btree (source_host, source_path);
 
 
 --

@@ -1,5 +1,5 @@
 #!/bin/sh
-# diskaudit — remote stat-bound content-hash batch script for nas_trigkey_dedup.py
+# diskaudit — remote stat-bound content-hash batch script for nas_host_dedup.py
 # (HavnVard NAS within-host dedup, 1.4.0; Plane INFRA-519 / INFRA-520).
 #
 # Successor of hash_batch.sh FOR THIS TOOL ONLY. hash_batch.sh stays untouched

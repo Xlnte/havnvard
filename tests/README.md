@@ -15,7 +15,8 @@ transactions, the NAS-dedup tests do not touch production at all).
 | `test_site_hosts.py` | 3.3.9 + 3.3.10 (exact site_hosts, --prune): `init_site_hosts.py` rows from the site file (idempotent, keeps tuned values), `validate_live.py` expects hosts x 4, `v_nas_orphans` takes the NAS from `site_hosts` (baseline in a throwaway schema). |
 | `test_nas_dedup_core.py` | Pure functions of `nas_dedup_core.py` (no DB, no SSH): freshness truth table, scope pattern, batch planner, `verify_batch` completeness, keeper rule, progress note. |
 | `test_hash_stat_batch.py` | The real `hash_stat_batch.sh` run under `sh` on files in `tmp_path` (stat fields, symlink/missing/non-regular rejection, `#DONE` trailer). |
-| `test_nas_trigkey_dedup.py` | `nas_trigkey_dedup.py` end to end against a fake remote (`_fake_target.py`) and a throwaway schema: groups, hardlinks, freshness, scope, failure/retry/SIGTERM/exit codes, atomic publish, snapshot contract, export, migrations. |
+| `test_generic_names.py` | 3.3.11 (INFRA-565/566): the deprecated `nas_trigkey_dedup.py` shim forwards arguments + exit code and warns; no code names the old spark_* columns or `investigate_spark`; the generic-names migration upgrades an old-shaped schema (rows kept, CHECK moved, default, legacy views) and is idempotent. |
+| `test_nas_host_dedup.py` | `nas_host_dedup.py` end to end against a fake remote (`_fake_target.py`) and a throwaway schema: groups, hardlinks, freshness, scope, failure/retry/SIGTERM/exit codes, atomic publish, snapshot contract, export, migrations. |
 
 ## The `_test_` / throwaway-schema rules (HV-REQ-31)
 

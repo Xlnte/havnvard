@@ -1,4 +1,4 @@
-"""Shared fixtures for the nas_trigkey_dedup suite (INFRA-520).
+"""Shared fixtures for the nas_host_dedup suite (INFRA-520).
 
 `nd_schema` builds a THROWAWAY schema per pytest session: LIKE-copies of the live
 diskaudit table shapes (no data, own identity sequences) plus the 1.4.0 migration

@@ -2,7 +2,7 @@
 
 **Know that every file you care about is backed up, prove the backups restore, and find any file in any backup.**
 HavnVard is a self-hosted storage-assurance toolkit for a home or small-office fleet: a few Linux machines, a NAS and
-a cloud account. Version 3.3.10.
+a cloud account. Version 3.3.11.
 
 > **Absolute rule: HavnVard never deletes, moves or overwrites a scanned file.** Every "duplicate", "stale" or
 > "not backed up" result is a report for you to read. Deleting anything is always your decision, made by hand.
@@ -306,14 +306,14 @@ Your mileage may vary. In short:
 | `weekly_prescab_review.py` | Assembles current diskaudit state and dispatches to PRESCAB (vp-operations, logic_governance mode) for a weekly trend review. Logged to `jobs.cabinet_runs`. |
 | `crosshost_verify.py` | Cross-host SHA-256 content verification (no NAS mount needed). Subcommands: `candidates` (report the size-based candidate set, no hashing), `hash --host <h>` (hash one host's candidates; resumable, inode-aware, heartbeat-tracked), `match` (join hashes across hosts, populate `duplicate_group_id` + `diskaudit.integrity_checks`), `report` (render markdown reports via `report.py`). |
 | `hash_batch.sh` | POSIX/BusyBox-compatible remote hashing script, scp'd to and run on nas-1/agent-1 by `crosshost_verify.py hash`; deleted from both sides after results are loaded. Read-only; includes a passwordless-`sudo` READ fallback (sha256sum only) for root-owned files, a no-op where sudo doesn't exist (NAS). |
-| `nas_trigkey_dedup.py` | Within-host dedup for nas-1/agent-1 (1.4.0 rewrite): plan -> size-aware hash batches -> one-transaction publish. See the paragraph above and RUNBOOK. |
-| `nas_dedup_core.py` | Pure functions for `nas_trigkey_dedup.py` (freshness, scope pattern, batch planner, result verifier, keeper rule, progress note); no DB/SSH, unit-tested alone. |
-| `hash_stat_batch.sh` | Remote script for `nas_trigkey_dedup.py`: SHA-256 plus stat before/after, stat-only lines for hardlink siblings, `#DONE` trailer. Read-only; `hash_batch.sh` stays untouched for `crosshost_verify.py`. |
+| `nas_host_dedup.py` | Within-host dedup for nas-1/agent-1 (1.4.0 rewrite): plan -> size-aware hash batches -> one-transaction publish. See the paragraph above and RUNBOOK. |
+| `nas_dedup_core.py` | Pure functions for `nas_host_dedup.py` (freshness, scope pattern, batch planner, result verifier, keeper rule, progress note); no DB/SSH, unit-tested alone. |
+| `hash_stat_batch.sh` | Remote script for `nas_host_dedup.py`: SHA-256 plus stat before/after, stat-only lines for hardlink siblings, `#DONE` trailer. Read-only; `hash_batch.sh` stays untouched for `crosshost_verify.py`. |
 | `report.py` | Renders `crosshost_verify.py`'s DB data (dedup groups, NAS integrity verdicts, cleanup candidates) to markdown under `reports/` (gitignored). Recommendations only — never an instruction, never deletes/moves anything. |
 | `module.yaml` | Module manifest (version, entrypoints, databases, risks) per this repo's Module Standard. |
 | `requirements.txt` | Python deps (installed in `.venv`, not committed). |
 | `requirements-dev.txt` | Test-only deps (pytest), additive to requirements.txt. |
-| `tests/test_nas_dedup_core.py`, `tests/test_nas_trigkey_dedup.py`, `tests/test_hash_stat_batch.py` | NAS-dedup suite: pure-function tests, DB + fake-SSH tests on a throwaway schema (never a real host), and the real remote script run under `sh`. See `tests/README.md`. |
+| `tests/test_nas_dedup_core.py`, `tests/test_nas_host_dedup.py`, `tests/test_hash_stat_batch.py` | NAS-dedup suite: pure-function tests, DB + fake-SSH tests on a throwaway schema (never a real host), and the real remote script run under `sh`. See `tests/README.md`. |
 | `tests/test_crosshost_verify.py` | pytest suite for `crosshost_verify.py`: candidate-SQL shape, hash-loader idempotency, synthetic cross-host match grouping, and a codebase-wide guard that fails if any delete/move/rename primitive is ever introduced against a scanned path. |
 | `logs/` | Local log output directory. |
 

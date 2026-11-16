@@ -55,8 +55,8 @@ CREATE TABLE IF NOT EXISTS diskaudit.report_snapshots (
     snap_date        date PRIMARY KEY,
     total_files      bigint,
     total_bytes      bigint,
-    spark_files      bigint,
-    spark_bytes      bigint,
+    local_files      bigint,
+    local_bytes      bigint,
     nas_files        bigint,
     nas_bytes        bigint,
     dup_files        bigint,
@@ -182,12 +182,12 @@ def snapshot_and_delta(conn, m: dict, *, persist: bool) -> dict:
     if persist:
         cur.execute("""
             insert into diskaudit.report_snapshots
-              (snap_date,total_files,total_bytes,spark_files,spark_bytes,nas_files,nas_bytes,
+              (snap_date,total_files,total_bytes,local_files,local_bytes,nas_files,nas_bytes,
                dup_files,dup_groups,reclaimable_bytes,scan_errors)
             values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             on conflict (snap_date) do update set
               total_files=excluded.total_files, total_bytes=excluded.total_bytes,
-              spark_files=excluded.spark_files, spark_bytes=excluded.spark_bytes,
+              local_files=excluded.local_files, local_bytes=excluded.local_bytes,
               nas_files=excluded.nas_files, nas_bytes=excluded.nas_bytes,
               dup_files=excluded.dup_files, dup_groups=excluded.dup_groups,
               reclaimable_bytes=excluded.reclaimable_bytes, scan_errors=excluded.scan_errors""",

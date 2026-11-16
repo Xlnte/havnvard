@@ -49,9 +49,9 @@ and file-by-file description (not duplicated here).
 | `dedup.py` (+ `bucketing.py`) | rdfind-based duplicate detection, writes `duplicate_group_id` |
 | `crosshost_verify.py` | **New, 2026-07-25, in active development on this branch** — cross-host SHA-256 content verification (candidates/hash/match/report subcommands); answers "is my the server/agent-1 data really backed up on the NAS" without needing rdfind's local-filesystem access. Non-destructive; writes only `content_sha256`/`hashed_at`/`hash_source` on `diskaudit.files` plus its own `diskaudit.integrity_checks` / `diskaudit.crosshost_verify_runs` rows. Treat as **PARTIAL** until this branch merges — CLI surface may still change. |
 | `hash_batch.sh` | Companion shell helper for `crosshost_verify.py` batch hashing (unmodified) |
-| `hash_stat_batch.sh` | Companion shell helper for `nas_trigkey_dedup.py` (1.4.0): digest + stat before/after, stat-only lines, `#DONE` trailer |
+| `hash_stat_batch.sh` | Companion shell helper for `nas_host_dedup.py` (1.4.0): digest + stat before/after, stat-only lines, `#DONE` trailer |
 | `backup_coverage.py` | **New, 2026-07-25** — TRUE backup-coverage classifier: every in-scope server-1/agent-1 file gets exactly one row in `diskaudit.backup_coverage` (`BACKED_UP_VERIFIED` / `BACKED_UP_UNVERIFIED` / `NOT_BACKED_UP` / `EXCLUDED`), vs. `v_backup_coverage`'s critical_patterns-only scope or `crosshost_verify.py`'s <1%-of-files size-candidate scope. Subcommands `classify` / `verify` (cheap promotion, no new hashing) / `report` (ranked markdown). Scope exclusions are data, not code — see `diskaudit.backup_scope_rules`. Runbook: `/home/user/runbooks/20260725-havnvard-backup-coverage/RUNBOOK.md`. |
-| `nas_trigkey_dedup.py` | Within-host duplicate detection for nas-1 and agent-1 (rdfind can't run on either host). **Rewritten in 1.4.0** (see "NAS within-host dedup" below): stat-bound digests, scoped runs, fail-loud transport, one-transaction publish into an immutable per-run snapshot. Tracked via `diskaudit.dedup_runs`, `dedup_tool='sha256-within-host'`. Reuses `crosshost_verify.py`'s remote transport; uses its own `hash_stat_batch.sh` and `nas_dedup_core.py`. |
+| `nas_host_dedup.py` | Within-host duplicate detection for nas-1 and agent-1 (rdfind can't run on either host). **Rewritten in 1.4.0** (see "NAS within-host dedup" below): stat-bound digests, scoped runs, fail-loud transport, one-transaction publish into an immutable per-run snapshot. Tracked via `diskaudit.dedup_runs`, `dedup_tool='sha256-within-host'`. Reuses `crosshost_verify.py`'s remote transport; uses its own `hash_stat_batch.sh` and `nas_dedup_core.py`. |
 | `heartbeat.py` | Shared heartbeat helpers used by scan/dedup/NAS-load/crosshost jobs |
 | `scan_guard.py` | 1.4.3: per-(host, root) scan advisory lock + per-scan staging cleanup (scan.py, load_nas_inventory.py) |
 | `monitor.py` | Every-5-min stale/failed run monitor → TG PRESI alert |
@@ -313,7 +313,7 @@ runs logged via `backup_heartbeat_cli.py` into `diskaudit.backup_runs`
 (`run_type`/`backup_job`, `host`, `status`, heartbeat), monitored by the same
 `monitor.py` STALE/ERROR logic used for scan/dedup runs (Plane INFRA-98).
 
-## NAS within-host dedup (`nas_trigkey_dedup.py`, 1.4.0)
+## NAS within-host dedup (`nas_host_dedup.py`, 1.4.0)
 
 Design, requirements (HV-REQ-01..38) and test plan: `/home/user/runbooks/20261109-havnvard-nas-dedup/20261109_ARCHITECTURE.md`
 (Plane INFRA-519 work, INFRA-520 source gaps). Feeds the operator quarantine script
@@ -332,19 +332,19 @@ resolution, so a same-second rewrite keeps size and mtime and a digest taken in 
 cd /opt/havnvard
 # scoped run (minutes): one directory tree, boundary-safe (/a/b never matches /a/bc)
 systemd-run --unit=havnvard-nas-dedup-scoped-$(date +%H%M) --uid=havnvard --wait --pipe --working-directory=/opt/havnvard \
-  /opt/havnvard/.venv/bin/python3 nas_trigkey_dedup.py --host nas-1 --path /share/CACHEDEV1_DATA/Public/<dir>
+  /opt/havnvard/.venv/bin/python3 nas_host_dedup.py --host nas-1 --path /share/CACHEDEV1_DATA/Public/<dir>
 # whole host, bkup_server left out (what the weekly timer runs; first run re-hashes every legacy digest, plan on ~1 day)
 systemd-run --unit=havnvard-nas-dedup-full-$(date +%Y%m%d) --uid=havnvard --working-directory=/opt/havnvard \
-  /opt/havnvard/.venv/bin/python3 nas_trigkey_dedup.py --host nas-1 --exclude /share/CACHEDEV1_DATA/bkup_server
+  /opt/havnvard/.venv/bin/python3 nas_host_dedup.py --host nas-1 --exclude /share/CACHEDEV1_DATA/bkup_server
 # plan only (3.3.4): read-only SQL, prints candidates / files and bytes to hash / fresh digests reused; no run row, no ssh
-.venv/bin/python3 nas_trigkey_dedup.py --host nas-1 --path /share/CACHEDEV1_DATA/Public/<dir> --dry-run
+.venv/bin/python3 nas_host_dedup.py --host nas-1 --path /share/CACHEDEV1_DATA/Public/<dir> --dry-run
 # after a killed long run (3.3.4): publish groups from the digests already fresh, no ssh/scp, minutes not hours
 systemd-run --unit=havnvard-nas-dedup-publish-$(date +%H%M) --uid=havnvard --wait --pipe --working-directory=/opt/havnvard \
-  /opt/havnvard/.venv/bin/python3 nas_trigkey_dedup.py --host nas-1 --publish-only
+  /opt/havnvard/.venv/bin/python3 nas_host_dedup.py --host nas-1 --publish-only
 # hash only, publish nothing (a --limit run can never produce a publishable result)
-... nas_trigkey_dedup.py --host nas-1 --limit 1000
+... nas_host_dedup.py --host nas-1 --limit 1000
 # reproducible snapshot export (what the delete script consumes); two exports of unchanged data differ only in run_id/timestamps
-.venv/bin/python3 nas_trigkey_dedup.py --export <run_id> --format csv > dryrun_<run_id>.csv
+.venv/bin/python3 nas_host_dedup.py --export <run_id> --format csv > dryrun_<run_id>.csv
 ```
 Exit codes: 0 completed | 2 run failed | 3 database unreachable (alertlib `db_down`) | 4 refused: a whole-host run is
 already active (no run row is created; the timer unit treats 4 as success) | 143/130 SIGTERM/SIGINT (run marked failed).

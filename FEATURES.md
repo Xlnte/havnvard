@@ -25,7 +25,7 @@ delete/move decision is yours (the operator's) alone, made by reading these repo
 | Whole-disk inventory scan (NAS) | **WORKING** | `sudo /opt/havnvard/run_all_nas_shares.sh` |
 | Client-host onboarding + scan | **WORKING** | see `CLIENT_INSTALL.md`; live example: `agent-1` (380,102 files) |
 | Duplicate detection (dedup.py / rdfind) | **WORKING** | `python dedup.py --host server-1` |
-| Within-host duplicate detection (nas-1 / agent-1 — no rdfind available) | **WORKING** (new, 2026-07-25) | `python nas_trigkey_dedup.py --host nas-1 \| agent-1` |
+| Within-host duplicate detection (nas-1 / agent-1 — no rdfind available) | **WORKING** (new, 2026-07-25) | `python nas_host_dedup.py --host nas-1 \| agent-1` |
 | Cross-host content-hash verification | **PARTIAL** (new, in flight on this branch, 2026-07-25) | `python crosshost_verify.py candidates \| hash \| match \| report` |
 | HavnVard Backup: hub install, enrol a device, client backup (restic, append-only) | **WORKING** (2.0.0) | `python -m backup hub install \| hub set \| enroll \| client-run` |
 | HavnVard Backup: offsite to any rclone remote (optional crypt), NAS second copy | **WORKING** (2.0.0) | `python -m backup offsite add \| offsite run \| nas-target \| nas-copy` |
@@ -147,7 +147,7 @@ select count(*), sum(reclaimable_bytes_total) from diskaudit.v_duplicate_groups;
 files being scanned; the only writes are `duplicate_group_id` values on
 `diskaudit.files`.
 
-### 3a. Within-host dedup for hosts rdfind can't reach (`nas_trigkey_dedup.py`) — WORKING (new, 2026-07-25)
+### 3a. Within-host dedup for hosts rdfind can't reach (`nas_host_dedup.py`) — WORKING (new, 2026-07-25)
 
 **Why it exists:** `dedup.py` requires `rdfind` on the scanned host. `rdfind`
 is not installed on the QNAP (`nas-1`) and can't be installed there;
@@ -170,8 +170,8 @@ real duplicate group, and writes `duplicate_group_id` via the same
 
 **Command:**
 ```bash
-python nas_trigkey_dedup.py --host nas-1 --limit 200000 --batch-size 500
-python nas_trigkey_dedup.py --host agent-1
+python nas_host_dedup.py --host nas-1 --limit 200000 --batch-size 500
+python nas_host_dedup.py --host agent-1
 ```
 
 **Never deletes/moves/overwrites anything** — same read-only contract as

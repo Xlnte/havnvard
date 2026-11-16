@@ -28,9 +28,10 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent.parent
 SEED = HERE / "schema" / "seed.sql"
 
-# Objects (and so their COMMENTs, including column comments) to leave out of the baseline. Empty since 3.3.9:
-# v_nas_orphans is now generic (it takes the NAS from diskaudit.site_hosts). Add a bare object name to drop one.
-DROP_OBJECTS: set[str] = set()
+# Objects (and so their COMMENTs, including column comments) to leave out of the baseline. Since 3.3.11 these are the
+# two read-only compatibility views that keep the pre-3.3.11 column names for old readers of an upgraded database;
+# a new install has no old readers. (v_nas_orphans left this set in 3.3.9: it is generic now.)
+DROP_OBJECTS: set[str] = {"v_integrity_checks_legacy_names", "v_report_snapshots_legacy_names"}
 
 # Generic comment rewrites, applied in order before the site rules: sentences that only describe one
 # deployment's data, and runbook paths.
