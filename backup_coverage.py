@@ -60,6 +60,7 @@ import psycopg
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from crosshost_verify import get_dsn  # noqa: E402
 from heartbeat import write_heartbeat  # noqa: E402
+from token_file import read_token_text  # noqa: E402  (INFRA-637)
 
 import havnvard_site as _site  # noqa: E402  (3.0.0)
 
@@ -86,10 +87,8 @@ MTIME_TOLERANCE = timedelta(minutes=2)
 
 
 def _nas_env() -> dict:
-    """Read NAS creds via sudo cat (never printed, never logged)."""
-    out = subprocess.run(
-        ["sudo", "-n", "cat", NAS_ENV], capture_output=True, text=True, check=True
-    ).stdout
+    """Read NAS creds (never printed, never logged): directly when allowed, else `sudo -n cat` (token_file, INFRA-637)."""
+    out = read_token_text(NAS_ENV)
     env = {}
     for line in out.splitlines():
         line = line.strip()

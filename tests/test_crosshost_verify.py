@@ -653,7 +653,32 @@ def test_read_token_direct_then_sudo_only_on_permission_error(monkeypatch, tmp_p
         if str(p) == "/denied": raise PermissionError
         return real(p, *a, **k)
     monkeypatch.setattr(builtins, "open", deny)
-    assert cv._read_nas_token_text("/denied") == "X" and calls == [["sudo", "cat", "/denied"]]
+    assert cv._read_nas_token_text("/denied") == "X" and calls == [["sudo", "-n", "cat", "/denied"]]
+
+
+def test_nas_token_reader_is_a_wrapper_over_token_file(monkeypatch):
+    """INFRA-637: one reader. The old name delegates to token_file.read_token_text (looked up at call time)."""
+    monkeypatch.setattr(cv, "read_token_text", lambda p: "WRAPPED:" + p)
+    assert cv._read_nas_token_text("/x") == "WRAPPED:/x"
+
+
+def test_nas_token_sudo_failure_is_a_clear_error_without_content(monkeypatch):
+    """sudo -n failing (no passwordless sudo, no terminal) -> TokenReadError naming the file and exit code, no output text."""
+    import builtins, subprocess as sp
+    import token_file
+    real = builtins.open
+    def deny(p, *a, **k):
+        if str(p) == "/denied": raise PermissionError
+        return real(p, *a, **k)
+    monkeypatch.setattr(builtins, "open", deny)
+    def fail(argv, **k):
+        assert argv[:3] == ["sudo", "-n", "cat"] and k.get("stdin") is sp.DEVNULL
+        raise sp.CalledProcessError(1, argv, output="NAS_PASS=secret", stderr="sudo: a password is required")
+    monkeypatch.setattr(sp, "run", fail)
+    with pytest.raises(token_file.TokenReadError) as e:
+        cv._read_nas_token_text("/denied")
+    assert "/denied" in str(e.value) and "exit 1" in str(e.value)
+    assert "secret" not in str(e.value) and "password is required" not in str(e.value)
 
 
 def test_nas_target_accepts_injected_creds():

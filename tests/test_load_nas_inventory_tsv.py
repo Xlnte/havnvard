@@ -69,4 +69,4 @@ def test_token_file_direct_then_sudo_only_on_permission_error(monkeypatch, tmp_p
             raise PermissionError
         return real(p, *a, **k)
     monkeypatch.setattr(builtins, "open", deny)
-    assert tf.read_token_text("/denied") == "X" and calls == [["sudo", "cat", "/denied"]]
+    assert tf.read_token_text("/denied") == "X" and calls == [["sudo", "-n", "cat", "/denied"]]
