@@ -62,7 +62,8 @@ def collect(now: float | None = None) -> list[tuple[str, bool, str]]:
             if not repos:
                 res.append(("hub repos", False, f"no restic repositories found under {root}"))
             from .catalog import catalog_snapshot_ids
-            skip = frozenset(catalog_snapshot_ids())
+            from .pullback_drill import marker_ids      # review L11: the drill marker is never a device's backup
+            skip = frozenset(catalog_snapshot_ids() | marker_ids())
             archives = set(h.get("archive_repos", []))   # 2.2.5: one-time archives (e.g. an old-laptop-2023 archive): no age limit
             mode = h.get("check_streams", "auto")
             if not (isinstance(mode, bool) or mode == "auto"):   # `mode in (True, False, "auto")` let 0 and 1 through
@@ -99,7 +100,7 @@ def collect(now: float | None = None) -> list[tuple[str, bool, str]]:
             lim = float(h.get("hub_min_free_gb", 125))
             res.append(("hub free space", free >= lim, f"{free:.0f} GB free (limit {lim:g} GB)"))
         res.append(_yield_check(now))
-    drill = _drill_check()
+    drill = _drill_check(now, h)
     if drill:
         res.append(drill)
     if cfg.get("hub_web"):
@@ -157,13 +158,20 @@ def _yield_check(now: float) -> tuple[str, bool, str]:
     return YIELD_CHECK, True, f"{n_open} deferred step(s) open, none overdue"
 
 
-def _drill_check() -> tuple[str, bool, str] | None:
-    """The last pullback drill's verdict (state/pullback-drill.json); no check until a drill has run."""
+def _drill_check(now: float, h: dict) -> tuple[str, bool, str] | None:
+    """The last pullback drill's verdict (state/pullback-drill.json); no check until a drill has run. Review L4: a
+    result older than `[health] pullback_drill_max_age_days` (default 8: a weekly drill plus a day) is a PROBLEM, so a
+    stopped or disabled timer never leaves the last PASS green."""
     p = config.state_dir() / "pullback-drill.json"
     if not p.exists():
         return None
     try:
         d = json.loads(p.read_text())
+        lim = float(h.get("pullback_drill_max_age_days", 8))
+        age_d = (now - dt.datetime.fromisoformat(d["at"]).timestamp()) / 86400
+        if age_d > lim:
+            return DRILL_CHECK, False, (f"no pullback drill since {d['at']} ({age_d:.1f} days, limit {lim:g}); "
+                                        f"last result: {'PASSED' if d['ok'] else 'FAILED'}")
         return DRILL_CHECK, bool(d["ok"]), f"{d.get('at', '?')}: {d['summary']}"
     except (OSError, ValueError, KeyError, TypeError) as e:
         return DRILL_CHECK, False, f"last drill result {p} unreadable: {type(e).__name__}: {e}"
