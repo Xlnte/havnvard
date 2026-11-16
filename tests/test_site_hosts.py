@@ -11,6 +11,7 @@ import importlib.util
 import os
 import uuid
 
+import psycopg
 import pytest
 
 from conftest import REPO_ROOT, connect_retry
@@ -128,8 +129,12 @@ def test_nas_orphans_takes_the_nas_from_site_hosts(schema):
         _file(cur, name, "vault", "/a/copied", 7, sid)
         _file(cur, name, "pc", "/b/copied", 7, sid)                # copy on another host: not an orphan
         _file(cur, name, "pc", "/b/pc-only", None, sid)            # not on the NAS: never listed
-        cur.execute(f"SELECT count(*) FROM {name}.v_nas_orphans")
-        assert cur.fetchone()[0] == 0                              # no site_hosts row: nothing is guessed
+        with pytest.raises(psycopg.errors.ObjectNotInPrerequisiteState, match="init_site_hosts"):
+            cur.execute(f"SELECT count(*) FROM {name}.v_nas_orphans")  # not configured raises, never "no orphans"
+        cur.execute(f"INSERT INTO {name}.site_hosts (host,role) VALUES ('pc','source')")
+        with pytest.raises(psycopg.errors.ObjectNotInPrerequisiteState):
+            cur.execute(f"SELECT count(*) FROM {name}.v_nas_orphans")  # a source row alone is not a NAS
+        cur.execute(f"DELETE FROM {name}.site_hosts")
         cur.execute(f"INSERT INTO {name}.site_hosts (host,role) VALUES ('vault','nas'),('pc','source')")
         cur.execute(f"SELECT host, path FROM {name}.v_nas_orphans")
         assert cur.fetchall() == [("vault", "/a/only-on-nas")]     # works for a NAS that is not called nas-1
@@ -153,5 +158,14 @@ def test_migration_applies_on_top_of_the_baseline_twice(schema):
     with conn.cursor() as cur:
         cur.execute(sql)
         cur.execute(sql)
+        cur.execute(f"INSERT INTO {name}.site_hosts (host,role) VALUES ('vault','nas')")
         cur.execute(f"SELECT count(*) FROM {name}.v_nas_orphans")
         assert cur.fetchone()[0] == 0
+
+
+def test_rollback_file_needs_the_nas_host_and_names_no_host():
+    with open(os.path.join(REPO_ROOT, "migrations", "20261116_diskaudit_site_hosts_v1_rollback.sql"), encoding="utf-8") as f:
+        rb = f.read()
+    assert "\\if :{?nas_host}" in rb and "RAISE EXCEPTION" in rb and "\\set ON_ERROR_STOP on" in rb
+    assert "f.host = :'nas_host'" in rb and "nas-1" not in rb
+    assert rb.index("CREATE OR REPLACE VIEW") < rb.index("DROP TABLE IF EXISTS diskaudit.site_hosts")

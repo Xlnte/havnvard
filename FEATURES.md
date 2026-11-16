@@ -323,7 +323,7 @@ copy elsewhere (candidates for "is this actually the only copy of this").
 select * from diskaudit.v_nas_orphans limit 50;
 ```
 
-Since 3.3.9 the view takes the NAS host(s) from `diskaudit.site_hosts` (role `nas`), filled from the site file by `python3 init_site_hosts.py`; it returns no rows until that has run.
+Since 3.3.9 the view takes the NAS host(s) from `diskaudit.site_hosts` (role `nas`), filled from the site file by `python3 init_site_hosts.py`; until that has run, reading the view raises an error that names `init_site_hosts.py` (an empty answer would look like "no orphans").
 
 **Advisory only** — "orphan" here means "only known copy," not "safe to
 delete." No automatic action follows from this label.
