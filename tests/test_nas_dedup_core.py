@@ -320,3 +320,50 @@ def test_digest_bound_too_close_to_mtime_is_not_fresh():
     assert core.digest_is_fresh(_row(), _bind(bound_at=mt + 3600)) is True         # epoch number also accepted
     plan = core.plan_hash_work([_row()], {"/p/a": _bind(bound_at=at(mt + 1))})
     assert [w.path for w in plan.to_hash] == ["/p/a"] and plan.reused == 0       # racy -> re-hashed
+
+
+# ---- backup_tree_prefix: empty prefix + LIKE escaping (INFRA-567, 3.3.8) ----------------------------
+
+def test_empty_backup_prefix_matches_nothing_and_warns():
+    """'' must give an empty LIKE pattern (never '%', which would flag every path a replica) and a warning."""
+    assert core.normalize_backup_prefix("") == "" and core.normalize_backup_prefix(None) == ""
+    assert core.backup_tree_like("") == ""
+    w = core.backup_prefix_warnings("")
+    assert len(w) == 1 and "backup_tree_prefix is empty" in w[0]
+    assert core.backup_prefix_warnings("/share/x/") == []
+    # with no prefix the keeper rule cannot demote a replica: the oldest/shortest path wins
+    old_short, live = ("/bk/a", 1), ("/data/much/longer/path.bin", 9_999)
+    assert min([old_short, live], key=lambda c: core.keeper_sort_key(c[0], c[1], in_backup=False)) == old_short
+
+
+@pytest.mark.parametrize("prefix,expected", [
+    ("/share/plain/", "/share/plain/%"),
+    ("/share/a%b/", r"/share/a\%b/%"),
+    ("/share/a_b/", r"/share/a\_b/%"),
+    ("/share/a\\b/", r"/share/a\\b/%"),
+    ("/s/%_\\/", r"/s/\%\_\\/%"),
+])
+def test_backup_tree_like_escapes_metacharacters(prefix, expected):
+    assert core.backup_tree_like(prefix) == expected
+
+
+def test_backup_tree_like_matches_literally_in_postgres():
+    """The pattern, run by PostgreSQL with ESCAPE backslash, treats %, _ and backslash in the prefix as literal text."""
+    from conftest import connect_retry  # noqa: PLC0415
+    prefix = "/s/a_b%c\\d/"
+    like = core.backup_tree_like(prefix)
+    cases = {
+        "/s/a_b%c\\d/x/y": True,      # the real replica path
+        "/s/aXb%c\\d/x": False,       # _ must not be a wildcard
+        "/s/a_bZZc\\d/x": False,      # % must not be a wildcard
+        "/s/a_b%c/d/x": False,        # backslash must not be an escape / path separator
+        "/s/a_b%c\\dd/x": False,      # prefix ends on the directory slash
+    }
+    conn = connect_retry(autocommit=True)
+    try:
+        with conn.cursor() as cur:
+            for path, want in cases.items():
+                cur.execute("SELECT %s LIKE %s ESCAPE E'\\\\'", (path, like))
+                assert cur.fetchone()[0] is want, path
+    finally:
+        conn.close()

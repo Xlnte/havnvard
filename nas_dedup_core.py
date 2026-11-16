@@ -27,18 +27,39 @@ RECYCLE_REGEX = r"/(@Recycle|\.@__thumb)/"                      # QNAP recycle /
 RECYCLE_RE = re.compile(RECYCLE_REGEX)
 
 
+def normalize_backup_prefix(raw) -> str:
+    """Site-file value -> prefix with a trailing slash; '' (or None) = the site has no backup replica folder."""
+    p = raw or ""
+    return p if not p or p.endswith("/") else p + "/"
+
+
+def backup_tree_like(prefix: str) -> str:
+    """LIKE pattern (ESCAPE backslash) matching every path below `prefix`; backslash, % and _ in the prefix are literal.
+    '' -> '' (matches no real path), never '%' (which would flag EVERY path as a replica)."""
+    return re.sub(r"([\\%_])", r"\\\1", prefix) + "%" if prefix else ""
+
+
+EMPTY_BACKUP_PREFIX_WARNING = (
+    "[nas] backup_tree_prefix is empty: no path is treated as a backup replica, so a replica copy of a file can be "
+    "chosen as the keeper (BH-3). Set it in the site file if the NAS holds replicas of other machines.")
+
+
+def backup_prefix_warnings(prefix: str) -> list:
+    """Warnings to print and record in the run row (INFRA-567); [] when the prefix is set."""
+    return [] if prefix else [EMPTY_BACKUP_PREFIX_WARNING]
+
+
 def _backup_tree_prefix() -> str:
     """The NAS folder that holds backup REPLICAS of other machines (site file [nas] backup_tree_prefix).
     A replica is never chosen as the keeper while a live copy exists (BH-3). '' = the site has none.
     Read once at import from the site file (a config read, not I/O on the data being judged)."""
     import havnvard_site  # noqa: PLC0415  (stdlib-only site-file reader)
-    p = havnvard_site.nas("backup_tree_prefix") or ""
-    return p if not p or p.endswith("/") else p + "/"
+    return normalize_backup_prefix(havnvard_site.nas("backup_tree_prefix"))
 
 
 BACKUP_TREE_PREFIX = _backup_tree_prefix()
-# HV-REQ-27 in_backup_tree flag (LIKE ... ESCAPE '\'); '' never matches a real path.
-BACKUP_TREE_LIKE = re.sub(r"([\\%_])", r"\\\1", BACKUP_TREE_PREFIX) + "%" if BACKUP_TREE_PREFIX else ""
+# HV-REQ-27 in_backup_tree flag (LIKE ... ESCAPE backslash); '' never matches a real path.
+BACKUP_TREE_LIKE = backup_tree_like(BACKUP_TREE_PREFIX)
 _TRAILER_RE = re.compile(r"#DONE\|hashed=(\d+)\|statonly=(\d+)\|errors=(\d+)")
 
 DEFAULT_BATCH_SIZE = 500

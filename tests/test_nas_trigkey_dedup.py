@@ -1127,3 +1127,22 @@ def test_path_prefix_is_an_alias_of_path():
     assert p.parse_args(["--host", "nas-1", "--path-prefix", "/share/x"]).path == "/share/x"
     assert p.parse_args(["--host", "nas-1", "--path", "/share/x"]).path == "/share/x"
     assert p.parse_args(["--host", "nas-1"]).dry_run is False and p.parse_args(["--host", "nas-1"]).publish_only is False
+
+
+def test_empty_backup_prefix_warns_and_is_recorded_in_the_run_row(env, monkeypatch, capsys):
+    """INFRA-567: with [nas] backup_tree_prefix empty the run says so on stderr AND in dedup_runs.warnings."""
+    monkeypatch.setattr(core, "BACKUP_TREE_PREFIX", "")
+    monkeypatch.setattr(core, "BACKUP_TREE_LIKE", "")
+    env.mk_add("a", X), env.mk_add("b", X)
+    rid, status = env.run()
+    assert status == "completed"
+    warns = env.q("SELECT warnings FROM diskaudit.dedup_runs WHERE dedup_run_id=%s", (rid,))[0][0]
+    assert warns == core.backup_prefix_warnings("")
+    assert "backup_tree_prefix is empty" in capsys.readouterr().err
+
+
+def test_set_backup_prefix_records_no_warning(env, capsys):
+    env.mk_add("a", X), env.mk_add("b", X)
+    rid, _ = env.run()
+    assert env.q("SELECT warnings FROM diskaudit.dedup_runs WHERE dedup_run_id=%s", (rid,))[0][0] == []
+    assert "backup_tree_prefix is empty" not in capsys.readouterr().err

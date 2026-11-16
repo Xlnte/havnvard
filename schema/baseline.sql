@@ -644,6 +644,7 @@ CREATE TABLE diskaudit.dedup_runs (
     bytes_reclaimable bigint,
     failure_reason text,
     published_at timestamp with time zone,
+    warnings text[] DEFAULT '{}'::text[] NOT NULL,
     CONSTRAINT dedup_runs_status_check CHECK ((status = ANY (ARRAY['running'::text, 'completed'::text, 'failed'::text])))
 );
 

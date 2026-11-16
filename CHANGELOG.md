@@ -2,6 +2,20 @@
 
 Older releases are described in `FEATURES.md` and `docs/*_RELEASE_*.md`.
 
+## 3.3.8 (20261116)
+
+Follow-ups from the 3.1.1 review (INFRA-569, 568, 567). 3.3.7 is held by the open branch fix/infra-541-540-539.
+
+- **gen_cleanup_page.py uses psycopg 3 (INFRA-569).** It imported `psycopg2`, which is not in `requirements.txt`, so the page
+  could not be generated on a clean install. Same read-only session, dict rows.
+- **make_baseline_schema.py needs `--site-names` (INFRA-568).** Pass the private rules file, or set `HAVNVARD_SITE_NAMES`, or say
+  `--no-site-names` if the site has no private names. Leaving all three out exits 2 and leaves the old baseline untouched, so a
+  regeneration can no longer silently drop private rules.
+- **Empty `[nas] backup_tree_prefix` is a visible warning (INFRA-567).** `nas_trigkey_dedup.py` prints it and records it in the new
+  column `dedup_runs.warnings` (migration `20261116_diskaudit_dedup_runs_warnings_v1.sql`). Tests added for the empty prefix and for
+  LIKE escaping of `%`, `_` and backslash in the prefix.
+- **Deploy:** apply the migration before the new code runs a dedup (the run row INSERT names `warnings`).
+
 ## 3.3.6 (20261115)
 
 Hub hardening from the 3.3.0 and 3.3.5 reviews (INFRA-626, 612, 613, 614, 609, 610, 605, 606, 596, 595, 585):

@@ -81,6 +81,9 @@ def nd_schema():
             # 1.4.3: files_staging.scan_id (not yet in production until the deployer applies it)
             with open(os.path.join(MIGRATIONS, "20261109_diskaudit_files_staging_scan_id_v1.sql"), encoding="utf-8") as f:
                 cur.execute(rewrite(f.read(), schema))
+            # 3.3.8 (INFRA-567): dedup_runs.warnings
+            with open(os.path.join(MIGRATIONS, "20261116_diskaudit_dedup_runs_warnings_v1.sql"), encoding="utf-8") as f:
+                cur.execute(rewrite(f.read(), schema))
         yield schema
     finally:
         with admin.cursor() as cur:

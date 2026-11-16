@@ -2,7 +2,7 @@
 
 **Know that every file you care about is backed up, prove the backups restore, and find any file in any backup.**
 HavnVard is a self-hosted storage-assurance toolkit for a home or small-office fleet: a few Linux machines, a NAS and
-a cloud account. Version 3.3.6.
+a cloud account. Version 3.3.8.
 
 > **Absolute rule: HavnVard never deletes, moves or overwrites a scanned file.** Every "duplicate", "stale" or
 > "not backed up" result is a report for you to read. Deleting anything is always your decision, made by hand.
@@ -363,7 +363,7 @@ own rules with plain `INSERT`s afterwards.
 
 `migrations/` is the change history of the original deployment (see `migrations/README.md`); a new site does not run
 it. Maintainers regenerate the baseline after a schema change with `scripts/make_baseline_schema.py` (pass
-`--site-names <your private names file>`; see `migrations/README.md`), which refuses to
+`--site-names <your private names file>`, required; see `migrations/README.md`), which refuses to
 write a file that still names a private host.
 
 ## Dashboard

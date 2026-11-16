@@ -313,17 +313,18 @@ def _mark_missing(conn, host: str, missing_paths: list[str]) -> int:
 # run row
 # ---------------------------------------------------------------------------
 
-def _start_run(conn, host: str, scope: Optional[str], excludes: list[str], is_partial: bool, code_version: str) -> int:
+def _start_run(conn, host: str, scope: Optional[str], excludes: list[str], is_partial: bool, code_version: str,
+               warnings: Optional[list[str]] = None) -> int:
     with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO diskaudit.dedup_runs
                 (host, root_dirs, dedup_tool, dedup_method, status, current_stage, code_version,
-                 exclude_paths, is_partial, last_heartbeat_at)
-            VALUES (%s, %s::text[], %s, 'sha256', 'running', 'planning', %s, %s::text[], %s, now())
+                 exclude_paths, is_partial, warnings, last_heartbeat_at)
+            VALUES (%s, %s::text[], %s, 'sha256', 'running', 'planning', %s, %s::text[], %s, %s::text[], now())
             RETURNING dedup_run_id
             """,
-            (host, [scope] if scope else [], TOOL, code_version, excludes, is_partial),
+            (host, [scope] if scope else [], TOOL, code_version, excludes, is_partial, list(warnings or [])),
         )
         run_id = cur.fetchone()[0]
     conn.commit()
@@ -877,7 +878,10 @@ def run_once(conn, host, *, scope=None, excludes=(), limit=None, batch_size=core
     excludes = list(excludes)
     conn_factory = conn_factory or (lambda: psycopg.connect(get_dsn(), autocommit=False))
     _prune_old_items(conn)
-    run_id = _start_run(conn, host, scope, excludes, bool(limit), code_version)
+    warnings = core.backup_prefix_warnings(core.BACKUP_TREE_PREFIX)
+    run_id = _start_run(conn, host, scope, excludes, bool(limit), code_version, warnings)
+    for w in warnings:
+        _log(host, run_id, "warn", f"WARN: {w}")
     ctx = RunCtx(conn=conn, host=host, run_id=run_id, target=target, batch_timeout_mbps=assumed_mbps)
     hb = HeartbeatThread(conn_factory, run_id, host, ctx.progress, heartbeat_interval)
     hb.start()
