@@ -8,7 +8,6 @@ are scaled to seconds through the module's constants; the logic is the same.
 """
 from __future__ import annotations
 
-import datetime as dt
 import json
 import os
 import re
@@ -579,3 +578,179 @@ def test_lock_message_parsing():
     assert g.classify(lk)[0] == "foreign"
     assert g.classify(None)[0] == "foreign"
     assert g.classify({**lk, "host": precedence.host(), "pid": 2 ** 22 + 12345})[0] == "stale"
+
+
+# ---------- fix wave after the independent review (F1-F7, L4, L5, L11) ----------
+
+def _drill_ok(h, **kw):
+    return pullback_drill.pullback_drill("dev1", "hv-test", hashes=str(_hashes(h)), parallel=3, checks=10, **kw)
+
+
+@needs_restic
+def test_f1_drill_lock_leg_meets_a_real_held_lock_and_gets_it(hub, capsys):
+    """F1: the drill puts a REAL exclusive restic lock (its own tag, paused) in the pullback's way; LockGate must name
+    it and get it with 0 FAILED."""
+    assert _drill_ok(hub) == 0
+    out = capsys.readouterr().out
+    assert re.search(r"OK     lock gate: lock gate exercised: GOT THE LOCK after \d+s \(holder: the pullback drill's tag "
+                     r"step .* started at", out), out
+    assert "STATUS: WAITING for the pullback drill's tag step" in out
+    marker = pullback_drill._marker("restic", hub["env"])
+    assert any(t.startswith("havnvard-drill-lock-") for t in marker["tags"])      # the held tag step did finish
+    assert _locks(hub["repo"]) == []                                              # and nothing is left holding a lock
+
+
+@needs_restic
+def test_f1_drill_lock_leg_not_exercised_is_a_failed_drill(hub, capsys, monkeypatch):
+    monkeypatch.setattr(pullback_drill, "_lock_files", lambda d: set())          # the lock is never seen in the way
+    assert _drill_ok(hub) == config.PROBLEM_EXIT
+    out = capsys.readouterr().out
+    assert "FAILED lock gate: lock gate NOT exercised" in out and "pullback-drill dev1/hv-test: FAILED" in out
+
+
+@pytest.mark.parametrize("exc", [ValueError("bad restic json"), SystemExit(143), KeyboardInterrupt()])
+def test_f2_a_crashed_or_killed_drill_is_recorded_failed_and_alerts(hub, monkeypatch, capsys, exc):
+    pullback_drill.result_path().parent.mkdir(parents=True, exist_ok=True)
+    pullback_drill.result_path().write_text(json.dumps({"ok": True, "at": precedence.iso(time.time()),
+                                                        "summary": "last week PASSED"}))
+
+    def boom(*a, **k):
+        raise exc
+    monkeypatch.setattr(pullback_drill, "_drill", boom)
+    if isinstance(exc, (SystemExit, KeyboardInterrupt)):
+        with pytest.raises(type(exc)):
+            pullback_drill.pullback_drill("dev1", "hv-test")
+    else:
+        assert pullback_drill.pullback_drill("dev1", "hv-test") == config.PROBLEM_EXIT
+    res = json.loads(pullback_drill.result_path().read_text())
+    assert res["ok"] is False and f"drill crashed: {type(exc).__name__}" in res["summary"]
+    assert any(k == pullback_drill.KEY for k, _ in hub["fired"])
+    assert dict((n, ok) for n, ok, _ in health.collect())[health.DRILL_CHECK] is False
+
+
+@needs_restic
+def test_f3_drill_failing_after_its_deferral_still_catches_up_and_raises_no_yield_alert(hub, monkeypatch, capsys):
+    def broken(*a, **k):
+        raise BackupError("concurrency case broke")
+    monkeypatch.setattr(pullback_drill, "_concurrency_case", broken)
+    assert _drill_ok(hub) == config.PROBLEM_EXIT
+    assert [o for o in precedence.open_deferrals() if o["job"] == "pullback-drill"] == []          # caught up anyway
+    res = dict((n, (ok, d)) for n, ok, d in health.collect(time.time() + 5 * 3600))
+    assert res[health.YIELD_CHECK][0] is True and res[health.DRILL_CHECK][0] is False
+
+
+def test_f3_drill_deferrals_are_not_judged_by_the_catalog_overdue_rule(hub):
+    precedence.defer("pullback-drill", "dev1", "m", "havnvard-drill-x",
+                     {"id": "gone", "user": "u", "started_at": 1, "heartbeat_at": 1})
+    assert precedence.overdue(time.time() + 10 * 3600) == ([], 0)
+
+
+def test_f4_a_live_pullback_deferring_for_over_3h_is_overdue(hub):
+    with precedence.announce("dev1", "hung pullback"):
+        line = precedence.defer("catalog", "dev1", "s", "T1", precedence.read_intents("dev1")[0][0])
+        assert precedence.overdue(line["deferred_at"] + 3 * 3600 - 60)[0] == []
+        late, n = precedence.overdue(line["deferred_at"] + 3 * 3600 + 1)
+        assert n == 1 and len(late) == 1 and "deferred for over 3 h; check intent/" in late[0][1]
+        assert f"(pid {os.getpid()})" in late[0][1]
+
+
+@needs_restic
+def test_f5_waiting_notice_reaches_the_hub_page_on_a_hub(hub, capsys, monkeypatch):
+    monkeypatch.setattr(accounts, "SCRYPT_N", 2 ** 10)
+    a = accounts.Accounts()
+    adm = a.register("boss@example.com", "correct horse battery staple 1", setup_code=a.new_setup_code(), company="Acme")
+    a.add_device(adm["account_id"], "dev1")
+    monkeypatch.setattr(precedence, "OTHER_WAIT_S", 2)
+    monkeypatch.setattr(precedence, "NOTICE_AFTER_S", 0.5)
+    sid = _snap(hub)["id"][:8]
+    holder = hold_exclusive(hub)
+    try:
+        tgt = hub["tmp"] / "back"
+        tgt.mkdir()
+        assert archive.pullback(paths=[str(hub["data"] / "a")], snapshot=sid, target=str(tgt)) == config.PROBLEM_EXIT
+    finally:
+        release(holder)
+    out = capsys.readouterr().out
+    notes = [n for n in a.open_notices(adm["account_id"]) if n["kind"] == "pullback_waiting"]
+    assert len(notes) == 1 and notes[0]["device"] == "dev1" and f"process {holder.pid}" in notes[0]["text"]
+    assert "notice for the hub owner: left on the hub page" in out
+
+
+def test_f5_hub_without_a_hub_page_says_the_notice_was_not_left(hub):
+    sent = precedence.leave_notice_for("dev1")("pullback_waiting", "x")
+    assert sent.startswith("NOT left: this hub has no hub page")
+
+
+@needs_restic
+def test_f6_a_folder_that_could_not_be_listed_is_never_accounted_for(hub, capsys, monkeypatch):
+    monkeypatch.setattr(precedence, "OTHER_WAIT_S", 0.5)
+    old = _snap(hub)
+    gone = hub["data"] / "b" / "f0.bin"
+    keep = gone.read_bytes()
+    gone.unlink()
+    restic(hub["repo"], hub["pw"], "backup", str(hub["data"]))                # newer backup without b/f0.bin
+    gone.write_bytes(keep)
+    w = hub["tmp"] / "restic-ls-locked.sh"
+    w.write_text('#!/bin/sh\nif [ "$1" = ls ] && [ "$2" = --json ] && [ "$3" = --recursive ] && [ "$4" = "%s" ]; then '
+                 'echo "unable to create lock in backend: repository is already locked exclusively by PID 1 on '
+                 'elsewhere by someone (UID 1, GID 1)" >&2; exit 11; fi\nexec restic "$@"\n' % old["id"])
+    w.chmod(0o755)
+    monkeypatch.setenv("HAVNVARD_RESTIC", str(w))
+    tgt = hub["tmp"] / "back"
+    tgt.mkdir()
+    rc = archive.pullback(paths=[str(hub["data"] / "a" / "f1.bin"), str(gone)], target=str(tgt),
+                          hub_notice=lambda *a: "sent")
+    out = capsys.readouterr().out
+    assert rc == config.PROBLEM_EXIT
+    assert "1 folder(s) could not be listed (file count unknown, listed below)" in out
+    assert "1/1 listed files accounted for, 1 folder(s) NOT listed" in out and "1/1 files accounted for" not in out
+    assert f"NOT LISTED {gone}" in out
+    assert _lines(out)[-1].startswith("STATUS: NOT DONE 1/1 listed files, 0 FAILED, 1 folder(s) not listed")
+
+
+def test_f7_readme_and_runbook_state_the_precedence_limit():
+    for f in ("README.md", "RUNBOOK.md"):
+        t = " ".join((REPO_DIR / f).read_text().replace("**", "").split())
+        assert "on the hub" in t and ("as the hub user" in t) and "another computer" in t, f
+
+
+def test_l4_an_old_drill_result_is_a_problem(hub):
+    pullback_drill.result_path().parent.mkdir(parents=True, exist_ok=True)
+    at = time.time() - 9 * 86400
+    pullback_drill.result_path().write_text(json.dumps({"ok": True, "at": precedence.iso(at), "summary": "passed"}))
+    ok, d = {n: (o, dd) for n, o, dd in health.collect()}[health.DRILL_CHECK]
+    assert ok is False and "no pullback drill since" in d
+    pullback_drill.result_path().write_text(json.dumps({"ok": True, "at": precedence.iso(time.time() - 86400),
+                                                        "summary": "passed"}))
+    assert {n: o for n, o, _ in health.collect()}[health.DRILL_CHECK] is True
+
+
+def test_l5_a_crashed_catalog_run_is_recorded_failed_and_a_history_write_error_does_not_stop_it(hub, monkeypatch):
+    def crash(*a, **k):
+        raise BackupError("boom")
+    monkeypatch.setattr(catalog, "_catalog_run", crash)
+    with pytest.raises(BackupError):
+        catalog.catalog_run()
+    r = precedence.catalog_runs()[-1]
+    assert r["finished_at"] and r["failed"] is True
+    monkeypatch.setattr(catalog, "_catalog_run", lambda *a, **k: 0)
+
+    def full(*a, **k):
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(precedence, "record_catalog_start", full)
+    assert catalog.catalog_run() == 0
+
+
+def test_l11_drill_marker_ids_are_skipped_by_the_file_age_check(hub):
+    root = hub["tmp"] / "hub2"
+    repo = root / "dev9"
+    (repo / "snapshots").mkdir(parents=True)
+    (repo / "config").write_text("x")
+    old = repo / "snapshots" / ("a" * 64)
+    old.write_text("x")
+    os.utime(old, (time.time() - 40 * 3600, time.time() - 40 * 3600))
+    (repo / "snapshots" / ("b" * 64)).write_text("x")                     # a marker whose time was not yet pinned
+    config.save({"hub_local": {"repo_root": str(root)}})
+    assert {n: o for n, o, _ in health.collect()}["snapshot age dev9"] is True     # fooled without the skip
+    pullback_drill._remember("dev9", "b" * 64)
+    assert {n: o for n, o, _ in health.collect()}["snapshot age dev9"] is False
