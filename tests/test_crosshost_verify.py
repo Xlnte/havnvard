@@ -454,7 +454,8 @@ _ALLOWED_DELETE_SITES = {
     # verify_tree.py (INFRA-538): the canary's OWN six 8.5 MB book_N.txt copies (1.6.0) in
     # <NAS scratch>/verify_tree_canary_<pid>_<ts>/ (prefix-guarded in _remove_canary_dir),
     # then `rmdir` of that dir. Never a scanned path; no recursive delete.
-    ("verify_tree.py", 'target.ssh(f"rm -f {files}; rmdir {shlex.quote(nas_dir)}")'),
+    # 3.3.7 review (INFRA-539 sweep): the remote side also refuses a symlink or non-directory before the rm -f.
+    ("verify_tree.py", 'return target.ssh(f"if [ -d {d} ] && [ ! -L {d} ]; then rm -f {files}; rmdir {d}; else exit 3; fi")'),
     # backup/catalog.py (2.2.0): only files the catalog job itself wrote in ~/.local/state/havnvard/catalog/:
     # the previous per-device live listing (live/<repo>.<NNNNNN>.tsv, superseded once state.json commits the new one)
     # and the previous staged catalog copy (stage/*_catalog.tsv). Never a backed-up or scanned path.
@@ -620,3 +621,41 @@ def test_run_with_timeout_per_call_override_and_default():
     ok = cv._run_with_timeout(["true"], capture_output=True, text=True)
     assert ok.returncode == 0
     assert cv._REMOTE_CALL_TIMEOUT_SEC == 600
+
+
+# ---------------------------------------------------------------- 3.3.7 (INFRA-540)
+
+def test_nas_backup_creds_reads_directly_without_sudo(monkeypatch):
+    import subprocess as sp
+    monkeypatch.setattr(cv, "_read_nas_token_text", lambda p: "NAS_USER=u\nNAS_HOST=h\nNAS_PASS=p\n")
+    def boom(*a, **k): raise AssertionError("sudo must not run")
+    monkeypatch.setattr(sp, "run", boom)
+    assert cv._nas_backup_creds() == ("u", "h", "p")
+    assert cv._nas_backup_creds(reader=lambda p: "NAS_USER=a\nNAS_HOST=b\nNAS_PASS=c") == ("a", "b", "c")
+
+
+def test_read_token_direct_then_sudo_only_on_permission_error(monkeypatch, tmp_path):
+    import subprocess as sp
+    f = tmp_path / "tok"
+    f.write_text("NAS_USER=u\n")
+    monkeypatch.setattr(sp, "run", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no sudo")))
+    assert cv._read_nas_token_text(str(f)) == "NAS_USER=u\n"
+    with pytest.raises(FileNotFoundError):
+        cv._read_nas_token_text(str(tmp_path / "missing"))
+    calls = []
+    def fake_run(argv, **k):
+        calls.append(argv)
+        return sp.CompletedProcess(argv, 0, stdout="X", stderr="")
+    monkeypatch.setattr(sp, "run", fake_run)
+    import builtins
+    real = builtins.open
+    def deny(p, *a, **k):
+        if str(p) == "/denied": raise PermissionError
+        return real(p, *a, **k)
+    monkeypatch.setattr(builtins, "open", deny)
+    assert cv._read_nas_token_text("/denied") == "X" and calls == [["sudo", "cat", "/denied"]]
+
+
+def test_nas_target_accepts_injected_creds():
+    t = cv._NasTarget(creds=("u", "h", "p"))
+    assert (t.user, t.host) == ("u", "h")

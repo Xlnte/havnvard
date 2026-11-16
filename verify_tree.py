@@ -30,6 +30,7 @@ import re
 import secrets
 import shlex
 import stat
+import subprocess
 import sys
 import tempfile
 import time
@@ -50,7 +51,7 @@ EXIT_CANARY = 4
 NAS_HOST = cv._site.nas_host()   # 3.0.0: from the site file
 # Measured 20261110 01:10: NAS sha256sum 36.7 MB/s (7.05 GiB / 201.5 s) under a concurrent
 # HavnVard dedup run. The timeout assumes a floor 3.7x slower than that.
-NAS_HASH_FLOOR_BPS = 10_000_000
+NAS_HASH_FLOOR_BPS = 10_000_000   # default; INFRA-541: override with env NAS_FLOOR_BPS (same name and unit, bytes/s, as the backup scripts' lib-nas.sh) or --nas-floor-bps
 NAS_HASH_MIN_TIMEOUT = 600
 
 _HASH_LINE_RE = re.compile(r"^([0-9a-f]{64})  (\./.*)$")
@@ -241,8 +242,22 @@ def parse_remote(stdout: str, rc: int) -> RemoteTree:
     return t
 
 
-def nas_timeout(total_bytes: int) -> int:
-    return max(NAS_HASH_MIN_TIMEOUT, int(total_bytes / NAS_HASH_FLOOR_BPS) + 1)
+def nas_floor_bps(env=None) -> int:
+    """NAS hash floor in bytes/s. Env NAS_FLOOR_BPS (the knob the backup scripts' lib-nas.sh uses) wins over the
+    built-in default; an unset, non-numeric or non-positive value is ignored (default kept)."""
+    raw = (os.environ if env is None else env).get("NAS_FLOOR_BPS", "").strip()
+    if not raw:
+        return NAS_HASH_FLOOR_BPS
+    # ASCII digits only: str.isdigit() accepts e.g. "²", which int() then rejects (crash in verify).
+    if re.fullmatch(r"[0-9]+", raw) and int(raw) > 0:
+        return int(raw)
+    print(f"[verify_tree] NAS_FLOOR_BPS={raw!r} is not a positive integer (bytes/s); "
+          f"using the default {NAS_HASH_FLOOR_BPS}", file=sys.stderr)
+    return NAS_HASH_FLOOR_BPS
+
+
+def nas_timeout(total_bytes: int, floor_bps: Optional[int] = None) -> int:
+    return max(NAS_HASH_MIN_TIMEOUT, int(total_bytes / (floor_bps or nas_floor_bps())) + 1)
 
 
 def hash_remote(target, nas_path: str, total_bytes: int) -> tuple[RemoteTree, float]:
@@ -397,6 +412,7 @@ def run_canary(target, planted_index: Optional[int] = None) -> tuple[bool, str]:
     original, mutated = canary_texts()
     idx = secrets.randbelow(CANARY_COPIES) if planted_index is None else planted_index
     planted = CANARY_NAMES[idx]
+    sweep_stale_canaries(target)
     tag = f"verify_tree_canary_{os.getpid()}_{int(time.time())}"
     nas_dir = f"{target.scratch_dir}/{tag}"
     with tempfile.TemporaryDirectory(prefix="verify_tree_canary_") as tmp:
@@ -427,7 +443,10 @@ def run_canary(target, planted_index: Optional[int] = None) -> tuple[bool, str]:
             v_mut, r_mut, why_mut, _ = verify_pair(mut_dir, nas_dir, target)
             v_same, r_same, why_same, _ = verify_pair(same_dir, nas_dir, target)
         finally:
-            _remove_canary_dir(target, target.scratch_dir, nas_dir)
+            rm = _remove_canary_dir(target, target.scratch_dir, nas_dir)
+            if rm.returncode != 0:   # left for the next run's stale sweep (INFRA-539) after 1 day
+                print(f"[verify_tree] canary cleanup of {nas_dir} rc={rm.returncode}; the stale sweep retries it",
+                      file=sys.stderr)
     ok, got = _canary_mutated_ok(v_mut, r_mut, planted)
     if not ok:
         return False, (f"canary: 5 copies + 1 m->M (in {planted}) did not read as exactly that one "
@@ -439,15 +458,88 @@ def run_canary(target, planted_index: Optional[int] = None) -> tuple[bool, str]:
                   f"6 identical = all equal")
 
 
-def _remove_canary_dir(target, scratch_dir: str, nas_dir: str) -> None:
+CANARY_SWEEP_MAX_AGE_S = 86400
+# re.ASCII: \d must not match other scripts' digits (int() would accept them).
+_CANARY_DIR_RE = re.compile(r"^verify_tree_canary_([0-9]+)_([0-9]+)$", re.ASCII)
+
+
+@dataclass
+class SweepResult:
+    """Outcome of one stale-canary sweep. `error` set = the sweep itself could not run (ls failed or
+    raised); `failed` = stale dirs found but not removed. Distinguishable from 'nothing to do'."""
+    removed: list = field(default_factory=list)
+    failed: list = field(default_factory=list)
+    error: Optional[str] = None
+    dry_run: bool = False
+
+    def summary(self) -> str:
+        if self.error:
+            return f"CANARY_SWEEP=error ({self.error})"
+        verb = "would_remove" if self.dry_run else "removed"
+        return f"CANARY_SWEEP={verb}={len(self.removed)} failed={len(self.failed)}"
+
+
+def sweep_stale_canaries(target, now: Optional[float] = None, dry_run: Optional[bool] = None,
+                         max_age_s: int = CANARY_SWEEP_MAX_AGE_S) -> SweepResult:
+    """INFRA-539: a run killed between the canary scp_put and cleanup leaves
+    <scratch>/verify_tree_canary_<pid>_<ts>/ on the NAS forever. Remove those older than 1 day.
+    Only entries whose name is exactly that prefix + ASCII digits_digits directly inside the scratch
+    dir are ever touched (age from the <ts> in the name; a future ts is never stale); anything else
+    is ignored. Removal goes through _remove_canary_dir (real dir, not a symlink; the six named
+    files + rmdir; no recursive delete). dry_run (default: env VERIFY_TREE_SWEEP_DRY_RUN=1) only
+    logs. Best effort: never raises, never blocks a verify. Every failure is logged with the tag
+    CANARY_SWEEP_FAILED, and when anything was found or failed a one-line CANARY_SWEEP= summary
+    goes to stdout (the backup scripts' $LOG), so a stuck dir shows up on every run."""
+    res = SweepResult(dry_run=os.environ.get("VERIFY_TREE_SWEEP_DRY_RUN", "") == "1" if dry_run is None else dry_run)
+    try:
+        now = time.time() if now is None else now
+        ls = target.ssh(f"ls -1 {shlex.quote(target.scratch_dir)}")
+        if ls.returncode != 0:
+            res.error = f"ls rc={ls.returncode}"
+        else:
+            for name in ls.stdout.splitlines():
+                m = _CANARY_DIR_RE.match(name)
+                if not m or now - int(m.group(2)) < max_age_s:
+                    continue
+                nas_dir = f"{target.scratch_dir}/{name}"
+                print(f"[verify_tree] canary sweep: {'WOULD remove' if res.dry_run else 'removing'} stale {nas_dir}",
+                      file=sys.stderr)
+                if res.dry_run:
+                    res.removed.append(nas_dir)
+                    continue
+                try:
+                    r = _remove_canary_dir(target, target.scratch_dir, nas_dir)
+                    if r.returncode == 0:
+                        res.removed.append(nas_dir)
+                    else:
+                        res.failed.append(nas_dir)
+                        print(f"[verify_tree] CANARY_SWEEP_FAILED {nas_dir}: rc={r.returncode} "
+                              f"(not a real dir, or holds files other than the canary's)", file=sys.stderr)
+                except Exception as e:  # noqa: BLE001 -- one bad entry must not stop the rest; reported
+                    res.failed.append(nas_dir)
+                    print(f"[verify_tree] CANARY_SWEEP_FAILED {nas_dir}: {type(e).__name__}: {e}", file=sys.stderr)
+    except Exception as e:  # noqa: BLE001 -- housekeeping must not fail a verification; reported
+        res.error = f"{type(e).__name__}: {e}"
+    if res.error:
+        print(f"[verify_tree] CANARY_SWEEP_FAILED sweep skipped: {res.error}", file=sys.stderr)
+    if res.error or res.removed or res.failed:
+        print(res.summary())
+    return res
+
+
+def _remove_canary_dir(target, scratch_dir: str, nas_dir: str) -> subprocess.CompletedProcess:
     """Remove ONLY this run's canary files and their (then empty) dir. No recursive delete
     (a recursive rm is a forbidden primitive in HavnVard, tests/test_crosshost_verify.py): the
-    six named files, then rmdir, which fails safely if anything else is in the dir."""
+    six named files, then rmdir, which fails safely if anything else is in the dir. The remote
+    side first checks the entry is a real directory and not a symlink (a symlink named like a
+    canary dir must never lead the file removal into another directory); otherwise rc=3, nothing removed.
+    Returns the ssh result (rc 0 = removed)."""
     prefix = f"{scratch_dir}/verify_tree_canary_"
     if not nas_dir.startswith(prefix) or "/" in nas_dir[len(prefix):] or ".." in nas_dir:
         raise ValueError(f"refusing to remove {nas_dir!r}")
+    d = shlex.quote(nas_dir)
     files = " ".join(shlex.quote(f"{nas_dir}/{n}") for n in CANARY_NAMES)
-    target.ssh(f"rm -f {files}; rmdir {shlex.quote(nas_dir)}")
+    return target.ssh(f"if [ -d {d} ] && [ ! -L {d} ]; then rm -f {files}; rmdir {d}; else exit 3; fi")
 
 
 # --------------------------------------------------------------------------
@@ -630,6 +722,12 @@ def cmd_canary(args, target=None) -> int:
     return 0 if ok else EXIT_CANARY
 
 
+def _positive_int(v: str) -> int:
+    if not re.fullmatch(r"[0-9]+", v.strip()) or int(v) <= 0:
+        raise argparse.ArgumentTypeError(f"must be a positive integer (bytes/s), got {v!r}")
+    return int(v)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -639,12 +737,16 @@ def main(argv=None) -> int:
     v.add_argument("--purpose", required=True)
     v.add_argument("--local-host", default=cv._site.local_host())
     v.add_argument("--nas-host", default=NAS_HOST, help=argparse.SUPPRESS)
+    v.add_argument("--nas-floor-bps", type=_positive_int, default=None,
+                   help="NAS hash floor bytes/s for the timeout (default env NAS_FLOOR_BPS, else 10000000)")
     m = sub.add_parser("mark-deleted")
     m.add_argument("--run-id", type=int, required=True)
     sub.add_parser("canary")
     args = ap.parse_args(argv)
     try:
         if args.cmd == "verify":
+            if args.nas_floor_bps is not None:
+                os.environ["NAS_FLOOR_BPS"] = str(args.nas_floor_bps)
             return cmd_verify(args)
         if args.cmd == "mark-deleted":
             return cmd_mark_deleted(args)

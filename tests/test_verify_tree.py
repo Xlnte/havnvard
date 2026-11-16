@@ -483,3 +483,117 @@ def test_cli_rejects_non_share_nas_path(pair, capsys):
     local, nas, t = pair
     _tree(local, {"a": b"1"})
     assert vt.cmd_verify(_args(local, "/tmp/../etc"), target=t, connect=None) == vt.EXIT_USAGE
+
+
+# ---------------------------------------------------------------- 3.3.7 (INFRA-541 / 539)
+
+def test_nas_floor_env_override_infra541(monkeypatch):
+    monkeypatch.delenv("NAS_FLOOR_BPS", raising=False)
+    big = 100_000_000_000
+    assert vt.nas_timeout(big) == big // vt.NAS_HASH_FLOOR_BPS + 1
+    monkeypatch.setenv("NAS_FLOOR_BPS", "2000000")
+    assert vt.nas_timeout(big) == big // 2_000_000 + 1
+    for bad in ("abc", "0", "-5", ""):
+        monkeypatch.setenv("NAS_FLOOR_BPS", bad)
+        assert vt.nas_floor_bps() == vt.NAS_HASH_FLOOR_BPS
+
+
+def test_stale_canary_sweep_infra539(tmp_path):
+    t = LocalShellTarget(tmp_path)
+    now = 2_000_000_000
+    old = f"{t.scratch_dir}/verify_tree_canary_7_{now - 2 * 86400}"
+    fresh = f"{t.scratch_dir}/verify_tree_canary_8_{now - 3600}"
+    foreign = f"{t.scratch_dir}/verify_tree_canary_x_1"      # not digits_digits
+    other = f"{t.scratch_dir}/something_else_1_1"
+    for d in (old, fresh, foreign, other):
+        os.makedirs(d)
+    for n in vt.CANARY_NAMES:
+        open(f"{old}/{n}", "w").close()
+    # dry run: logs, removes nothing
+    assert vt.sweep_stale_canaries(t, now=now, dry_run=True).removed == [old]
+    assert os.path.exists(old)
+    assert vt.sweep_stale_canaries(t, now=now, dry_run=False).removed == [old]
+    assert not os.path.exists(old)
+    assert all(os.path.exists(d) for d in (fresh, foreign, other))
+    assert all("rm -rf" not in c for c, _ in t.calls)
+
+
+def test_sweep_never_raises_and_run_canary_sweeps(tmp_path):
+    t = LocalShellTarget(tmp_path)
+    t.ssh_rc = None
+    old = f"{t.scratch_dir}/verify_tree_canary_7_1"
+    os.makedirs(old)
+    ok, _ = vt.run_canary(t)
+    assert ok and not os.path.exists(old)
+
+
+# ---------------------------------------------------------------- 3.3.7 review (Opus): sweep safety
+
+def test_sweep_symlink_and_non_dir_never_followed(tmp_path):
+    """A symlink named like a stale canary dir must not lead rm -f into its target; a plain file
+    with that name is left alone; both count as failed, never as removed."""
+    t = LocalShellTarget(tmp_path)
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    for n in vt.CANARY_NAMES:
+        (victim / n).write_text("precious")
+    os.symlink(victim, f"{t.scratch_dir}/verify_tree_canary_1_1")
+    open(f"{t.scratch_dir}/verify_tree_canary_2_1", "w").close()
+    res = vt.sweep_stale_canaries(t, now=2_000_000_000, dry_run=False)
+    assert res.removed == [] and len(res.failed) == 2 and res.error is None
+    assert all((victim / n).read_text() == "precious" for n in vt.CANARY_NAMES)
+    assert os.path.islink(f"{t.scratch_dir}/verify_tree_canary_1_1")
+    assert os.path.isfile(f"{t.scratch_dir}/verify_tree_canary_2_1")
+
+
+def test_sweep_name_parsing_is_exact(tmp_path):
+    t = LocalShellTarget(tmp_path)
+    names = ["verify_tree_canary_\u0661_\u0661", " verify_tree_canary_1_1", "verify_tree_canary_1_1 ",
+             "verify_tree_canary_1_1_1", "verify_tree_canary__1", "xverify_tree_canary_1_1",
+             "verify_tree_canary_1_99999999999999999999"]           # future ts: never stale
+    for n in names:
+        os.makedirs(f"{t.scratch_dir}/{n.encode().decode('unicode_escape')}")
+    res = vt.sweep_stale_canaries(t, now=2_000_000_000, dry_run=False)
+    assert res.removed == [] and res.failed == []
+    assert len(os.listdir(t.scratch_dir)) == len(names)
+
+
+def test_sweep_failures_are_distinguishable_and_never_raise(tmp_path, capsys):
+    t = LocalShellTarget(tmp_path)
+    stuck = f"{t.scratch_dir}/verify_tree_canary_3_1"
+    os.makedirs(stuck)
+    open(f"{stuck}/foreign", "w").close()              # rmdir fails -> failed, foreign file kept
+    res = vt.sweep_stale_canaries(t, now=2_000_000_000, dry_run=False)
+    assert res.failed == [stuck] and res.removed == [] and os.path.exists(f"{stuck}/foreign")
+    io = capsys.readouterr()
+    assert "CANARY_SWEEP_FAILED" in io.err and "CANARY_SWEEP=removed=0 failed=1" in io.out
+
+    class Boom:
+        scratch_dir = "/nonexistent"
+        def ssh(self, *a, **k): raise OSError("ssh exploded")
+    res = vt.sweep_stale_canaries(Boom(), dry_run=False)
+    assert res.error and "OSError" in res.error and res.removed == []
+    assert "CANARY_SWEEP=error" in capsys.readouterr().out
+
+    class LsFails:
+        scratch_dir = "/nonexistent"
+        def ssh(self, *a, **k): return subprocess.CompletedProcess([], 2, stdout="", stderr="")
+    assert vt.sweep_stale_canaries(LsFails()).error == "ls rc=2"
+    assert "CANARY_SWEEP=error (ls rc=2)" in capsys.readouterr().out
+
+    t2 = LocalShellTarget(tmp_path / "quiet")
+    vt.sweep_stale_canaries(t2, dry_run=False)          # nothing found: no stdout line at all
+    assert capsys.readouterr().out == ""
+
+
+def test_nas_floor_rejects_non_ascii_digits_and_cli_rejects_bad(monkeypatch, capsys):
+    for bad in ("\u00b2", "\u0661", "1e7", "1_000", " -1 "):
+        monkeypatch.setenv("NAS_FLOOR_BPS", bad.encode().decode("unicode_escape"))
+        assert vt.nas_floor_bps() == vt.NAS_HASH_FLOOR_BPS
+        assert "not a positive integer" in capsys.readouterr().err
+    monkeypatch.setenv("NAS_FLOOR_BPS", " 2000000 ")
+    assert vt.nas_floor_bps() == 2_000_000
+    for bad in ("0", "-3", "abc"):
+        with pytest.raises(SystemExit) as e:
+            vt.main(["verify", "--local", "/x", "--nas-path", "/share/x", "--purpose", "t", "--nas-floor-bps", bad])
+        assert e.value.code == 2
