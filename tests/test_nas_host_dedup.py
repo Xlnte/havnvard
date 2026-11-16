@@ -1,4 +1,4 @@
-"""nas_trigkey_dedup.py -- DB + fake-SSH tests (HV-REQ-01..29, 31).
+"""nas_host_dedup.py -- DB + fake-SSH tests (HV-REQ-01..29, 31).
 
 Everything runs against a THROWAWAY schema (conftest `nd_schema`) through a
 GuardedConn that redirects `diskaudit.` to it and refuses real-host writes; the
@@ -20,7 +20,7 @@ import pytest
 
 import conftest
 import nas_dedup_core as core
-import nas_trigkey_dedup as nd
+import nas_host_dedup as nd
 import monitor
 from _dbguard import GuardedConn, GuardedCursor, RealHostWriteRefused
 from _fake_target import FakeTarget
@@ -609,7 +609,7 @@ def test_db_down_uses_alertlib(env, monkeypatch):
     monkeypatch.setattr(nd, "_finish_run", lambda *a, **k: (_ for _ in ()).throw(psycopg.OperationalError("db went away")))
     env.mk_add("a", X)
     rc = nd.main(["--host", env.host, "--path", "/__test_nasdedup__/nope"])
-    assert rc == nd.EXIT_DB_DOWN and len(calls) == 1 and calls[0][0] == "nas_trigkey_dedup"
+    assert rc == nd.EXIT_DB_DOWN and len(calls) == 1 and calls[0][0] == "nas_host_dedup"
 
 
 def test_lock_timeout_in_publish_is_a_failed_run_not_db_down(env, monkeypatch):
@@ -637,7 +637,7 @@ def test_db_unreachable_at_connect_alerts_once(monkeypatch):
     calls = []
     monkeypatch.setattr(nd, "_alertlib_db_down", lambda src, err: calls.append(src) or True)
     monkeypatch.setattr(nd, "_connect", lambda: (_ for _ in ()).throw(psycopg.OperationalError("refused")))
-    assert nd.main(["--host", "nas-1"]) == nd.EXIT_DB_DOWN and calls == ["nas_trigkey_dedup"]
+    assert nd.main(["--host", "nas-1"]) == nd.EXIT_DB_DOWN and calls == ["nas_host_dedup"]
 
 
 def test_sigterm_marks_run_failed(env, monkeypatch):

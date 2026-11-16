@@ -351,10 +351,9 @@ def cmd_verify(conn, host: str, limit: int | None) -> None:
     run_id = cur.fetchone()[0]
     conn.commit()
 
-    # integrity_checks columns are named spark_host/spark_path/nas_path (the
-    # "spark_*" naming predates agent-1 support in crosshost_verify.py but is
-    # used generically for whichever host is the verification SOURCE --
-    # confirmed via \d diskaudit.integrity_checks, 2026-07-25).
+    # integrity_checks columns are named source_host/source_path/nas_path: the
+    # generic names for whichever host is the verification SOURCE (renamed from
+    # the original spark_* names in 3.3.11, INFRA-565).
     q = """
         UPDATE diskaudit.backup_coverage bc
         SET classification = 'BACKED_UP_VERIFIED',
@@ -368,8 +367,8 @@ def cmd_verify(conn, host: str, limit: int | None) -> None:
         WHERE bc.host = %s
           AND bc.classification = 'BACKED_UP_UNVERIFIED'
           AND ic.verdict = 'match'
-          AND ic.spark_host = bc.host
-          AND ic.spark_path = bc.path
+          AND ic.source_host = bc.host
+          AND ic.source_path = bc.path
     """
     cur.execute(q, (NAS_HOST, run_id, host))
     promoted = cur.rowcount

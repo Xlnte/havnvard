@@ -40,7 +40,7 @@ _SORT_MAP_COVERAGE = {
 _SORT_MAP_FALLBACK = {
     "size": "size_bytes",
     "checked_at": "checked_at",
-    "path": "spark_path",
+    "path": "source_path",
 }
 
 _DEFAULT_CLASSIFICATIONS = ("NOT_BACKED_UP", "BACKED_UP_UNVERIFIED")
@@ -154,12 +154,12 @@ async def _kpi_coverage(conn, f: dict) -> dict:
 def _where_fallback(f: dict, params: list) -> str:
     clauses = []
     params.append(f["host"])
-    clauses.append(f"spark_host = ANY(${len(params)})")
+    clauses.append(f"source_host = ANY(${len(params)})")
     params.append(list(_FALLBACK_VERDICTS))
     clauses.append(f"verdict = ANY(${len(params)})")
     if f["q"]:
         params.append(f"%{f['q']}%")
-        clauses.append(f"spark_path ILIKE ${len(params)}")
+        clauses.append(f"source_path ILIKE ${len(params)}")
     if f["size_min"] is not None:
         params.append(f["size_min"])
         clauses.append(f"size_bytes >= ${len(params)}")
@@ -168,28 +168,28 @@ def _where_fallback(f: dict, params: list) -> str:
 
 async def _rows_fallback(conn, f: dict) -> tuple[list[dict], int]:
     """Narrow, hash-proven-only sample from integrity_checks. Latest check per
-    (spark_host, spark_path) via DISTINCT ON, since a path can be re-checked."""
+    (source_host, source_path) via DISTINCT ON, since a path can be re-checked."""
     params: list = []
     where = _where_fallback(f, params)
     col, direction = common.parse_sort(f["sort"], _SORT_MAP_FALLBACK, "size")
     base = (
-        f"SELECT DISTINCT ON (spark_host, spark_path) spark_host, spark_path, size_bytes, "
+        f"SELECT DISTINCT ON (source_host, source_path) source_host, source_path, size_bytes, "
         f"verdict, checked_at, notes "
         f"FROM diskaudit.integrity_checks WHERE {where} "
-        f"ORDER BY spark_host, spark_path, checked_at DESC"
+        f"ORDER BY source_host, source_path, checked_at DESC"
     )
     total = await conn.fetchval(f"SELECT count(*) FROM ({base}) s", *params)
     params2 = list(params) + [f["page_size"], (f["page"] - 1) * f["page_size"]]
     sql = (
-        f"SELECT * FROM ({base}) s ORDER BY {col} {direction} NULLS LAST, spark_path "
+        f"SELECT * FROM ({base}) s ORDER BY {col} {direction} NULLS LAST, source_path "
         f"LIMIT ${len(params2) - 1} OFFSET ${len(params2)}"
     )
     rows = await conn.fetch(sql, *params2)
     out = []
     for r in rows:
         d = dict(r)
-        d["host"] = d.pop("spark_host")
-        d["path"] = d.pop("spark_path")
+        d["host"] = d.pop("source_host")
+        d["path"] = d.pop("source_path")
         d["classification"] = d["verdict"]
         # match/mismatch had both hashes computed and compared -> proven evidence.
         # missing_dest/unreadable_* had no comparison possible -> no evidence either way.
@@ -209,7 +209,7 @@ async def _kpi_fallback(conn, f: dict) -> dict:
     )
     kpi = dict(row)
     total_checked = await conn.fetchval(
-        "SELECT count(DISTINCT (spark_host, spark_path)) FROM diskaudit.integrity_checks WHERE spark_host = ANY($1)",
+        "SELECT count(DISTINCT (source_host, source_path)) FROM diskaudit.integrity_checks WHERE source_host = ANY($1)",
         list(config.SOURCE_HOSTS),
     )
     universe = await conn.fetch(
@@ -321,14 +321,14 @@ async def backup_export_csv(request: Request):
             where = _where_fallback(f, params)
             col, direction = common.parse_sort(f["sort"], _SORT_MAP_FALLBACK, "size")
             base = (
-                f"SELECT DISTINCT ON (spark_host, spark_path) spark_host, spark_path, size_bytes, "
+                f"SELECT DISTINCT ON (source_host, source_path) source_host, source_path, size_bytes, "
                 f"verdict, checked_at FROM diskaudit.integrity_checks WHERE {where} "
-                f"ORDER BY spark_host, spark_path, checked_at DESC"
+                f"ORDER BY source_host, source_path, checked_at DESC"
             )
             params.append(config.EXPORT_ROW_CAP)
             rows = await conn.fetch(f"SELECT * FROM ({base}) s ORDER BY {col} {direction} NULLS LAST LIMIT ${len(params)}", *params)
             header = ["host", "path", "size_bytes", "verdict", "checked_at", "evidence"]
-            data = [[r["spark_host"], r["spark_path"], r["size_bytes"], r["verdict"], r["checked_at"],
+            data = [[r["source_host"], r["source_path"], r["size_bytes"], r["verdict"], r["checked_at"],
                      "hash_proven" if r["verdict"] in ("match", "mismatch") else "no_evidence"] for r in rows]
     import csv
     import io

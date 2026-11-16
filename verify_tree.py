@@ -478,7 +478,7 @@ def record(conn, *, purpose: str, local_root: str, nas_path: str, verdict: str, 
             cur.execute(
                 """
                 INSERT INTO diskaudit.integrity_checks
-                    (spark_path, spark_host, nas_path, size_bytes, sha_source, sha_dest, verdict,
+                    (source_path, source_host, nas_path, size_bytes, sha_source, sha_dest, verdict,
                      notes, basis, tree_run_id)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'fresh', %s)
                 """,

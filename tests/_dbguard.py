@@ -1,4 +1,4 @@
-"""GuardedConn -- the DB seatbelt for nas_trigkey_dedup tests (HV-REQ-31).
+"""GuardedConn -- the DB seatbelt for nas_host_dedup tests (HV-REQ-31).
 
 Two independent protections, so a test can never write a real host's rows:
 

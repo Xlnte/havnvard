@@ -2,6 +2,21 @@
 
 Older releases are described in `FEATURES.md` and `docs/*_RELEASE_*.md`.
 
+## 3.3.11 (20261117)
+
+INFRA-566 and INFRA-565 (public-release privacy findings PF1 and FILE-4). Built on fix/infra-633-635 (3.3.10); 3.3.7 to 3.3.10 are held on their own branches.
+
+- **Generic tool name (INFRA-566).** `nas_trigkey_dedup.py` is now `nas_host_dedup.py` (and `tests/test_nas_host_dedup.py`). The old path stays as a
+  deprecated shim that prints one DEPRECATED line to stderr and forwards the arguments and exit code, so a unit, timer or cron line that still
+  names it keeps working. The repo's unit file, docs and tests use the new name. Remove the shim once no unit names it; do not publish while it exists.
+- **Generic column and value names (INFRA-565, part).** Migration `20261117_diskaudit_generic_names_v1.sql`: `integrity_checks.spark_host/spark_path`
+  -> `source_host/source_path`, `report_snapshots.spark_files/spark_bytes` -> `local_files/local_bytes`, verdict value `investigate_spark` ->
+  `investigate_server` (rows updated, CHECK re-created), `git_repo_roots.discovered_via` default `'find-scan-20260718'` -> `'manual'`. Two read-only
+  views keep the old column names for old readers: `v_integrity_checks_legacy_names`, `v_report_snapshots_legacy_names` (not in the baseline).
+  **Apply the migration and deploy 3.3.11 code together** (3.3.10 code names the old columns).
+- **Not done (follow-up):** the `infra126_*` tables, `v_infra126_*` views, functions, indexes and `INFRA126_*` environment variables keep their
+  names: a Grafana dashboard provisioned outside this repo reads the two views, and the package's operator configuration uses the env names.
+
 ## 3.3.10 (20261116)
 
 Follow-ups INFRA-633 and INFRA-635. Built on fix/infra-564-563-562 (3.3.9). 3.3.7 (INFRA-541/540/539) is held by fix/infra-541-540-539; 3.3.8 by fix/infra-569-568-567.

@@ -241,7 +241,7 @@ def render_nas_integrity_report(conn, out_dir: str) -> tuple[str, dict]:
 
         cur.execute(
             """
-            SELECT spark_host, spark_path, nas_path, size_bytes, sha_source, sha_dest, checked_at, notes
+            SELECT source_host, source_path, nas_path, size_bytes, sha_source, sha_dest, checked_at, notes
             FROM diskaudit.integrity_checks WHERE verdict = 'mismatch'
             ORDER BY size_bytes DESC NULLS LAST LIMIT 100
             """
@@ -250,7 +250,7 @@ def render_nas_integrity_report(conn, out_dir: str) -> tuple[str, dict]:
 
         cur.execute(
             """
-            SELECT spark_host, spark_path, size_bytes, checked_at
+            SELECT source_host, source_path, size_bytes, checked_at
             FROM diskaudit.integrity_checks WHERE verdict = 'missing_dest'
             ORDER BY size_bytes DESC NULLS LAST LIMIT 200
             """
@@ -259,9 +259,9 @@ def render_nas_integrity_report(conn, out_dir: str) -> tuple[str, dict]:
 
         cur.execute(
             """
-            SELECT spark_host, spark_path, size_bytes, notes
+            SELECT source_host, source_path, size_bytes, notes
             FROM diskaudit.integrity_checks WHERE verdict IN ('unreadable_source', 'unreadable_dest')
-            ORDER BY spark_host, spark_path LIMIT 200
+            ORDER BY source_host, source_path LIMIT 200
             """
         )
         unreadable = cur.fetchall()
@@ -361,7 +361,7 @@ _CLEANUP_CANDIDATES_SQL = """
            ic.verdict, ic.checked_at
     FROM diskaudit.files f
     JOIN diskaudit.integrity_checks ic
-        ON ic.spark_host = f.host AND ic.spark_path = f.path
+        ON ic.source_host = f.host AND ic.source_path = f.path
     WHERE f.still_exists AND f.host != %s
       AND ic.verdict = 'match'
     ORDER BY f.size_bytes DESC

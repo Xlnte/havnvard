@@ -210,7 +210,7 @@ def _write_integrity_unreadable(conn, host: str, path: str, size_bytes, notes: s
         cur.execute(
             """
             INSERT INTO diskaudit.integrity_checks
-                (spark_path, spark_host, size_bytes, verdict, notes)
+                (source_path, source_host, size_bytes, verdict, notes)
             VALUES (%s, %s, %s, 'unreadable_source', %s)
             """,
             (path, host, size_bytes, notes),
@@ -423,7 +423,7 @@ def _nas_backup_creds() -> tuple[str, str, str]:
 # script controls) fails within minutes instead of blocking a multi-hour
 # dedup/search run forever with zero visibility. Found live 2026-08-30: an
 # unrelated 2-day-hung restic process against the same NAS silently stalled
-# a nas_trigkey_dedup.py run with no error, no progress, and no way to tell
+# a nas_host_dedup.py run with no error, no progress, and no way to tell
 # it apart from "just slow" until someone went looking. See Plane INFRA-240.
 _REMOTE_CALL_TIMEOUT_SEC = 600
 
@@ -436,7 +436,7 @@ def _run_with_timeout(argv: list[str], timeout_sec: int | None = None, **kwargs)
     working unchanged rather than requiring every call site to also catch
     subprocess.TimeoutExpired.
 
-    `timeout_sec` (INFRA-520, nas_trigkey_dedup.py byte-scaled batch timeout)
+    `timeout_sec` (INFRA-520, nas_host_dedup.py byte-scaled batch timeout)
     overrides the 600 s default for ONE call; None keeps the default, so every
     existing caller behaves exactly as before."""
     limit = timeout_sec if timeout_sec is not None else _REMOTE_CALL_TIMEOUT_SEC
@@ -781,7 +781,7 @@ _MATCH_GROUP_SQL = """
 #    bit-identity at time of test.
 _MATCH_INTEGRITY_MATCH_SQL = """
     INSERT INTO diskaudit.integrity_checks
-        (spark_path, spark_host, nas_path, size_bytes, sha_source, sha_dest, verdict, notes, basis)
+        (source_path, source_host, nas_path, size_bytes, sha_source, sha_dest, verdict, notes, basis)
     SELECT src.path, src.host, nas.path, src.size_bytes, src.content_sha256, nas.content_sha256,
            'match',
            'content-hash match: proves bit-identity AT TIME OF TEST only, not against later corruption',
@@ -801,7 +801,7 @@ _MATCH_INTEGRITY_MATCH_SQL = """
 #    to be safely on the NAS.
 _MATCH_INTEGRITY_MISSING_SQL = """
     INSERT INTO diskaudit.integrity_checks
-        (spark_path, spark_host, size_bytes, sha_source, verdict, notes, basis)
+        (source_path, source_host, size_bytes, sha_source, verdict, notes, basis)
     SELECT src.path, src.host, src.size_bytes, src.content_sha256,
            'missing_dest',
            'no NAS file found with matching content-hash (checked against currently-hashed NAS candidate set only)',
@@ -821,7 +821,7 @@ _MATCH_INTEGRITY_MISSING_SQL = """
 #    manual review, never asserted as proven corruption.
 _MATCH_INTEGRITY_MISMATCH_SQL = """
     INSERT INTO diskaudit.integrity_checks
-        (spark_path, spark_host, nas_path, size_bytes, sha_source, sha_dest, verdict, notes, basis)
+        (source_path, source_host, nas_path, size_bytes, sha_source, sha_dest, verdict, notes, basis)
     SELECT src.path, src.host, nas.path, src.size_bytes, src.content_sha256, nas.content_sha256,
            'mismatch',
            'same basename+size on NAS but different content-hash -- may be genuine corruption/staleness OR an unrelated file that happens to share name+size; investigate manually, not asserted as proven',

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""nas_dedup_core — pure functions for nas_trigkey_dedup.py (HavnVard 1.4.0).
+"""nas_dedup_core — pure functions for nas_host_dedup.py (HavnVard 1.4.0).
 
 NO database, NO ssh, NO subprocess imports here. Everything in this module is
 a deterministic function of its arguments, so the safety-critical decisions

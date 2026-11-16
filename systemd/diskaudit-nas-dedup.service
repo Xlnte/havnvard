@@ -8,7 +8,7 @@ Wants=network-online.target
 Type=oneshot
 User=havnvard
 WorkingDirectory=/opt/havnvard
-ExecStart=/opt/havnvard/.venv/bin/python3 /opt/havnvard/nas_trigkey_dedup.py --host nas-1
+ExecStart=/opt/havnvard/.venv/bin/python3 /opt/havnvard/nas_host_dedup.py --host nas-1
 # --host: your site file's [hosts] nas. Excludes come from [nas] dedup_excludes (or pass --exclude DIR).
 Nice=15
 IOSchedulingClass=idle

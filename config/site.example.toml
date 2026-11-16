@@ -20,7 +20,7 @@ backup_token_file = "/etc/havnvard/nas_backup.env"
 public_url = "http://127.0.0.1:9108"
 dashboard_url = ""
 
-# Remote machines hashed over plain key-based ssh (crosshost_verify, nas_trigkey_dedup).
+# Remote machines hashed over plain key-based ssh (crosshost_verify, nas_host_dedup).
 [agents.laptop-1]
 ssh_host = "laptop-1.example"
 ssh_user = "havnvard"

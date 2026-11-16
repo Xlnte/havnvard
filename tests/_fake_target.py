@@ -1,4 +1,4 @@
-"""Fake remote-hash transports for nas_trigkey_dedup tests -- no real SSH, no NAS.
+"""Fake remote-hash transports for nas_host_dedup tests -- no real SSH, no NAS.
 
 FakeTarget runs the REAL hash_stat_batch.sh locally (`sh`) against files the test
 created under tmp_path (GNU `stat -c` takes the same %s %Y %i %d %h %F codes as
