@@ -2,6 +2,36 @@
 
 Older releases are described in `FEATURES.md` and `docs/*_RELEASE_*.md`.
 
+## 3.3.13 (20261116)
+
+INFRA-644 (a pullback takes precedence over other backup jobs, and is tested on a schedule) and INFRA-645 (honest summary).
+Spec: runbooks/20261116-havnvard-pullback-precedence/20261116_SPEC_PULLBACK_PRECEDENCE.md v1.0 (PRESCAB acceptance 5/5).
+
+- **Announce (3.1).** `backup/precedence.py`: a pullback writes `state/intent/<repo>/<host>-<pid>.json` (atomic, heartbeat
+  every 30 s, boot id, removed on any exit including Ctrl-C and SIGTERM). Stale = process gone on this host, heartbeat older
+  than 5 min, or another boot; an unreadable file is live for 5 min. The next job removes a stale one (logged, audited).
+- **Yield (3.2).** The catalog's exclusive name tag defers while a pullback is live (`state/deferred.jsonl`), the next run
+  catches up (`done_at`), done lines are trimmed after 30 days. `catalog-runs.json` records each run, so OVERDUE follows the
+  real run: 15 min after the first catalog run that started after the pullback ended, or 75 min with no run. Overdue = health
+  check `yield-overdue` and alert `havnvard-yield-overdue` (health-relay: `havnvard-yield-overdue-<host>`). `prune`,
+  `forget-before/after` and `hub revoke-device-key` refuse while a pullback is live; nothing is changed. Exclusive jobs
+  write a job record (`state/jobs/<repo>/`) so a pullback can name them.
+- **Get past a lock (3.3).** Every restic call of a pullback goes through `LockGate`: the holder is read from restic's lock
+  message and the job record; the catalog's tag is retried up to 2 min; a stale lock gets `restic unlock` (stale locks
+  only, never `--remove-all`); a delete or unknown holder is waited for up to 10 min with a line every minute and one hub
+  notice after 2 min, then the affected files are FAILED (exit 1). A live lock is never removed. A `restic dump` that
+  ends before its first byte no longer leaves an empty PARTIAL file.
+- **STATUS lines and honest summary (3.3, 3.4).** The first and last line of a pullback is `STATUS: RUNNING` /
+  `STATUS: WAITING ...` / `STATUS: DONE x/y` / `STATUS: NOT DONE x/y, N FAILED (listed above): run the same pullback again`.
+  The summary says `N FAILED (listed below)` (was `NOT restored`).
+- **Pullback drill (3.6).** `python -m backup pullback-drill --from DEVICE --set NAME [--hashes FILE] [--render-units DIR]`.
+  Forced contention on the drill's own marker snapshot (host `havnvard-drill`, tag `havnvard-drill-marker`, file time 0,
+  skipped by `data_snapshots`), 20 parallel pullbacks + 50 lock checks, catch-up proof, X/Y report, health check and alert
+  `havnvard-pullback-drill`. The weekly timer is rendered only, never installed or enabled.
+- **Logging (3.5).** `state/precedence-log.jsonl` + stderr (journal); hub audit rows (`Accounts.log_event`) for every
+  deferral, stale unlock, stale intent removal and drill result.
+- **Tests.** `tests/test_backup_precedence.py` (one test per acceptance criterion; see tests/README.md).
+
 ## 3.3.12 (20261117)
 
 INFRA-637 (one credential-file reader). Built on fix/infra-566-565 (3.3.11) with fix/infra-541-540-539 (3.3.7) merged in, so this branch holds the whole 3.3.7 to 3.3.12 chain.

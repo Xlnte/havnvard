@@ -2,7 +2,7 @@
 
 **Know that every file you care about is backed up, prove the backups restore, and find any file in any backup.**
 HavnVard is a self-hosted storage-assurance toolkit for a home or small-office fleet: a few Linux machines, a NAS and
-a cloud account. Version 3.3.12.
+a cloud account. Version 3.3.13.
 
 > **Absolute rule: HavnVard never deletes, moves or overwrites a scanned file.** Every "duplicate", "stale" or
 > "not backed up" result is a report for you to read. Deleting anything is always your decision, made by hand.
@@ -207,6 +207,14 @@ second pullback of the same backed-up file finds that copy and writes nothing). 
 the files named (3.3.0; 3.2.0 restored the whole snapshot, INFRA-578). Archive snapshots survive every keep rule and every
 `forget-*` unless `--include-archive` (which the typed text then names). The NAS and offsite copies are copy-only, so
 they still hold (and restore) snapshots the hub deleted. Offload records need `migrations/20261113_diskaudit_archive_offload_v1.sql`.
+
+**A pullback goes first (3.3.13, INFRA-644).** A pullback announces itself (`~/.local/state/havnvard/intent/<repo>/`), so
+the hub catalog's name tag waits for it (deferred, caught up by the next catalog run) and prune, `forget-*` and key removal
+refuse to start ("nothing was changed"). A pullback that meets a lock already taken names the holder, waits (2 min for
+the catalog's tag, 10 min for a delete or an unknown holder, one hub notice after 2 min), runs `restic unlock` only for a
+stale lock, and never removes a live one. Its first and last line is a STATUS line (`STATUS: DONE 1641/1641` or
+`STATUS: NOT DONE 1640/1641, 1 FAILED ...`). `python -m backup pullback-drill --from DEVICE --set NAME [--hashes FILE]`
+proves it on the hub (see RUNBOOK); `--render-units DIR` writes a weekly timer that is enabled only on the owner's yes.
 
 ### Accounts, registration and schedules (3.3.0)
 The hub can serve pages (`python -m backup hub web --listen <tailnet-ip> --port 8001`). The **company or household owns
