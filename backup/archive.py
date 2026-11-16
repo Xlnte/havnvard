@@ -13,6 +13,7 @@ forget-before DATE  the owner cuts a device's snapshots older than a date: owner
 """
 from __future__ import annotations
 
+import contextvars
 import csv
 import datetime as dt
 import errno
@@ -25,7 +26,7 @@ import tarfile
 import tempfile
 from pathlib import Path
 
-from . import catalog, checkin, config, notify, prune
+from . import catalog, checkin, config, notify, precedence, prune
 from .config import BackupError
 from .util import read_secret, restic_bin, run, sha256_file
 
@@ -245,6 +246,24 @@ def _connect():
 # with `$` or a trailing space in an include file. Pullback streams `restic dump` itself and writes only NEW files
 # (O_CREAT|O_EXCL|O_NOFOLLOW), creates only MISSING folders, and never changes or removes anything that already exists.
 
+# INFRA-644: during a pullback every restic call goes through its LockGate (precedence.py 3.3): a lock refusal is waited
+# out, a stale lock unlocked, or the affected files FAILED with the holder named. Outside a pullback: plain run().
+_GATE: contextvars.ContextVar = contextvars.ContextVar("havnvard_pullback_gate", default=None)
+
+
+def _rrun(cmd: list[str], env: dict, files: list[str] | None = None):
+    gate = _GATE.get()
+    if gate is None:
+        return run(cmd, env=env)
+
+    def once():
+        r = run(cmd, env=env)
+        if r.returncode != 0 and precedence.lock_conflict(r.stderr):
+            raise precedence.Locked(r.stderr)
+        return r
+    return gate.run(once, files)
+
+
 def snap_key(s: dict) -> str:
     """A snapshot's stable identity: restic keeps `original` when the hub's catalog re-tags it (new id)."""
     return s.get("original") or s["id"]
@@ -258,7 +277,7 @@ def find_snapshot(restic: str, env: dict, sid: str) -> dict:
 
 
 def _ls_nodes(restic: str, env: dict, snap_id: str, paths: list[str], recursive: bool) -> list[dict]:
-    r = run([restic, "ls", "--json", *(["--recursive"] if recursive else []), snap_id, *paths], env=env)
+    r = _rrun([restic, "ls", "--json", *(["--recursive"] if recursive else []), snap_id, *paths], env)
     if r.returncode != 0:
         raise BackupError(f"restic ls {snap_id[:8]} failed rc={r.returncode}: {r.stderr.strip()[-300:]}")
     out = []
@@ -287,7 +306,7 @@ def snapshot_files(restic: str, env: dict, snap_id: str, incs: list[str]) -> tup
 
 def _removed(restic: str, env: dict, a: dict, b: dict) -> tuple[list[str], list[str]]:
     """(file paths removed, file paths added) from snapshot a to snapshot b (`restic diff --json`)."""
-    r = run([restic, "diff", "--json", a["id"], b["id"]], env=env)
+    r = _rrun([restic, "diff", "--json", a["id"], b["id"]], env)
     if r.returncode != 0:
         raise BackupError(f"restic diff failed rc={r.returncode}: {r.stderr.strip()[-300:]}")
     gone, added = [], []
@@ -728,9 +747,21 @@ def _stream_into(w: _Writer, restic: str, env: dict, snap_id: str, inc: str, nod
             w.special += 1
             return
         single = inc in nodes
+        before = _placed(w)
         p = _popen([restic, "dump", snap_id, inc] if single else [restic, "dump", "--archive", "tar", snap_id, inc],
                    env, errf)
         problem = None
+        if not p.stdout.peek(1):
+            # restic ended before writing a byte (INFRA-644: e.g. refused on a lock). Nothing is written for it: no empty
+            # PARTIAL copy of a file that never started, and a lock refusal can be tried again safely.
+            rc = p.wait()
+            if rc != 0:
+                p.stdout.close()
+                errf.seek(0)
+                err = errf.read().decode(errors="replace").strip()
+                if precedence.lock_conflict(err):
+                    raise precedence.Locked(err)
+                raise BackupError(f"restic dump {inc} failed rc={rc}: {err[-300:]}")
         try:
             if single:
                 n = nodes[inc]
@@ -755,23 +786,91 @@ def _stream_into(w: _Writer, restic: str, env: dict, snap_id: str, inc: str, nod
         rc = p.wait()
         errf.seek(0)
         err = errf.read().decode(errors="replace").strip()
+        if problem is None and rc != 0 and precedence.lock_conflict(err) and _placed(w) == before:
+            raise precedence.Locked(err)        # refused at the start: nothing was written, safe to try again
         if problem is not None or rc != 0:
             raise BackupError(f"restic dump {inc} failed rc={rc}: {err[-300:] or problem}")
+
+
+def _placed(w: "_Writer") -> tuple:
+    """Everything the writer has done so far; unchanged = this restic call wrote nothing."""
+    return (len(w.new), w.same, len(w.side), len(w.partial), w.links, w.special, len(w.unplaced), len(w.new_dirs),
+            len(w.hashes))
 
 
 def pullback(date: str | None = None, paths: list[str] | None = None, version: str | None = None,
              folder: str | None = None, gone_mode: bool = False, target: str = "/",
              from_device: str | None = None, key_file: str | None = None, login_file: str | None = None,
-             snapshot: str | None = None, now: dt.datetime | None = None, notifier=None, hub_notice=None) -> int:
+             snapshot: str | None = None, now: dt.datetime | None = None, notifier=None, hub_notice=None,
+             on_start=None, stats: dict | None = None) -> int:
     """Never changes anything that exists: an identical file is left alone; a different one stays and the backed-up
     copy is written next to it as NAME_PULLBACK-YYYYMMDD-HHMM.EXT; a file where a folder belongs stays and the folder
     is written as NAME_PULLBACK-YYYYMMDD-HHMM/. Every expected file is accounted for, or the exit is 1.
     A folder that cannot be created or written (permission, read-only, owned by another user) never stops the run:
     everything else is still put back, every item not placed is listed, the exit is 1, and for EACH such folder a
     popup stays on the screen until clicked (`notifier`, default notify.popup) and a notice is left on the hub page
-    until someone dismisses it (`hub_notice`, default checkin.report_notice)."""
+    until someone dismisses it (`hub_notice`, default checkin.report_notice).
+    INFRA-644: the first and the last line are a STATUS line; the pullback announces itself (precedence.Intent) before
+    its first restic call, so exclusive-lock jobs yield to it, and gets past a lock already held (precedence.LockGate).
+    `on_start(intent)` runs right after the intent is written (the drill uses it); `stats` is filled with the counts."""
+    print("STATUS: RUNNING", flush=True)
+    st = stats if stats is not None else {}
+    try:
+        rc = _pullback(date, paths, version, folder, gone_mode, target, from_device, key_file, login_file, snapshot,
+                       now, notifier, hub_notice, on_start, st)
+    except BaseException as e:
+        why = str(e).splitlines()[0][:200] if str(e) else type(e).__name__
+        print(f"STATUS: NOT DONE ({why}): run the same pullback again; files already back are left alone", flush=True)
+        raise
+    x, y, n_failed = st.get("accounted", 0), st.get("expected", 0), st.get("failed", 0)
+    if rc == 0:
+        print(f"STATUS: DONE {x}/{y}", flush=True)
+    else:
+        print(f"STATUS: NOT DONE {x}/{y}, {n_failed} FAILED (listed above): run the same pullback again; files "
+              "already back are left alone", flush=True)
+    return rc
+
+
+def _pullback(date, paths, version, folder, gone_mode, target, from_device, key_file, login_file, snapshot, now,
+              notifier, hub_notice, on_start, st: dict) -> int:
     restic = restic_bin()
-    env = other_env(prune.check_device(from_device), key_file, login_file) if from_device else device_env()[0]
+    if from_device:
+        env, repo = other_env(prune.check_device(from_device), key_file, login_file), from_device
+    else:
+        env, dev = device_env()
+        repo = dev.get("name") or precedence.repo_label(env)
+    what = f"pullback into {Path(target).expanduser()}" + (f" from {from_device}" if from_device else "")
+    gate = precedence.LockGate(restic, env, repo, notice=hub_notice)
+    with precedence.announce(repo, what, on_start):
+        tok = _GATE.set(gate)
+        try:
+            return _pullback_run(restic, env, date, paths, version, folder, gone_mode, target, snapshot, now,
+                                 notifier, hub_notice, st)
+        finally:
+            _GATE.reset(tok)
+            st["lock_waits"] = list(gate.waits)
+            st["stale_unlocks"] = gate.unlocks
+
+
+def _pullback_run(restic, env, date, paths, version, folder, gone_mode, target, snapshot, now, notifier, hub_notice,
+                  st: dict) -> int:
+    try:
+        jobs = _pullback_plan(restic, env, date, paths, version, folder, gone_mode, snapshot)
+    except BackupError as e:
+        gate = _GATE.get()
+        if not (gate and gate.gave_up):
+            raise
+        # INFRA-644 3.3: gave up on a lock before the file list could be read: every file asked for is FAILED, exit 1
+        asked = [_abs(x) for x in (paths or [])] or [f"everything asked for ({date or snapshot})"]
+        st.update(expected=len(paths or []), accounted=0, restored=0, failed=len(asked), failed_items=len(asked))
+        print(f"pullback: 0 restored, {len(asked)} FAILED (listed below)")
+        for p in asked:
+            print(f"  FAILED {p}: {e}")
+        return config.PROBLEM_EXIT
+    return _pullback_write(restic, env, jobs, target, now, notifier, hub_notice, st)
+
+
+def _pullback_plan(restic, env, date, paths, version, folder, gone_mode, snapshot) -> list:
     if snapshot:
         s = find_snapshot(restic, env, snapshot)
         if paths:                                    # INFRA-578: the file list was ignored (whole snapshot restored)
@@ -786,9 +885,11 @@ def pullback(date: str | None = None, paths: list[str] | None = None, version: s
             incs = [p for p in s.get("paths", []) if _under(p, folder)] or ([folder.rstrip("/")] if folder else [])
             print(f"pullback: whole snapshot {s['id'][:8]}" + (f" under {folder}" if folder else "")
                   + " (add FILES or --folder to restore less)")
-        jobs = [(s, incs)]
-    else:
-        jobs = plan(restic, env, date, list(paths or []), version, folder, gone_mode)
+        return [(s, incs)]
+    return plan(restic, env, date, list(paths or []), version, folder, gone_mode)
+
+
+def _pullback_write(restic, env, jobs, target, now, notifier, hub_notice, st: dict) -> int:
     if not jobs:
         print("pullback: nothing to restore (nothing disappeared in that window)")
         return 0
@@ -803,11 +904,17 @@ def pullback(date: str | None = None, paths: list[str] | None = None, version: s
         w = _Writer(tgt, stamp, Path(td))
         failed = []
         for snap, incs in jobs:
-            files, special = snapshot_files(restic, env, snap["id"], incs)
+            try:
+                files, special = snapshot_files(restic, env, snap["id"], incs)
+            except BackupError as e:                # e.g. GAVE UP on a lock: every include path is FAILED, listed
+                failed += [(inc, str(e)) for inc in incs]
+                continue
             expected.update({p: int(n.get("size") or 0) for p, n in files.items()})
             for inc in incs:
-                try:
-                    _stream_into(w, restic, env, snap["id"], inc, files, special, Path(td))
+                under = sorted(p for p in files if _under(p, inc))
+                try:                                # lock refusal: waited out / stale unlock / GAVE UP (3.3)
+                    _GATE.get().run(lambda inc=inc, sid=snap["id"], fs=files, sp=special:
+                                    _stream_into(w, restic, env, sid, inc, fs, sp, Path(td)), under or [inc])
                 except BackupError as e:            # keep going; every failure is listed and the exit is 1
                     failed.append((inc, str(e)))
             man = next((m for sid, m in manifests.items() if sid[:8] in (snap["id"][:8], snap_key(snap)[:8])), {})
@@ -824,8 +931,10 @@ def pullback(date: str | None = None, paths: list[str] | None = None, version: s
     blocked_src = w.unplaced
     missing = sorted(set(expected) - set(w.hashes) - blocked_src - w.partial_src)
     not_back = len(missing) + len(w.partial_src & set(expected)) + len(blocked_src & set(expected))
+    st.update(expected=len(expected), accounted=len(expected) - not_back, restored=len(w.new),
+              failed=not_back + len(bad), identical=w.same, kept_different=len(w.side), failed_items=len(failed))
     print(f"pullback: {len(w.new)} restored, "
-          + (f"{not_back} NOT restored (listed below), " if not_back else "")
+          + (f"{not_back} FAILED (listed below), " if not_back else "")
           + f"{w.same} already there and identical (left alone), "
           f"{len(w.side)} already there but different (kept; backed-up copy written next to it)"
           + (f", {w.links} symlink(s)" if w.links else "")
@@ -848,7 +957,11 @@ def pullback(date: str | None = None, paths: list[str] | None = None, version: s
         print(f"  FAILED {inc}: {why}")
     if w.blocked:
         _report_blocked(w, str(tgt), notifier, hub_notice)
-    return 0 if not (bad or missing or w.partial or w.partial_src or failed or w.blocked or w.unplaced) else config.PROBLEM_EXIT
+    rc = 0 if not (bad or missing or w.partial or w.partial_src or failed or w.blocked or w.unplaced) else config.PROBLEM_EXIT
+    if rc and not st["failed"]:
+        st["failed"] = len(failed) or 1           # e.g. folder modes: never "0 FAILED" on a NOT DONE line
+    precedence.log("pullback.end", "pullback", restored=len(w.new), failed=st["failed"], expected=len(expected))
+    return rc
 
 
 def _report_blocked(w: _Writer, target: str, notifier, hub_notice) -> list[str]:
@@ -932,6 +1045,7 @@ def forget_dated(device: str, date: str, key_file: str | None, after: bool = Fal
     """before: snapshots taken before 00:00 local on DATE. after: snapshots taken on or after 00:00 on DATE.
     Archive-tagged snapshots are left out unless --include-archive (then the typed text says so)."""
     repo, env = prune.hub_repo_env(device, key_file)
+    precedence.refuse_if_pullback(device, "forget")     # INFRA-644 3.2: never start while a pullback reads this repo
     restic, cut = restic_bin(), _start(_day(date))
     prune.clear_stale_locks(restic, env, repo, device, 6.0)
     snaps = catalog.data_snapshots(catalog.snapshots(restic, env))

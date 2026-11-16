@@ -15,7 +15,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from backup import alerts, archive, config, enroll, offsite, prune  # noqa: E402
+from backup import alerts, archive, config, enroll, offsite, precedence, prune  # noqa: E402
 from backup.config import BackupError  # noqa: E402
 from conftest_backup_helpers import make_repo, needs_rclone, needs_restic, restic  # noqa: E402
 
@@ -348,11 +348,15 @@ def test_lock_refused_dump_is_not_counted_restored_infra645(dev, capsys, monkeyp
                        'exec restic "$@"\n' % bad_f)
     wrapper.chmod(0o755)
     monkeypatch.setenv("HAVNVARD_RESTIC", str(wrapper))
+    monkeypatch.setattr(precedence, "OTHER_WAIT_S", 1)          # INFRA-644: an unnamed holder is waited for, then GAVE UP
+    monkeypatch.setattr(precedence, "POLL_S", 0.2)
     tgt = tmp / "t4"
     tgt.mkdir()
-    assert archive.pullback(paths=[ok_f, bad_f], snapshot=snap["id"][:8], target=str(tgt)) == config.PROBLEM_EXIT
+    assert archive.pullback(paths=[ok_f, bad_f], snapshot=snap["id"][:8], target=str(tgt),
+                            hub_notice=lambda *a: "sent") == config.PROBLEM_EXIT
     out = capsys.readouterr().out
-    assert "pullback: 1 restored, 1 NOT restored" in out, out
+    assert "pullback: 1 restored, 1 FAILED" in out, out                       # spec 3.4 / criterion 5
+    assert "2 restored" not in out
     assert "1/2 files accounted for" in out, out
     assert "FAILED" in out and "locked exclusively" in out
     assert (tgt / ok_f.lstrip("/")).read_bytes() == (photos / "2019" / "p2.jpg").read_bytes()

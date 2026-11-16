@@ -461,6 +461,10 @@ _ALLOWED_DELETE_SITES = {
     # and the previous staged catalog copy (stage/*_catalog.tsv). Never a backed-up or scanned path.
     ("catalog.py", "os.remove(_live_path(repo, old_live))"),
     ("catalog.py", "os.remove(old)"),
+    # backup/precedence.py (3.3.13, INFRA-644): _remove_own() is the ONE delete site for HavnVard's OWN pullback intent
+    # files (state/intent/<repo>/<host>-<pid>.json) and job records (state/jobs/<repo>/...): the pullback removes its own
+    # at the end, the next job removes a stale one (logged). Never a backed-up, restored or scanned path.
+    ("precedence.py", "os.unlink(path)  # HavnVard's own intent/job state file (allowlisted in test_crosshost_verify)"),
 }
 
 _DELETE_CALL_PATTERN = re.compile(r"os\.remove\(|os\.unlink\(|\brm\s+-f\b")

@@ -16,7 +16,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import config
+from . import config, precedence
 from .config import BackupError
 from .util import hub_password_dir, restic_bin, run
 
@@ -114,10 +114,12 @@ def delete_snapshots(restic: str, env: dict, device: str, snaps: list[dict], wha
     if not confirmed(expected, confirm, ask):
         print(f"{device}: not confirmed; nothing was deleted")
         return config.PROBLEM_EXIT
-    r = run([restic, "forget", "--retry-lock", "30m", *[s["id"] for s in snaps]], env=env)
-    if r.returncode != 0:
-        raise BackupError(f"restic forget failed rc={r.returncode}: {r.stderr.strip()[-300:]}")
-    p = run([restic, "prune", "--retry-lock", "30m"], env=env)
+    precedence.refuse_if_pullback(device, "prune")      # INFRA-644: a pullback may have started while we asked
+    with precedence.job_record(device, "prune", f"delete {len(snaps)} snapshot(s) {what}"):
+        r = run([restic, "forget", "--retry-lock", "30m", *[s["id"] for s in snaps]], env=env)
+        if r.returncode != 0:
+            raise BackupError(f"restic forget failed rc={r.returncode}: {r.stderr.strip()[-300:]}")
+        p = run([restic, "prune", "--retry-lock", "30m"], env=env)
     if p.returncode != 0:
         print(f"{device}: {len(snaps)} forgotten, but prune FAILED rc={p.returncode}: {p.stderr.strip()[-300:]} "
               "(space not freed yet; re-run `restic prune`)")
@@ -130,6 +132,7 @@ def prune(device: str, over: dict, key_file: str | None, confirm: str | None = N
           stale_lock_hours: float = 6.0, dry_run: bool = False, ask=input) -> int:
     keep = retention(over)
     repo, env = hub_repo_env(device, key_file)
+    precedence.refuse_if_pullback(device, "prune")      # INFRA-644 3.2: never start while a pullback reads this repo
     restic = restic_bin()
     clear_stale_locks(restic, env, repo, device, stale_lock_hours)          # before the preview (review L4)
     cmd = [restic, "forget", "--dry-run", "--json", *[f"--{k.replace('_', '-')}={v}" for k, v in keep.items()],
