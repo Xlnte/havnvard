@@ -793,3 +793,59 @@ def leave_notice_for(repo: str):
         return on_hub
     from .checkin import report_notice
     return report_notice
+
+
+# ---------- R1 (re-review): dead exclusive locks left on this host are cleared before HavnVard's own jobs ----------
+
+def lock_records(restic: str, env: dict) -> list[dict]:
+    """Every lock in the repository, read without taking one (`restic list locks --no-lock` + `cat lock`)."""
+    from .util import run
+    r = run([restic, "list", "locks", "--no-lock"], env=env, timeout=120)
+    if r.returncode != 0:
+        raise BackupError(f"restic list locks failed rc={r.returncode}: {plain(r.stderr).strip()[-300:]}")
+    out = []
+    for lid in r.stdout.split():
+        c = run([restic, "cat", "lock", lid, "--no-lock"], env=env, timeout=120)
+        if c.returncode != 0:
+            continue                                  # removed between list and cat: its holder finished
+        try:
+            rec = json.loads(c.stdout)
+        except ValueError:
+            continue
+        if isinstance(rec, dict):
+            out.append({**rec, "id": lid})
+    return out
+
+
+def dead_local_exclusive(recs: list[dict]) -> list[dict]:
+    """Exclusive locks from THIS host whose process is gone: what restic itself treats as stale (same host, pid gone)
+    AND what HavnVard can prove dead. A pid that exists for any user (pid_alive: EPERM = alive) and a lock from another
+    host are never touched (INFRA-648)."""
+    out = []
+    for lk in recs:
+        try:
+            pid = int(lk.get("pid", 0))
+        except (TypeError, ValueError):
+            continue
+        if lk.get("exclusive") and lk.get("hostname") == host() and pid > 0 and not pid_alive(pid):
+            out.append(lk)
+    return out
+
+
+def clear_dead_locks(restic: str, env: dict, repo: str, job: str) -> int:
+    """Re-review R1: a killed job (e.g. the drill's paused tag after kill -9) leaves a dead exclusive lock that makes
+    every new restic job on the repository fail (rc 11) until someone unlocks it. Before the drill and before each
+    catalog run: when such a lock is found, run `restic unlock` (stale locks only; never --remove-all) and write an audit
+    row. Returns how many dead locks were found."""
+    from .util import run
+    dead = dead_local_exclusive(lock_records(restic, env))
+    if not dead:
+        return 0
+    r = run([restic, "unlock"], env=env, timeout=300)
+    desc = ", ".join(f"{lk['id'][:8]} (pid {lk.get('pid')} of {lk.get('username')}, {lk.get('time', '?')[:19]})"
+                     for lk in dead)
+    print(f"{job}: dead exclusive lock(s) on {repo} from this host: {desc}; ran `restic unlock` (stale locks only)"
+          + ("" if r.returncode == 0 else f" -- it FAILED rc={r.returncode}: {plain(r.stderr).strip()[-200:]}"))
+    log("job.stale_unlock", repo, hub_audit=True, job=job, locks=[lk["id"][:8] for lk in dead],
+        pids=[lk.get("pid") for lk in dead], rc=r.returncode)
+    return len(dead)
