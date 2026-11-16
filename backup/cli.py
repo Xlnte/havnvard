@@ -156,6 +156,15 @@ def build_parser() -> argparse.ArgumentParser:
         fb.add_argument("--owner-key", metavar="FILE")
         fb.add_argument("--include-archive", action="store_true")
         fb.add_argument("--confirm", metavar="TEXT")
+    pd = sub.add_parser("pullback-drill", help="hub: pull a known test set back while a catalog-style exclusive step "
+                        "runs; checks SHA-256, that the step yields and catches up, 20 parallel pullbacks; FAILED, never "
+                        "skipped (INFRA-644)")
+    pd.add_argument("--from", dest="from_device", required=True, metavar="DEVICE", help="whose repository (read on the hub)")
+    pd.add_argument("--set", dest="set_name", required=True, metavar="NAME", help="the test set, e.g. hv-test-20261113")
+    pd.add_argument("--hashes", metavar="FILE", help="store this SHA-256 list (sha256sum format) as the test set first")
+    pd.add_argument("--scratch", help="parent folder for the scratch folder (removed after)")
+    pd.add_argument("--render-units", metavar="DIR", help="write the weekly service+timer (Sunday 03:30) here; installs "
+                    "and enables nothing")
     ck = sub.add_parser("checkin", help="device: ask the hub whether a backup is due (schedules page); --run runs it")
     ck.add_argument("--run", action="store_true")
     rd = sub.add_parser("restore-drill", help="restore a random sample and compare SHA-256")
@@ -269,6 +278,14 @@ def _dispatch(a: argparse.Namespace) -> int:
                                 a.from_device, a.key_file, a.login_file, a.snapshot)
     if a.cmd == "find":
         return archive.find(a.pattern, a.device, a.catalog, a.from_device, a.key_file, a.login_file)
+    if a.cmd == "pullback-drill":
+        from . import pullback_drill
+        if a.render_units:
+            print("\n".join(str(p) for p in pullback_drill.render_units(Path(a.render_units), a.from_device, a.set_name)))
+            print("rendered only: NOT installed or enabled. The hub owner enables the timer after seeing a drill report "
+                  "(INFRA-644 3.7 step 5): systemctl --user enable --now havnvard-pullback-drill.timer")
+            return 0
+        return pullback_drill.pullback_drill(a.from_device, a.set_name, a.hashes, a.scratch)
     if a.cmd in ("forget-before", "forget-after"):
         return archive.forget_dated(a.device, a.date, a.owner_key, a.cmd == "forget-after", a.include_archive,
                                     a.confirm)
