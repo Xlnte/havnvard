@@ -210,3 +210,36 @@ def test_prune_deletes_extra_site_hosts_keeps_tuned_sla_unless_asked(schema):
         assert cur.fetchone()[0] == 1
     assert ish.prune(sh, include_sla=True) == {"site_hosts": 0, "hash_verification_sla": 1}
     assert ish.extra_rows(sh) == {"site_hosts": [], "hash_verification_sla": []}
+
+
+# ---- review 3.3.10: --prune refuses when the site file cannot be trusted; nothing is deleted ---------------------
+
+@pytest.mark.parametrize("site", [
+    {},                                                                                  # no site file read: defaults
+    {"_path": "x", "hosts": {"sources": ["server-1", "agent-1"]}},                      # nas not set explicitly
+    {"_path": "x", "hosts": {"nas": "nas-1", "all": ["server-1", "agent-1"]}},          # nas missing from [hosts] all
+    {"_path": "x", "hosts": {"nas": "other-nas", "sources": ["other"]}},               # wrong site file: no overlap
+])
+def test_prune_refuses_an_untrusted_site_file_and_deletes_nothing(schema, monkeypatch, site):
+    import havnvard_site
+    name, conn = schema
+    sh = _Shim(conn, name)
+    ish.apply(sh)
+    monkeypatch.setattr(havnvard_site, "site", lambda: site)
+    with pytest.raises(havnvard_site.SiteConfigError, match="--prune refused"):
+        ish.prune(sh, include_sla=True)
+    with pytest.raises(havnvard_site.SiteConfigError):
+        ish.extra_rows(sh)                                                               # the dry run refuses too
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT count(*) FROM {name}.site_hosts")
+        assert cur.fetchone()[0] == 3
+        cur.execute(f"SELECT count(*) FROM {name}.hash_verification_sla")
+        assert cur.fetchone()[0] == 12
+
+
+def test_main_turns_a_refusal_into_exit_2(monkeypatch, capsys):
+    import havnvard_site
+    def boom():
+        raise havnvard_site.SiteConfigError("--prune refused: test")
+    monkeypatch.setattr(ish, "_main", boom)
+    assert ish.main() == 2 and "--prune refused" in capsys.readouterr().err

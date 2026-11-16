@@ -13,6 +13,9 @@ Follow-ups INFRA-633 and INFRA-635. Built on fix/infra-564-563-562 (3.3.9). 3.3.
   site file as (host, role) and names the missing and the extra rows. New `init_site_hosts.py --prune --confirm-prune` deletes the extra
   site_hosts rows (a removed host, or a NAS role that changed; apply() then re-inserts the changed one). `--dry-run --prune` lists what would go.
   `hash_verification_sla` rows of removed hosts are tuned data and are kept unless `--include-sla` is added. `--prune` alone refuses.
+- **Review: --prune refuses an untrusted site file.** It (and `--dry-run --prune`) exits 2 without deleting when no site file was read (the
+  built-in defaults would have pruned every real host), when `[hosts] nas` or `sources`/`all` is not set explicitly, when the NAS host is not in
+  `[hosts] all`, or when the site file shares no (host, role) with `diskaudit.site_hosts`. The dry run's connection is read-only.
 
 ## 3.3.9 (20261116)
 
