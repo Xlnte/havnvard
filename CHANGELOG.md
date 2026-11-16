@@ -14,7 +14,11 @@ Follow-ups from the 3.1.0 baseline review (INFRA-564, 563, 562). Built on the op
   the missing or unexpected rows) instead of a literal 12.
 - **Generic NAS-orphan view (INFRA-562).** New table `diskaudit.site_hosts (host, role)`; `v_nas_orphans` is back in `schema/baseline.sql`
   and takes the NAS from it instead of naming one host. Same name and columns. Migration `20261116_diskaudit_site_hosts_v1.sql`.
-- **Deploy:** apply the migration, then run `python3 init_site_hosts.py` (until it runs, `v_nas_orphans` returns no rows), then deploy code.
+- **Review fixes.** Without a `nas` row in `site_hosts`, reading `v_nas_orphans` raises (function `diskaudit.site_nas_hosts_configured()`,
+  one-time filter) instead of returning no rows, so "not configured" cannot read as "no orphans". A real rollback file,
+  `migrations/20261116_diskaudit_site_hosts_v1_rollback.sql` (`-v nas_host=...`, stops with an error without it), replaces the note that
+  pointed at the 20260718 migration (whose published copy names a placeholder host, so its view would match nothing).
+- **Deploy:** apply the migration, then run `python3 init_site_hosts.py` (until it runs, reading `v_nas_orphans` raises an error naming the script), then deploy code.
 
 ## 3.3.8 (20261116)
 
