@@ -215,6 +215,10 @@ the catalog's tag, 10 min for a delete or an unknown holder, one hub notice afte
 stale lock, and never removes a live one. Its first and last line is a STATUS line (`STATUS: DONE 1641/1641` or
 `STATUS: NOT DONE 1640/1641, 1 FAILED ...`). `python -m backup pullback-drill --from DEVICE --set NAME [--hashes FILE]`
 proves it on the hub (see RUNBOOK); `--render-units DIR` writes a weekly timer that is enabled only on the owner's yes.
+**Limit:** precedence (the catalog yields, deletes and key removal refuse) covers pullbacks run **on the hub, as the hub
+user**. A pullback from another computer (or as another user on the hub) still gets the lock handling (wait, stale
+unlock, FAILED with the holder named), but the hub's jobs cannot see it: against a long delete it waits 10 min and then
+those files are FAILED. Run a pullback that must not wait on the hub with `--from DEVICE`.
 
 ### Accounts, registration and schedules (3.3.0)
 The hub can serve pages (`python -m backup hub web --listen <tailnet-ip> --port 8001`). The **company or household owns
