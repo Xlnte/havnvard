@@ -2,6 +2,24 @@
 
 Older releases are described in `FEATURES.md` and `docs/*_RELEASE_*.md`.
 
+## 3.3.14 (20261116)
+
+INFRA-644 re-review items R1-R4 (must land before the pullback drill runs, even by hand).
+
+- **Dead exclusive locks are cleared before HavnVard's own jobs (R1).** A drill killed during its 3 s hold (kill -9,
+  OOM, systemd's final SIGKILL) leaves a dead exclusive lock: restic does not ignore it, and every new job on that
+  repository fails rc 11 until someone runs `restic unlock`. At the start of every drill and every `catalog run`, each
+  repository's locks are read without locking (`restic list locks --no-lock`, `restic cat lock --no-lock`). An
+  exclusive lock from THIS host whose pid is gone gets a stale-only `restic unlock` (never `--remove-all`) and a hub
+  audit row `job.stale_unlock`. A pid that exists for any user, and a lock from another host, are never touched
+  (INFRA-648).
+- **Every drill marker is recorded and pinned (R3).** At the start of each drill every snapshot tagged
+  `havnvard-drill-marker` goes into `drill-markers.json` (health's skip set) and gets file time 0, including one a
+  killed tag left behind.
+- **The drill pauses only its own exclusive lock (R2).** It pauses first, then checks the new lock with `restic cat
+  lock` (exclusive and the tag's pid); otherwise it resumes and keeps waiting.
+- **R4.** ctypes/prctl is resolved in the parent; the forked child only calls it.
+
 ## 3.3.13 (20261116)
 
 INFRA-644 (a pullback takes precedence over other backup jobs, and is tested on a schedule) and INFRA-645 (honest summary).
