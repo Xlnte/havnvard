@@ -11,5 +11,5 @@ empty database they do **not** build the schema.
 ```bash
 pg_dump "$POSTGRES_URL" --schema-only --no-owner --no-privileges -n diskaudit -f /tmp/diskaudit.sql
 python3 scripts/make_baseline_schema.py /tmp/diskaudit.sql --site-names ~/private/baseline_site_rules.txt -o schema/baseline.sql
-# --site-names: your PRIVATE list of host/person names to rewrite or forbid (never commit it)
+# --site-names is REQUIRED (or $HAVNVARD_SITE_NAMES, or --no-site-names to opt out): your PRIVATE list of host/person names to rewrite or forbid (never commit it)
 ```

@@ -160,3 +160,53 @@ def test_load_bearing_census_is_skipped_without_thoth():
         assert rlb.scan_census(conn) is rlb.CENSUS_SKIPPED
     finally:
         conn.close()
+
+
+# ---- --site-names is required (INFRA-568, 3.3.8) ------------------------------------------------------
+
+def _gen(tmp_path, *args, env_names=None):
+    dump = tmp_path / "dump.sql"
+    dump.write_text(_DUMP, encoding="utf-8")
+    out = tmp_path / "baseline.sql"
+    out.write_text("previous good baseline", encoding="utf-8")
+    env = {k: v for k, v in os.environ.items() if k != "HAVNVARD_SITE_NAMES"}
+    if env_names is not None:
+        env["HAVNVARD_SITE_NAMES"] = str(env_names)
+    r = subprocess.run([sys.executable, os.path.join(REPO_ROOT, "scripts", "make_baseline_schema.py"), str(dump),
+                        "-o", str(out), *args], capture_output=True, text=True, env=env)
+    return r, out
+
+
+def test_regeneration_without_site_names_is_refused(tmp_path):
+    r, out = _gen(tmp_path)
+    assert r.returncode == 2 and "refusing" in r.stderr and "--no-site-names" in r.stderr
+    assert out.read_text(encoding="utf-8") == "previous good baseline"
+
+
+def test_site_names_file_must_exist(tmp_path):
+    r, out = _gen(tmp_path, "--site-names", str(tmp_path / "missing.txt"))
+    assert r.returncode == 2 and "not found" in r.stderr
+    assert out.read_text(encoding="utf-8") == "previous good baseline"
+
+
+def test_site_names_default_from_environment(tmp_path):
+    rules = tmp_path / "rules.txt"
+    rules.write_text("# private\nzzz-private-host => the NAS\n", encoding="utf-8")
+    r, out = _gen(tmp_path, env_names=rules)
+    assert r.returncode == 0, r.stderr
+    assert out.read_text(encoding="utf-8").startswith("-- HavnVard database schema: baseline")
+
+
+def test_explicit_opt_out_works_and_beats_the_environment(tmp_path):
+    rules = tmp_path / "rules.txt"
+    rules.write_text("hostname\n", encoding="utf-8")            # would forbid the dump's HOSTNAME if it were read
+    r, out = _gen(tmp_path, "--no-site-names", env_names=rules)
+    assert r.returncode == 0, r.stderr
+    assert out.read_text(encoding="utf-8") != "previous good baseline"
+
+
+def test_site_names_and_opt_out_are_mutually_exclusive(tmp_path):
+    rules = tmp_path / "rules.txt"
+    rules.write_text("x\n", encoding="utf-8")
+    r, _ = _gen(tmp_path, "--site-names", str(rules), "--no-site-names")
+    assert r.returncode == 2 and "not allowed" in r.stderr
