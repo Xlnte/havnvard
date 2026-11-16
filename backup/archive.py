@@ -502,6 +502,7 @@ class _Writer:
         self.redirect: dict[Path, Path] = {}     # a path blocked by a non-folder -> the NAME_PULLBACK-STAMP folder used
         self.new_dirs: dict[Path, tuple[int, float] | None] = {}
         self.new, self.same, self.side, self.partial, self.links, self.special = [], 0, [], [], 0, 0
+        self.partial_src: set[str] = set()   # INFRA-645: a source whose copy was cut short is never 'restored'
         self.earlier: list[tuple[str, str]] = []  # (existing different file, earlier PULLBACK copy that already matches)
         self.hashes: dict[str, str] = {}         # source path -> SHA-256 of what was written / found identical
         # folder that refused us -> {"why", "items": destination paths not placed}; insertion order = first seen
@@ -640,7 +641,10 @@ class _Writer:
                 if e.errno in _REFUSED and not os.path.lexists(d):   # the folder exists but will not take files
                     raise self._refuse(d.parent, d, e) from e
                 raise
-            self.new.append(str(d))
+            if self.partial and self.partial[-1] == str(d):
+                self._cut_short(src)
+            else:
+                self.new.append(str(d))
             return
         if d.is_file() and not d.is_symlink():
             spool = self.scratch / "spool"
@@ -671,7 +675,16 @@ class _Writer:
         finally:
             if reader is not None and getattr(reader, "name", None) == str(self.scratch / "spool"):
                 reader.close()
-        self.side.append((str(d), str(alt)))
+        if self.partial and self.partial[-1] == str(alt):
+            self._cut_short(src)
+        else:
+            self.side.append((str(d), str(alt)))
+
+    def _cut_short(self, src: str) -> None:
+        """INFRA-645: the copy was cut short (e.g. restic stopped on a lock). It is kept and listed as PARTIAL, but it is
+        neither restored nor accounted for, and its hash is not used as if the file had come back."""
+        self.partial_src.add(src)
+        self.hashes.pop(src, None)
 
     def put_link(self, src: str, target: str) -> None:
         dest = _dest(self.tgt, src)
@@ -809,8 +822,11 @@ def pullback(date: str | None = None, paths: list[str] | None = None, version: s
         except OSError as e:
             failed.append(("folder modes", str(e)))
     blocked_src = w.unplaced
-    missing = sorted(set(expected) - set(w.hashes) - blocked_src)
-    print(f"pullback: {len(w.new)} restored, {w.same} already there and identical (left alone), "
+    missing = sorted(set(expected) - set(w.hashes) - blocked_src - w.partial_src)
+    not_back = len(missing) + len(w.partial_src & set(expected)) + len(blocked_src & set(expected))
+    print(f"pullback: {len(w.new)} restored, "
+          + (f"{not_back} NOT restored (listed below), " if not_back else "")
+          + f"{w.same} already there and identical (left alone), "
           f"{len(w.side)} already there but different (kept; backed-up copy written next to it)"
           + (f", {w.links} symlink(s)" if w.links else "")
           + (f", {w.special} pipe/socket/device entr(ies) skipped" if w.special else ""))
@@ -818,7 +834,7 @@ def pullback(date: str | None = None, paths: list[str] | None = None, version: s
         print(f"  KEPT {orig}  ->  backed-up copy: {alt}")
     for orig, prev in w.earlier:
         print(f"  KEPT {orig}  (backed-up copy already pulled back earlier: {prev})")
-    print(f"pullback: {len(expected) - len(missing) - len(blocked_src & set(expected))}/{len(expected)} files "
+    print(f"pullback: {len(expected) - not_back}/{len(expected)} files "
           "accounted for; "
           f"{checked - len(bad)}/{checked} SHA-256 match the offload manifest"
           + ("" if checked else " (no offload manifest for these files; restic checked its own hashes)"))
@@ -832,7 +848,7 @@ def pullback(date: str | None = None, paths: list[str] | None = None, version: s
         print(f"  FAILED {inc}: {why}")
     if w.blocked:
         _report_blocked(w, str(tgt), notifier, hub_notice)
-    return 0 if not (bad or missing or w.partial or failed or w.blocked or w.unplaced) else config.PROBLEM_EXIT
+    return 0 if not (bad or missing or w.partial or w.partial_src or failed or w.blocked or w.unplaced) else config.PROBLEM_EXIT
 
 
 def _report_blocked(w: _Writer, target: str, notifier, hub_notice) -> list[str]:
