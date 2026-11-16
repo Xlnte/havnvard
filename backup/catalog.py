@@ -308,6 +308,23 @@ def tag_or_defer(restic: str, env: dict, repo: str, snap_id: str, name: str, whe
     return True
 
 
+def _pin_drill_markers(repo: str, env: dict, snaps: list[dict], problems: list[str]) -> None:
+    """Review N2: hourly, from the snapshot list this run already has (no extra restic call): every pullback-drill marker
+    snapshot is recorded for health's skip set and its file time pinned to 0, so a marker a killed drill left behind
+    can make a dead device look freshly backed up for at most one hour, not until the next weekly drill."""
+    from .pullback_drill import _remember
+    for s in snaps:
+        if DRILL_TAG not in (s.get("tags") or []):
+            continue
+        try:
+            _remember(repo, s["id"])
+            f = Path(env["RESTIC_REPOSITORY"]) / "snapshots" / s["id"]
+            if f.is_file() and f.stat().st_mtime != 0:
+                _set_mtime(env, s["id"], 0)
+        except (BackupError, OSError) as e:
+            problems.append(f"{repo}: drill marker {s['id'][:8]} not pinned: {e}")
+
+
 def _max_number_in(lines) -> int:
     hi = 0
     for ln in lines:
@@ -405,6 +422,8 @@ def _catalog_run(cdir: Path, repo_root: Path, hub: dict, first_run_latest_only: 
             snap_cache[repo] = snapshots(restic, env)
         except BackupError as e:
             problems.append(f"{repo}: {e}")
+            continue
+        _pin_drill_markers(repo, env, snap_cache[repo], problems)
     if recover and (problems or len(snap_cache) != len(envs)):
         raise BackupError("--recover needs every repository readable (the counter floor comes from all their tags): "
                           + "; ".join(problems))
