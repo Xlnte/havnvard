@@ -2,7 +2,7 @@
 
 **Know that every file you care about is backed up, prove the backups restore, and find any file in any backup.**
 HavnVard is a self-hosted storage-assurance toolkit for a home or small-office fleet: a few Linux machines, a NAS and
-a cloud account. Version 3.3.8.
+a cloud account. Version 3.3.9.
 
 > **Absolute rule: HavnVard never deletes, moves or overwrites a scanned file.** Every "duplicate", "stale" or
 > "not backed up" result is a report for you to read. Deleting anything is always your decision, made by hand.
@@ -345,14 +345,11 @@ then build the whole schema in one step:
 psql "$POSTGRES_URL" -v ON_ERROR_STOP=1 --single-transaction -f schema/baseline.sql
 ```
 
-Then give each of your hosts a bit-rot verification schedule (the monitor's overdue alarm checks these rows; the
-example is at the end of `schema/seed.sql`):
+Then fill the rows that depend on your site file's hosts (which host is the NAS, and each host's bit-rot verification
+schedule; the monitor's overdue alarm and `v_nas_orphans` read them). Safe to re-run after adding a host:
 
 ```bash
-psql "$POSTGRES_URL" -c "INSERT INTO diskaudit.hash_verification_sla (host, tier, target_recheck_days, schedule_mode)
-  SELECT h, t, d, m FROM unnest(ARRAY['server-1','nas-1']) AS h,
-       (VALUES ('A',7,'weekly'),('B',30,'monthly'),('C',90,'quarterly'),('E',1,'daily')) AS s(t,d,m)
-  ON CONFLICT (host, tier) DO NOTHING"
+python3 init_site_hosts.py            # --dry-run prints the rows without writing
 ```
 
 `schema/baseline.sql` is the current schema plus generic starting rules (`schema/seed.sql`: OS, cache and temp paths

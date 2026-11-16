@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from pathlib import Path
 
 
 REQUIRED_TABLES = {
@@ -18,6 +19,30 @@ REQUIRED_FILE_COLUMNS = {
     "hash_baseline_mtime_ns","hash_baseline_size","hash_baseline_inode",
     "hash_baseline_metadata_trusted",
 }
+
+
+SLA_TIERS = ("A", "B", "C", "E")
+
+
+def site_hosts() -> tuple[str, ...]:
+    """The site file's hosts. havnvard_site.py sits in the repo root (two levels above infra126/scripts); $HAVNVARD_HOME
+    names it when this package is installed elsewhere."""
+    for root in (os.environ.get("HAVNVARD_HOME"), str(Path(__file__).resolve().parents[2])):
+        if root and (Path(root) / "havnvard_site.py").is_file():
+            sys.path.insert(0, root)
+            import havnvard_site  # noqa: PLC0415
+            return tuple(havnvard_site.all_hosts())
+    raise SystemExit("validate_live: havnvard_site.py not found; set HAVNVARD_HOME to the HavnVard checkout")
+
+
+def sla_failures(found: set[tuple[str, str]], hosts) -> list[str]:
+    """Every site host needs one SLA row per tier (hosts x 4). A host the site file lacks, or a row the database lacks, fails."""
+    want = {(h, t) for h in hosts for t in SLA_TIERS}
+    out = []
+    if found != want:
+        out.append(f"expected {len(want)} scheduled SLA rows ({len(set(hosts))} hosts x {len(SLA_TIERS)} tiers), found {len(found)}"
+                   f"; missing {sorted(want - found)}; unexpected {sorted(found - want)}")
+    return out
 
 
 def main() -> int:
@@ -37,9 +62,10 @@ def main() -> int:
         findings["missing_file_columns"]=missing_columns
         if missing_columns: failures.append(f"missing diskaudit.files columns: {missing_columns}")
 
-        cur.execute("SELECT count(*) FROM diskaudit.hash_verification_sla")
-        findings["sla_rows"]=cur.fetchone()[0]
-        if findings["sla_rows"] != 12: failures.append(f"expected 12 scheduled SLA rows, found {findings['sla_rows']}")
+        cur.execute("SELECT host, tier FROM diskaudit.hash_verification_sla")
+        sla={(h, str(t).strip()) for h, t in cur.fetchall()}
+        findings["sla_rows"]=len(sla)
+        failures.extend(sla_failures(sla, site_hosts()))
 
         cur.execute("SELECT count(*) FROM diskaudit.mutable_file_registry")
         findings["registry_rows"]=cur.fetchone()[0]

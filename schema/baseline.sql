@@ -1660,6 +1660,25 @@ ALTER TABLE diskaudit.scan_runs ALTER COLUMN scan_id ADD GENERATED ALWAYS AS IDE
 
 
 --
+-- Name: site_hosts; Type: TABLE; Schema: diskaudit; Owner: -
+--
+
+CREATE TABLE diskaudit.site_hosts (
+    host text NOT NULL,
+    role text NOT NULL,
+    added_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT site_hosts_role_check CHECK ((role = ANY (ARRAY['source'::text, 'nas'::text])))
+);
+
+
+--
+-- Name: TABLE site_hosts; Type: COMMENT; Schema: diskaudit; Owner: -
+--
+
+COMMENT ON TABLE diskaudit.site_hosts IS 'The site file''s hosts and their role: source = a machine whose files need a backup, nas = a NAS (the backup target). Filled by init_site_hosts.py; read by v_nas_orphans.';
+
+
+--
 -- Name: tree_verifications; Type: TABLE; Schema: diskaudit; Owner: -
 --
 
@@ -1906,6 +1925,31 @@ CREATE VIEW diskaudit.v_infra126_verification_age AS
           WHERE ((c.host = f.host) AND (c.path = f.path)))) AS is_critical
    FROM diskaudit.files f
   WHERE (still_exists AND (file_type = 'regular'::text));
+
+
+--
+-- Name: v_nas_orphans; Type: VIEW; Schema: diskaudit; Owner: -
+--
+
+CREATE VIEW diskaudit.v_nas_orphans AS
+ SELECT f.host,
+    f.path,
+    f.size_bytes,
+    f.duplicate_group_id,
+    f.inode,
+    f.mtime
+   FROM (diskaudit.files f
+     JOIN diskaudit.site_hosts n ON (((n.host = f.host) AND (n.role = 'nas'::text))))
+  WHERE (f.still_exists AND (f.file_type = 'regular'::text) AND (NOT (EXISTS ( SELECT 1
+           FROM diskaudit.files other
+          WHERE ((other.duplicate_group_id = f.duplicate_group_id) AND (other.host <> f.host) AND other.still_exists AND (f.duplicate_group_id IS NOT NULL))))));
+
+
+--
+-- Name: VIEW v_nas_orphans; Type: COMMENT; Schema: diskaudit; Owner: -
+--
+
+COMMENT ON VIEW diskaudit.v_nas_orphans IS 'Live regular files on a NAS host (diskaudit.site_hosts, role nas) with no content-identical copy (matching duplicate_group_id) confirmed on any other host -- includes files never deduped (duplicate_group_id IS NULL). NOT limited to critical_patterns matches -- this is a whole-NAS reverse check. Deliberately unclassified: could be an intentional archive-only copy or a real single point of failure -- operator judgment call, not this view''s job. Empty until site_hosts has a nas row (run init_site_hosts.py).';
 
 
 --
@@ -2409,6 +2453,14 @@ ALTER TABLE ONLY diskaudit.scan_errors
 
 ALTER TABLE ONLY diskaudit.scan_runs
     ADD CONSTRAINT scan_runs_pkey PRIMARY KEY (scan_id);
+
+
+--
+-- Name: site_hosts site_hosts_pkey; Type: CONSTRAINT; Schema: diskaudit; Owner: -
+--
+
+ALTER TABLE ONLY diskaudit.site_hosts
+    ADD CONSTRAINT site_hosts_pkey PRIMARY KEY (host);
 
 
 --
@@ -2948,12 +3000,10 @@ ON CONFLICT(host,path_pattern,reason) DO UPDATE
 SET score=EXCLUDED.score,is_regex=EXCLUDED.is_regex,
     pattern_kind=EXCLUDED.pattern_kind,priority=EXCLUDED.priority;
 
--- Bit-rot verification schedule: one row per host and tier. Add your hosts after install, for example:
---   INSERT INTO diskaudit.hash_verification_sla (host, tier, target_recheck_days, schedule_mode)
---   SELECT h, t, d, m FROM unnest(ARRAY['server-1','nas-1']) AS h,
---        (VALUES ('A',7,'weekly'),('B',30,'monthly'),('C',90,'quarterly'),('E',1,'daily')) AS s(t,d,m)
---   ON CONFLICT (host, tier) DO NOTHING;
--- Without these rows the monitor's overdue-verification alarm has nothing to check.
+-- Hosts and the bit-rot verification schedule come from YOUR site file, not from this seed. After install run
+--   python3 init_site_hosts.py
+-- It fills diskaudit.site_hosts (which host is the NAS: v_nas_orphans reads it) and one hash_verification_sla row per
+-- (host, tier A/B/C/E). Without those rows the monitor's overdue-verification alarm has nothing to check.
 
 -- Populate the materialized views (created empty by the schema dump).
 REFRESH MATERIALIZED VIEW diskaudit.mv_file_status;

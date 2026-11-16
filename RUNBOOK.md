@@ -163,7 +163,7 @@ Tables: backup_runs, classification_config, critical_patterns,
 
 Views:  v_backup_coverage, v_critical_files, v_duplicate_groups,
         v_duplicate_groups_by_host, v_file_status, v_git_tracked_recency,
-        v_nas_orphans (original deployment only; not in schema/baseline.sql)
+        v_nas_orphans (NAS host from site_hosts; run init_site_hosts.py)
 ```
 
 ```bash

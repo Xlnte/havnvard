@@ -28,8 +28,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent.parent
 SEED = HERE / "schema" / "seed.sql"
 
-# Views that only make sense for one named host and that no HavnVard code reads.
-DROP_OBJECTS = {"v_nas_orphans"}
+# Objects (and so their COMMENTs, including column comments) to leave out of the baseline. Empty since 3.3.9:
+# v_nas_orphans is now generic (it takes the NAS from diskaudit.site_hosts). Add a bare object name to drop one.
+DROP_OBJECTS: set[str] = set()
 
 # Generic comment rewrites, applied in order before the site rules: sentences that only describe one
 # deployment's data, and runbook paths.
@@ -90,7 +91,8 @@ def build(dump: str, site_rules: list[Rule]) -> str:
     out = []
     for block in split_blocks(dump):
         name = block_name(block)
-        last_word = name.split()[-1] if name else ""
+        # "VIEW v_x" -> v_x, and "COLUMN v_x.col" -> v_x, so a column comment goes with its dropped view (INFRA-564).
+        last_word = name.split()[-1].split(".")[0] if name else ""
         if last_word in DROP_OBJECTS:
             continue
         out.append(block)
@@ -99,6 +101,8 @@ def build(dump: str, site_rules: list[Rule]) -> str:
     # psql-only meta commands (pg_dump 16.10+ \restrict) and version banners.
     text = re.sub(r"(?m)^\\(?:un)?restrict .*\n", "", text)
     text = re.sub(r"(?m)^-- Dumped (?:from|by) .*\n", "", text)
+    # pg_dump 17 writes SET transaction_timeout, which PostgreSQL 15/16 rejects; the header promises 15+.
+    text = re.sub(r"(?m)^SET transaction_timeout = .*\n", "", text)
 
     # A host column must be given by the writer; no site gets a silent default host.
     text = re.sub(r"host text DEFAULT '[^']*'::text NOT NULL", "host text NOT NULL", text)
@@ -112,7 +116,7 @@ def build(dump: str, site_rules: list[Rule]) -> str:
                 s = re.sub(pat, rep, s)
         return s
 
-    text = re.sub(r"(?ms)^COMMENT ON .*?';\n", fix_comment, text)
+    text = re.sub(r"(?ms)^COMMENT ON .*? IS '(?:[^']|'')*';\n", fix_comment, text)
     text = text.rstrip() + "\n\n" + SEED.read_text(encoding="utf-8")
     # pg_dump --schema-only creates materialized views WITH NO DATA; reading one then errors
     # "has not been populated". Populate each after the seed so a new install's pages work at once.

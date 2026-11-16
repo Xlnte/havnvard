@@ -12,6 +12,7 @@ transactions, the NAS-dedup tests do not touch production at all).
 | File | What it covers |
 |---|---|
 | `test_crosshost_verify.py` | `crosshost_verify.py` (candidate SQL, hash-loader idempotency, cross-host matching, INFRA-242 transport failure) **and the codebase-wide delete/move guard**: fails if any `shutil.move/rmtree`, `os.rename/replace`, `rm -rf` appears, or any `os.remove/os.unlink/rm -f` that is not on the reviewed `(file, line)` allowlist; plus `test_guard_rejects_new_unlisted_delete` so a green guard proves something. |
+| `test_site_hosts.py` | 3.3.9: `init_site_hosts.py` rows from the site file (idempotent, keeps tuned values), `validate_live.py` expects hosts x 4, `v_nas_orphans` takes the NAS from `site_hosts` (baseline in a throwaway schema). |
 | `test_nas_dedup_core.py` | Pure functions of `nas_dedup_core.py` (no DB, no SSH): freshness truth table, scope pattern, batch planner, `verify_batch` completeness, keeper rule, progress note. |
 | `test_hash_stat_batch.py` | The real `hash_stat_batch.sh` run under `sh` on files in `tmp_path` (stat fields, symlink/missing/non-regular rejection, `#DONE` trailer). |
 | `test_nas_trigkey_dedup.py` | `nas_trigkey_dedup.py` end to end against a fake remote (`_fake_target.py`) and a throwaway schema: groups, hardlinks, freshness, scope, failure/retry/SIGTERM/exit codes, atomic publish, snapshot contract, export, migrations. |
