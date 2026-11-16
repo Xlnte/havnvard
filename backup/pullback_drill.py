@@ -279,7 +279,12 @@ def hold_tag(restic: str, env: dict, snap_id: str, tag: str, locks: Path, errf, 
         new = _lock_files(locks) - seen
         if new:
             os.kill(p.pid, signal.SIGSTOP)     # pause first (the tag holds its lock only briefly), then check it
-            if any(_is_our_exclusive(restic, env, lid, p.pid) for lid in new):
+            try:
+                ours = any(_is_our_exclusive(restic, env, lid, p.pid) for lid in new)
+            except BaseException:               # review N1: never leave the tag paused holding the exclusive lock
+                _resume(p)
+                raise
+            if ours:
                 return p, True
             seen |= new                        # re-review R2: someone else's lock, or not exclusive: let it go on
             _resume(p)
