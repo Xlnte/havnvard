@@ -3,7 +3,7 @@
 
 It exists only so a systemd unit, timer or cron line that still runs `nas_trigkey_dedup.py` keeps working until
 its ExecStart is changed to `nas_host_dedup.py`. It forwards the command line to nas_host_dedup.main() and
-exits with its exit code. Remove this file (and tests/test_dedup_shim.py) once no unit, timer or cron line
+exits with its exit code. Remove this file (and its allowlist entry in tests/test_generic_names.py) once no unit, timer or cron line
 names it; do not publish a release that still contains it (the old name carries a host name).
 """
 import os

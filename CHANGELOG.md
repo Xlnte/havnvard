@@ -14,6 +14,11 @@ INFRA-566 and INFRA-565 (public-release privacy findings PF1 and FILE-4). Built 
   `investigate_server` (rows updated, CHECK re-created), `git_repo_roots.discovered_via` default `'find-scan-20260718'` -> `'manual'`. Two read-only
   views keep the old column names for old readers: `v_integrity_checks_legacy_names`, `v_report_snapshots_legacy_names` (not in the baseline).
   **Apply the migration and deploy 3.3.11 code together** (3.3.10 code names the old columns).
+- **Review fix (3.3.11).** The verdict rename failed on any suspect linked to a divergence: `trg_infra126_sync_suspect_review` copied the
+  new value into `hash_divergences` while that table's old CHECK still stood. The migration now drops both CHECKs first and switches the trigger
+  off for the two UPDATEs (and back to its previous mode), so it renames the value only. Real rollback file
+  `20261117_diskaudit_generic_names_v1_rollback.sql` replaces the prose note (whose order would have failed the CHECK); a forward + rollback
+  round trip gives a schema identical to the old baseline.
 - **Not done (follow-up):** the `infra126_*` tables, `v_infra126_*` views, functions, indexes and `INFRA126_*` environment variables keep their
   names: a Grafana dashboard provisioned outside this repo reads the two views, and the package's operator configuration uses the env names.
 
