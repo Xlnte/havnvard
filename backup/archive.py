@@ -825,6 +825,9 @@ def pullback(date: str | None = None, paths: list[str] | None = None, version: s
     x, y, n_failed = st.get("accounted", 0), st.get("expected", 0), st.get("failed", 0)
     if rc == 0:
         print(f"STATUS: DONE {x}/{y}", flush=True)
+    elif st.get("unlisted"):                     # review F6: never "n/n" while a folder was not even listed
+        print(f"STATUS: NOT DONE {x}/{y} listed files, {n_failed} FAILED, {st['unlisted']} folder(s) not listed "
+              "(listed above): run the same pullback again; files already back are left alone", flush=True)
     else:
         print(f"STATUS: NOT DONE {x}/{y}, {n_failed} FAILED (listed above): run the same pullback again; files "
               "already back are left alone", flush=True)
@@ -903,11 +906,12 @@ def _pullback_write(restic, env, jobs, target, now, notifier, hub_notice, st: di
     with tempfile.TemporaryDirectory(prefix="havnvard-pullback-") as td:
         w = _Writer(tgt, stamp, Path(td))
         failed = []
+        unlisted: list[tuple[str, str]] = []        # review F6: include paths whose file list could not be read
         for snap, incs in jobs:
             try:
                 files, special = snapshot_files(restic, env, snap["id"], incs)
-            except BackupError as e:                # e.g. GAVE UP on a lock: every include path is FAILED, listed
-                failed += [(inc, str(e)) for inc in incs]
+            except BackupError as e:                # e.g. GAVE UP on a lock: file count unknown, never "accounted for"
+                unlisted += [(inc, str(e)) for inc in incs]
                 continue
             expected.update({p: int(n.get("size") or 0) for p, n in files.items()})
             for inc in incs:
@@ -932,9 +936,11 @@ def _pullback_write(restic, env, jobs, target, now, notifier, hub_notice, st: di
     missing = sorted(set(expected) - set(w.hashes) - blocked_src - w.partial_src)
     not_back = len(missing) + len(w.partial_src & set(expected)) + len(blocked_src & set(expected))
     st.update(expected=len(expected), accounted=len(expected) - not_back, restored=len(w.new),
-              failed=not_back + len(bad), identical=w.same, kept_different=len(w.side), failed_items=len(failed))
+              failed=not_back + len(bad), identical=w.same, kept_different=len(w.side), failed_items=len(failed),
+              unlisted=len(unlisted))
     print(f"pullback: {len(w.new)} restored, "
-          + (f"{not_back} FAILED (listed below), " if not_back else "")
+          + (f"{not_back} FAILED (listed below), " if not_back or unlisted else "")
+          + (f"{len(unlisted)} folder(s) could not be listed (file count unknown, listed below), " if unlisted else "")
           + f"{w.same} already there and identical (left alone), "
           f"{len(w.side)} already there but different (kept; backed-up copy written next to it)"
           + (f", {w.links} symlink(s)" if w.links else "")
@@ -943,8 +949,10 @@ def _pullback_write(restic, env, jobs, target, now, notifier, hub_notice, st: di
         print(f"  KEPT {orig}  ->  backed-up copy: {alt}")
     for orig, prev in w.earlier:
         print(f"  KEPT {orig}  (backed-up copy already pulled back earlier: {prev})")
-    print(f"pullback: {len(expected) - not_back}/{len(expected)} files "
-          "accounted for; "
+    print(f"pullback: {len(expected) - not_back}/{len(expected)} "
+          + ("listed files accounted for, " + f"{len(unlisted)} folder(s) NOT listed; " if unlisted
+             else "files accounted for; ")
+          +
           f"{checked - len(bad)}/{checked} SHA-256 match the offload manifest"
           + ("" if checked else " (no offload manifest for these files; restic checked its own hashes)"))
     for p in missing:
@@ -955,10 +963,13 @@ def _pullback_write(restic, env, jobs, target, now, notifier, hub_notice, st: di
         print(f"  MISMATCH {b}")
     for inc, why in failed:
         print(f"  FAILED {inc}: {why}")
+    for inc, why in unlisted:
+        print(f"  NOT LISTED {inc}: {why}")
     if w.blocked:
         _report_blocked(w, str(tgt), notifier, hub_notice)
-    rc = 0 if not (bad or missing or w.partial or w.partial_src or failed or w.blocked or w.unplaced) else config.PROBLEM_EXIT
-    if rc and not st["failed"]:
+    rc = 0 if not (bad or missing or w.partial or w.partial_src or failed or unlisted or w.blocked or w.unplaced) \
+        else config.PROBLEM_EXIT
+    if rc and not st["failed"] and not unlisted:
         st["failed"] = len(failed) or 1           # e.g. folder modes: never "0 FAILED" on a NOT DONE line
     precedence.log("pullback.end", "pullback", restored=len(w.new), failed=st["failed"], expected=len(expected))
     return rc
