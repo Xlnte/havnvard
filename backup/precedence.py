@@ -51,6 +51,7 @@ LINE_EVERY_S = 60                # a visible line while waiting
 POLL_S = 5.0                     # how often the pullback asks restic again
 OVERDUE_AFTER_RUN_S = 15 * 60    # after the first catalog run that started after the pullback ended has finished
 OVERDUE_NO_RUN_S = 75 * 60       # no catalog run started (or none finished) this long after the pullback ended
+OVERDUE_LIVE_S = 3 * 60 * 60     # AC7 (review F4): deferred this long while the pullback is STILL live = overdue
 DONE_KEEP_DAYS = 30              # done deferral lines older than this are trimmed
 RUNS_KEEP = 500                  # catalog run history kept for the overdue rule
 TRACE_ENV = "HAVNVARD_INTENT_TRACE"   # the drill's concurrency case: every intent write/remove appended here
@@ -536,13 +537,15 @@ def record_catalog_start(t: float | None = None) -> float:
     return t
 
 
-def record_catalog_finish(started: float, t: float | None = None) -> None:
+def record_catalog_finish(started: float, t: float | None = None, failed: bool = False) -> None:
     t = _now() if t is None else t
 
     def upd(runs):
         for r in runs:
             if r.get("started_at") == started:
                 r["finished_at"] = t
+                if failed:
+                    r["failed"] = True
     _save_run(upd)
 
 
@@ -551,15 +554,25 @@ def overdue(now: float | None = None) -> tuple[list[tuple[dict, str]], int]:
     that started after the pullback ended finished more than 15 min ago without catching it up, or when no catalog
     run started (or the one that started has not finished) within 75 min of the pullback's end. Read-only."""
     now = _now() if now is None else now
-    opened = open_deferrals()
+    # review F3: the drill's own deferrals are judged by the drill (alert havnvard-pullback-drill), not here: the catalog
+    # run this alert tells the owner to start cannot catch them up.
+    opened = [o for o in open_deferrals() if o.get("job") != "pullback-drill"]
     runs = catalog_runs()
     out = []
     for o in opened:
         end = o.get("pullback_ended_at")
         if not end:
             live, _ = read_intents(o["repo"], remove_stale=False)     # alive NOW, whatever `now` is asked about
-            if any(i.get("id") == o.get("pullback") for i in live):
-                continue                                  # that pullback is still running: nothing is late yet
+            mine = [i for i in live if i.get("id") == o.get("pullback")]
+            if mine:
+                # review F4 / AC7: a pullback that hangs keeps its heartbeat, so it never goes stale; after 3 h of
+                # deferred name tags that is a problem the owner must see.
+                if now - float(o["deferred_at"]) > OVERDUE_LIVE_S:
+                    i = mine[0]
+                    out.append((o, f"pullback for {i.get('user')} (pid {i.get('pid')}) running since "
+                                   f"{hhmm(float(i['started_at']))}, {o['job']} step {o['tag']} on {o['repo']} deferred "
+                                   f"for over {OVERDUE_LIVE_S // 3600} h; check intent/ for a stuck pullback"))
+                continue                                  # still running and not yet 3 h: nothing is late yet
             end = float(o.get("pullback_heartbeat_at") or o["deferred_at"])
         after = sorted((r for r in runs if float(r.get("started_at") or 0) > float(end)),
                        key=lambda r: r["started_at"])
@@ -570,7 +583,11 @@ def overdue(now: float | None = None) -> tuple[list[tuple[dict, str]], int]:
                                f"(limit {OVERDUE_NO_RUN_S // 60} min)"))
             continue
         first = after[0]
-        if first.get("finished_at"):
+        if first.get("failed"):
+            if now > float(first["finished_at"]) + OVERDUE_AFTER_RUN_S:
+                out.append((o, f"{what}: the catalog run started {hhmm(first['started_at'])} FAILED at "
+                               f"{hhmm(first['finished_at'])} without catching it up"))
+        elif first.get("finished_at"):
             if now > float(first["finished_at"]) + OVERDUE_AFTER_RUN_S:
                 out.append((o, f"{what}: the catalog run started {hhmm(first['started_at'])} finished "
                                f"{hhmm(first['finished_at'])} without catching it up"))
@@ -684,6 +701,7 @@ class LockGate:
         BackupError (GAVE UP) naming the holder. A live lock is never removed."""
         t0 = last_line = None
         noticed = False
+        desc = ""
         stale_tries = 0
         while True:
             try:
@@ -727,7 +745,7 @@ class LockGate:
             if t0 is not None:
                 waited = _now() - t0
                 self.out(f"pullback: GOT THE LOCK after {waited:.0f}s")
-                self.waits.append({"seconds": round(waited), "outcome": "got the lock"})
+                self.waits.append({"holder": desc, "seconds": round(waited), "outcome": "got the lock"})
                 log("pullback.lock_got", self.repo, seconds=round(waited))
             return res
 
@@ -749,9 +767,29 @@ class LockGate:
                 "It goes on by itself when the lock is released, and gives up after "
                 f"{OTHER_WAIT_S // 60} min.")
         try:
-            from .checkin import report_notice
-            sent = (self.notice or report_notice)("pullback_waiting", text)
-        except (BackupError, OSError, ValueError, RuntimeError) as e:   # printed; the wait goes on
-            sent = f"not sent: {type(e).__name__}: {e}"
-        self.out(f"pullback: hub notice left for the hub owner: {sent}")
+            sent = (self.notice or leave_notice_for(self.repo))("pullback_waiting", text)
+        except (BackupError, OSError, ValueError, RuntimeError, sqlite3.Error) as e:   # printed; the wait goes on
+            sent = f"NOT left: {type(e).__name__}: {e}"
+        self.out(f"pullback: notice for the hub owner: {sent}")
         log("pullback.wait_notice", self.repo, holder=desc, result=str(sent))
+
+
+def leave_notice_for(repo: str):
+    """Review F5: where a waiting notice can really reach the hub owner. On a hub that has a hub page (accounts.db),
+    straight onto that page under the device's name; on an enrolled device, through the check-in queue
+    (checkin.report_notice). A hub with no hub page cannot show it and says so, instead of queueing it for a check-in
+    that never comes."""
+    hub = config.load().get("hub_local")
+    if hub:
+        def on_hub(kind: str, text: str) -> str:
+            from .accounts import Accounts, default_path
+            if not default_path().is_file():
+                return "NOT left: this hub has no hub page (no accounts.db); the lines above are the only record"
+            try:
+                nid = Accounts().add_notice(repo, kind, text)
+            except (BackupError, sqlite3.Error, OSError) as e:
+                return f"NOT left on the hub page: {type(e).__name__}: {e}"
+            return f"left on the hub page (notice {nid}, computer {repo})"
+        return on_hub
+    from .checkin import report_notice
+    return report_notice
