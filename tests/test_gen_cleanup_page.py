@@ -34,3 +34,31 @@ def test_writes_page_on_scratch_database(monkeypatch, tmp_path, capsys):
     html_text = out.read_text(encoding="utf-8")
     assert "List B: duplicate cleanup candidates" in html_text and "Coverage" in html_text
     assert "wrote " in capsys.readouterr().out
+
+
+def test_session_is_read_only(monkeypatch, tmp_path):
+    """The page's connection refuses writes (psycopg2's set_session(readonly=True) equivalent, INFRA-569 review)."""
+    conftest.connect_retry().close()                              # skips unless HAVNVARD_TEST_DSN is set
+    gcp = _load_without_psycopg2(monkeypatch)
+    monkeypatch.setattr(gcp, "OUT", str(tmp_path / "cleanup.html"))
+    seen = {}
+    real_connect = gcp.psycopg.connect
+
+    def spy_connect(*a, **kw):
+        conn = real_connect(*a, **kw)
+        real_close = conn.close
+
+        def close():
+            seen["ro"] = conn.execute("SHOW transaction_read_only").fetchone()[0]
+            try:
+                conn.execute("CREATE TEMP TABLE _gcp_ro_probe (x int)")
+                seen["write"] = "allowed"
+            except gcp.psycopg.errors.ReadOnlySqlTransaction:
+                seen["write"] = "refused"
+            real_close()
+        conn.close = close
+        return conn
+
+    monkeypatch.setattr(gcp.psycopg, "connect", spy_connect)
+    gcp.main()
+    assert seen == {"ro": "on", "write": "refused"}
