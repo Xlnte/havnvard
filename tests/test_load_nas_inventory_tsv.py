@@ -3,6 +3,7 @@ CR (or any other character Python's universal-newline mode treats as a line brea
 from __future__ import annotations
 
 import os
+import pytest
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -37,3 +38,35 @@ def test_cr_in_name_does_not_tear_the_row(tmp_path):
     # HavnVard then refuses the name explicitly instead of never seeing it
     assert core.classify_path(parsed[0][0]) == "UNSAFE_PATH" and core.classify_path(parsed[2][0]) == "UNSAFE_PATH"
     assert core.classify_path(parsed[1][0]) is None
+
+
+# ---- 3.3.10 (INFRA-633): the NAS admin token is read directly, sudo only after PermissionError ----
+
+def test_nas_creds_use_injected_reader_without_sudo(monkeypatch):
+    import subprocess as sp
+    monkeypatch.setattr(sp, "run", lambda *a, **k: (_ for _ in ()).throw(AssertionError("sudo must not run")))
+    assert L._nas_creds(reader=lambda p: "NAS_ADMIN_USER=u\nNAS_ADMIN_PASS='p'\n") == ("u", "p")
+    with pytest.raises(RuntimeError) as e:
+        L._nas_creds(reader=lambda p: "NAS_ADMIN_USER=u\n")
+    assert "p" not in str(e.value).replace(L.NAS_TOKEN_FILE, "").replace("NAS_ADMIN_USER/NAS_ADMIN_PASS", "").replace("could not parse  from ", "")
+
+
+def test_token_file_direct_then_sudo_only_on_permission_error(monkeypatch, tmp_path):
+    import builtins
+    import subprocess as sp
+    import token_file as tf
+    f = tmp_path / "tok"
+    f.write_text("NAS_ADMIN_USER=u\n")
+    monkeypatch.setattr(sp, "run", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no sudo")))
+    assert tf.read_token_text(str(f)) == "NAS_ADMIN_USER=u\n"
+    with pytest.raises(FileNotFoundError):                       # a missing file is not retried via sudo
+        tf.read_token_text(str(tmp_path / "missing"))
+    calls = []
+    monkeypatch.setattr(sp, "run", lambda argv, **k: calls.append(argv) or sp.CompletedProcess(argv, 0, stdout="X", stderr=""))
+    real = builtins.open
+    def deny(p, *a, **k):
+        if str(p) == "/denied":
+            raise PermissionError
+        return real(p, *a, **k)
+    monkeypatch.setattr(builtins, "open", deny)
+    assert tf.read_token_text("/denied") == "X" and calls == [["sudo", "cat", "/denied"]]

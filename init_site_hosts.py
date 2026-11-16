@@ -4,7 +4,8 @@
 Run once after installing the schema, and again whenever you add a host to the site file:
 
     python3 init_site_hosts.py            # apply
-    python3 init_site_hosts.py --dry-run  # print what would be inserted
+    python3 init_site_hosts.py --dry-run  # print what would be inserted (and, with --prune, deleted)
+    python3 init_site_hosts.py --prune --confirm-prune [--include-sla]   # also delete rows the site file no longer lists
 
 It writes only rows that are missing (ON CONFLICT DO NOTHING), so a schedule you tuned by hand is never overwritten, and a
 second run changes nothing. Tables:
@@ -52,20 +53,66 @@ def apply(conn) -> dict[str, int]:
     return done
 
 
+def extra_rows(conn) -> dict[str, list]:
+    """INFRA-635: rows the database holds that the site file does not call for. site_hosts rows whose (host, role) differ
+    from the site file (a host removed, or a changed NAS role) and hash_verification_sla rows for hosts no longer in it."""
+    want_hosts = set(site_host_rows())
+    want_names = {h for h, _ in want_hosts}
+    with conn.cursor() as cur:
+        cur.execute("SELECT host, role FROM diskaudit.site_hosts ORDER BY host")
+        sh = [r for r in cur.fetchall() if tuple(r) not in want_hosts]
+        cur.execute("SELECT host, tier FROM diskaudit.hash_verification_sla ORDER BY host, tier")
+        sla = [r for r in cur.fetchall() if r[0] not in want_names]
+    return {"site_hosts": sh, "hash_verification_sla": sla}
+
+
+def prune(conn, include_sla: bool = False) -> dict[str, int]:
+    """Delete the extra site_hosts rows (caller commits). hash_verification_sla rows are tuned data and are deleted
+    only when include_sla is True. A site_hosts row whose role changed is deleted, then re-inserted by apply()."""
+    extra = extra_rows(conn)
+    done = {"site_hosts": 0, "hash_verification_sla": 0}
+    with conn.cursor() as cur:
+        for host, role in extra["site_hosts"]:
+            cur.execute("DELETE FROM diskaudit.site_hosts WHERE host=%s AND role=%s", (host, role))
+            done["site_hosts"] += cur.rowcount
+        if include_sla:
+            for host, tier in extra["hash_verification_sla"]:
+                cur.execute("DELETE FROM diskaudit.hash_verification_sla WHERE host=%s AND tier=%s", (host, tier))
+                done["hash_verification_sla"] += cur.rowcount
+    return done
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     ap.add_argument("--dry-run", action="store_true", help="print the rows, change nothing")
+    ap.add_argument("--prune", action="store_true", help="also remove site_hosts rows the site file no longer lists (needs --confirm-prune; --dry-run lists them)")
+    ap.add_argument("--confirm-prune", action="store_true", help="explicit confirmation that --prune may delete rows")
+    ap.add_argument("--include-sla", action="store_true", help="with --prune: also delete hash_verification_sla rows (tuned data) of removed hosts")
     a = ap.parse_args()
+    if (a.confirm_prune or a.include_sla) and not a.prune:
+        ap.error("--confirm-prune and --include-sla only apply with --prune")
+    if a.prune and not (a.confirm_prune or a.dry_run):
+        ap.error("--prune deletes rows: add --confirm-prune (or --dry-run to list them)")
+    import psycopg  # noqa: PLC0415
     if a.dry_run:
         for h, r in site_host_rows():
             print(f"site_hosts: {h} {r}")
         for row in sla_rows():
             print("hash_verification_sla:", *row)
+        if a.prune:
+            with psycopg.connect(havnvard_site.require_dsn()) as conn:
+                extra = extra_rows(conn)
+            for h, r in extra["site_hosts"]:
+                print(f"WOULD DELETE site_hosts: {h} {r}")
+            for h, t in extra["hash_verification_sla"]:
+                print(f"{'WOULD DELETE' if a.include_sla else 'KEEP (tuned; add --include-sla to delete)'} hash_verification_sla: {h} {t}")
         return 0
-    import psycopg  # noqa: PLC0415
     with psycopg.connect(havnvard_site.require_dsn()) as conn:
+        pruned = prune(conn, a.include_sla) if a.prune else None
         done = apply(conn)
         conn.commit()
+    if pruned is not None:
+        print("deleted: " + ", ".join(f"{k}={v}" for k, v in pruned.items()))
     print("inserted: " + ", ".join(f"{k}={v}" for k, v in done.items()))
     return 0
 

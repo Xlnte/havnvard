@@ -45,6 +45,22 @@ def sla_failures(found: set[tuple[str, str]], hosts) -> list[str]:
     return out
 
 
+def site_hosts_failures(found: set[tuple[str, str]], want: set[tuple[str, str]]) -> list[str]:
+    """INFRA-635: diskaudit.site_hosts must equal the site file exactly, as (host, role). Missing and extra rows are named."""
+    if found == want:
+        return []
+    return [f"site_hosts differs from the site file; missing {sorted(want - found)}; extra {sorted(found - want)}"
+            " (add: python3 init_site_hosts.py; remove: python3 init_site_hosts.py --prune --confirm-prune)"]
+
+
+def site_host_roles() -> set[tuple[str, str]]:
+    """(host, role) per the site file; same rule as init_site_hosts.site_host_rows (NAS host is role 'nas')."""
+    hosts = site_hosts()
+    import havnvard_site  # noqa: PLC0415  (site_hosts() put its directory on sys.path)
+    nas = havnvard_site.nas_host()
+    return {(h, "nas" if h == nas else "source") for h in hosts}
+
+
 def main() -> int:
     import psycopg
     findings: dict[str,object] = {}
@@ -66,6 +82,11 @@ def main() -> int:
         sla={(h, str(t).strip()) for h, t in cur.fetchall()}
         findings["sla_rows"]=len(sla)
         failures.extend(sla_failures(sla, site_hosts()))
+
+        cur.execute("SELECT host, role FROM diskaudit.site_hosts")
+        sh={(h, r) for h, r in cur.fetchall()}
+        findings["site_hosts_rows"]=len(sh)
+        failures.extend(site_hosts_failures(sh, site_host_roles()))
 
         cur.execute("SELECT count(*) FROM diskaudit.mutable_file_registry")
         findings["registry_rows"]=cur.fetchone()[0]
