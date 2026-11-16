@@ -9,7 +9,7 @@ from pathlib import Path
 
 from . import alerts, config
 from .config import BackupError
-from .health import DEVICE_PREFIX, OFFSITE_KEY, OFFSITE_PREFIX, device_key
+from .health import DEVICE_PREFIX, NAMED_KEYS, OFFSITE_KEY, OFFSITE_PREFIX, device_key
 from .render import render_task
 from .util import run, systemd_arg
 
@@ -50,7 +50,7 @@ def device_checks(stdout: str) -> list[dict] | None:
 
 def _own_key(name) -> bool:
     n = str(name)
-    return n.startswith(OFFSITE_PREFIX) or n.startswith(DEVICE_PREFIX)
+    return n.startswith(OFFSITE_PREFIX) or n.startswith(DEVICE_PREFIX) or n in NAMED_KEYS
 
 
 def interpret(rc: int, stdout: str, stderr: str = "") -> tuple[bool, str]:
@@ -82,7 +82,8 @@ def relay(host: str, python: str, repo_dir: str, runner=run) -> int:
     except BackupError as e:
         healthy, text, failed_relay = False, f"relay: {e}", True
     stdout = None if failed_relay else r.stdout
-    own_rc = max(_relay_offsite(host, stdout), _relay_devices(host, stdout))   # checks with their own alert keys
+    own_rc = max(_relay_offsite(host, stdout), _relay_devices(host, stdout),   # checks with their own alert keys
+                 _relay_named(host, stdout))
     if healthy:
         alerts.resolve(key)
         print(f"health-relay {host}: healthy" + (" (offsite or device problem: see its own alert)" if own_rc else ""))
@@ -127,6 +128,30 @@ def _relay_devices(host: str, stdout: str | None) -> int:
             alerts.resolve(key)
             continue
         sent, detail = alerts.fire(key, f"HavnVard backup ({host}): {dev} is stale: {c.get('detail')}")
+        if not sent:
+            print(f"ALERT NOT SENT ({key}): {detail}")
+            rc = config.ERROR_EXIT
+        else:
+            rc = max(rc, config.PROBLEM_EXIT)
+    return rc
+
+
+def _relay_named(host: str, stdout: str | None) -> int:
+    """3.3.13 (INFRA-644): `yield-overdue` -> havnvard-yield-overdue-<host>, `pullback-drill` ->
+    havnvard-pullback-drill-<host>; fired or resolved only from a readable result that carries the check (a failed
+    relay leaves them as they were: the main key covers it). Same exit rule as _relay_offsite."""
+    doc = _doc(stdout) if stdout is not None else None
+    if not isinstance(doc, dict) or not isinstance(doc.get("checks"), list):
+        return 0
+    rc = 0
+    for c in doc["checks"]:
+        if not isinstance(c, dict) or str(c.get("name")) not in NAMED_KEYS:
+            continue
+        key = f"{NAMED_KEYS[str(c['name'])]}-{host}"
+        if c.get("ok"):
+            alerts.resolve(key)
+            continue
+        sent, detail = alerts.fire(key, f"HavnVard ({host}) {c.get('name')}: {c.get('detail')}")
         if not sent:
             print(f"ALERT NOT SENT ({key}): {detail}")
             rc = config.ERROR_EXIT

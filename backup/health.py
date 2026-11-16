@@ -30,6 +30,10 @@ DEVICE_KEY = "havnvard-device-stale"     # 3.3.3: one key per device, f"{DEVICE_
 DEVICE_PREFIX = "device "                # per-device stream verdicts; relay.py relies on it
 STREAM_CHECK_PREFIX = "stream check "    # the hub could not read a device's snapshot list: main key, device key untouched
 STREAM_TIMEOUT_S = 60                    # per repository; `restic snapshots --no-lock` takes 0-2 s on a live hub
+# 3.3.13 (INFRA-644): checks with their own alert key (raised here and, on a hub that cannot alert, by health-relay)
+YIELD_CHECK, YIELD_KEY = "yield-overdue", "havnvard-yield-overdue"        # a deferred exclusive step not caught up
+DRILL_CHECK, DRILL_KEY = "pullback-drill", "havnvard-pullback-drill"      # the last pullback drill's verdict
+NAMED_KEYS = {YIELD_CHECK: YIELD_KEY, DRILL_CHECK: DRILL_KEY}
 
 
 def _newest_snapshot_age_h(repo: Path, now: float, skip: frozenset = frozenset()) -> float | None:
@@ -94,6 +98,10 @@ def collect(now: float | None = None) -> list[tuple[str, bool, str]]:
             free = shutil.disk_usage(root).free / GB
             lim = float(h.get("hub_min_free_gb", 125))
             res.append(("hub free space", free >= lim, f"{free:.0f} GB free (limit {lim:g} GB)"))
+        res.append(_yield_check(now))
+    drill = _drill_check()
+    if drill:
+        res.append(drill)
     if cfg.get("hub_web"):
         res.append(_hub_web_check(str(cfg["hub_web"])))
     nas = cfg.get("nas")
@@ -133,6 +141,32 @@ def collect(now: float | None = None) -> list[tuple[str, bool, str]]:
     if not res:
         raise BackupError("nothing to check: no hub, NAS, device or offsite target is configured")
     return res
+
+
+def _yield_check(now: float) -> tuple[str, bool, str]:
+    """INFRA-644 3.2: a catalog name tag deferred for a pullback and not caught up in time is a PROBLEM."""
+    from . import precedence
+    try:
+        late, n_open = precedence.overdue(now)
+    except (BackupError, OSError, ValueError, KeyError, TypeError) as e:
+        return YIELD_CHECK, False, f"cannot read the deferred steps: {type(e).__name__}: {e}"
+    if late:
+        return YIELD_CHECK, False, (f"{len(late)} of {n_open} deferred step(s) overdue: " + "; ".join(w for _, w in late[:3])
+                                    + ". Run `python -m backup catalog run`; if that does not catch up, look for a "
+                                    "stuck pullback (state intent/ folder) or a long prune")
+    return YIELD_CHECK, True, f"{n_open} deferred step(s) open, none overdue"
+
+
+def _drill_check() -> tuple[str, bool, str] | None:
+    """The last pullback drill's verdict (state/pullback-drill.json); no check until a drill has run."""
+    p = config.state_dir() / "pullback-drill.json"
+    if not p.exists():
+        return None
+    try:
+        d = json.loads(p.read_text())
+        return DRILL_CHECK, bool(d["ok"]), f"{d.get('at', '?')}: {d['summary']}"
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        return DRILL_CHECK, False, f"last drill result {p} unreadable: {type(e).__name__}: {e}"
 
 
 def _hub_web_check(base: str) -> tuple[str, bool, str]:
@@ -308,8 +342,9 @@ def _is_device(name: str) -> bool:
 
 
 def _own_key(name: str) -> bool:
-    """Checks that alert under their own key and never decide the main key (offsite 3.3.2, device 3.3.3)."""
-    return _is_offsite(name) or _is_device(name)
+    """Checks that alert under their own key and never decide the main key (offsite 3.3.2, device 3.3.3,
+    yield-overdue and pullback-drill 3.3.13)."""
+    return _is_offsite(name) or _is_device(name) or str(name) in NAMED_KEYS
 
 
 def device_key(device: str) -> str:
@@ -350,6 +385,24 @@ def _alert_offsite(results: list[tuple[str, bool, str]]) -> None:
         alerts.resolve(OFFSITE_KEY)
 
 
+def _alert_named(results: list[tuple[str, bool, str]], label: str = "") -> bool:
+    """3.3.13: fire or resolve YIELD_KEY / DRILL_KEY from their own check (only when the check is present).
+    Returns False when an alert could not be raised (the caller makes that loud)."""
+    all_sent = True
+    for n, ok, d in results:
+        key = NAMED_KEYS.get(str(n))
+        if not key:
+            continue
+        if ok:
+            alerts.resolve(key)
+            continue
+        sent, detail = alerts.fire(key, f"HavnVard{label} {n}: {d}")
+        if not sent:
+            all_sent = False
+            print(f"ALERT NOT SENT ({key}): {detail}", file=sys.stderr)
+    return all_sent
+
+
 def to_json(results: list[tuple[str, bool, str]]) -> dict:
     """Machine-readable result. exit_code keeps the CLI meaning: 0 healthy, 1 a check found a problem."""
     ok = all(r[1] for r in results)
@@ -377,6 +430,7 @@ def run_health(send_alerts: bool = True, as_json: bool = False) -> int:
                 alerts.resolve(ALERT_KEY)
             _alert_offsite([(c["name"], c["ok"], c["detail"]) for c in doc["checks"]])
             _alert_devices([(c["name"], c["ok"], c["detail"]) for c in doc["checks"]])
+            _alert_named([(c["name"], c["ok"], c["detail"]) for c in doc["checks"]])
         return doc["exit_code"]
     results = collect()
     bad = [r for r in results if not r[1]]
@@ -393,4 +447,5 @@ def run_health(send_alerts: bool = True, as_json: bool = False) -> int:
     if send_alerts:
         _alert_offsite(results)
         _alert_devices(results)
+        _alert_named(results)
     return config.PROBLEM_EXIT if bad else 0
