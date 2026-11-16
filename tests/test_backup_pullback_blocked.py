@@ -146,7 +146,8 @@ def test_single_file_into_readonly_folder_never_hangs_and_no_display_is_said(env
     assert rc == config.PROBLEM_EXIT
     assert "NO POPUP" in out.err and "no graphical session" in out.err
     assert "hub notice" in out.err and "not sent" in out.err
-    assert "FAILED" not in out.out                                         # a refused folder is not a restic failure
+    assert "\n  FAILED " not in out.out        # a refused folder is not a restic failure (3.3.13: the summary now counts
+    assert "2 FAILED (listed below)" in out.out  # the files not put back as FAILED, spec 3.4; no restic FAILED line)
 
 
 def test_mkdir_refused_is_recorded_not_raised(tmp_path, monkeypatch):

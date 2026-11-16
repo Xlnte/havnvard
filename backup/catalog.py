@@ -31,6 +31,7 @@ from .config import BackupError
 from .util import hub_password_dir, restic_bin, run
 
 CATALOG_TAG = "havnvard-catalog"
+DRILL_TAG = "havnvard-drill-marker"   # 3.3.13: the pullback drill's own marker snapshot; never a data backup
 HEADER = "# HavnVard catalog: NAME\tEVENT\tDEVICE\tPATH\tSIZE\tMTIME_UTC\n"
 NAME_RE = re.compile(r"^\d{8}_[A-Z0-9-]+_\d{6}$")
 
@@ -57,8 +58,8 @@ def parse_time(s: str) -> dt.datetime:
 
 
 def data_snapshots(snaps: list[dict]) -> list[dict]:
-    """Data snapshots only (catalog snapshots dropped), oldest first."""
-    out = [s for s in snaps if CATALOG_TAG not in (s.get("tags") or [])]
+    """Data snapshots only (catalog snapshots and the pullback drill's marker dropped), oldest first."""
+    out = [s for s in snaps if not {CATALOG_TAG, DRILL_TAG} & set(s.get("tags") or [])]
     return sorted(out, key=lambda s: parse_time(s["time"]))
 
 
@@ -291,6 +292,21 @@ def _tag(restic: str, env: dict, snap_id: str, name: str, when: str) -> None:
     _set_mtime(env, tagged[0]["id"], parse_time(when).timestamp())
 
 
+def tag_or_defer(restic: str, env: dict, repo: str, snap_id: str, name: str, when: str, job: str = "catalog") -> bool:
+    """INFRA-644 3.2: the name tag is an EXCLUSIVE restic step. Right before it, look for a live pullback on this
+    repository: if there is one, do not tag now (deferred.jsonl; the next run catches up) and return False."""
+    from . import precedence
+    live, _ = precedence.read_intents(repo, seen_by=job)
+    if live:
+        precedence.defer(job, repo, snap_id, name, live[0])
+        print(f"{job}: DEFERRED name tag {name} on {repo}: {precedence.describe_intent(live[0])}; "
+              "the next run tags it")
+        return False
+    with precedence.job_record(repo, job, f"name tag {name}"):
+        _tag(restic, env, snap_id, name, when)
+    return True
+
+
 def _max_number_in(lines) -> int:
     hi = 0
     for ln in lines:
@@ -321,6 +337,15 @@ def catalog_run(first_run_latest_only: bool = True, recover: bool = False) -> in
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError as e:
         raise BackupError("another catalog run is in progress") from e
+    from . import precedence
+    run_started = precedence.record_catalog_start()        # the overdue rule follows the real catalog run (3.2)
+    rc = _catalog_run(cdir, repo_root, hub, first_run_latest_only, recover)
+    precedence.record_catalog_finish(run_started)
+    return rc
+
+
+def _catalog_run(cdir: Path, repo_root: Path, hub: dict, first_run_latest_only: bool, recover: bool) -> int:
+    from . import precedence
     restic, problems, cat = restic_bin(), [], catalog_path()
     fresh = not (cdir / "state.json").exists()
     if recover and not fresh:
@@ -372,14 +397,17 @@ def catalog_run(first_run_latest_only: bool = True, recover: bool = False) -> in
         st["counter"] = max([st["counter"], *(_repo_max_number(s) for s in snap_cache.values())])
         _save_state(st)
 
-    for item in list(st["untagged"]):                     # retry tags a crash left behind
+    deferred = 0
+    for item in list(st["untagged"]):                     # retry tags a crash left behind, and tags a pullback deferred
         snap_id, name, repo, when = item
         env = envs.get(repo)
         if env is None:
             problems.append(f"{repo}: tag retry {name}: no password")
             continue
         try:
-            _tag(restic, env, snap_id, name, when)
+            if not tag_or_defer(restic, env, repo, snap_id, name, when):
+                deferred += 1
+                continue
             st["untagged"].remove(item)
             _save_state(st)
         except SnapshotGone as e:                         # reported once, then dropped
@@ -388,6 +416,10 @@ def catalog_run(first_run_latest_only: bool = True, recover: bool = False) -> in
             _save_state(st)
         except BackupError as e:
             problems.append(f"{repo}: tag retry {name}: {e}")
+    # INFRA-644 catch-up: a deferral whose name is no longer waiting in `untagged` was tagged now (or its snapshot is gone)
+    waiting = {(it[1], it[2]) for it in st["untagged"]}
+    precedence.mark_done(lambda o: o.get("job") == "catalog" and (o.get("tag"), o.get("repo")) not in waiting,
+                         "tagged by the catalog run (or its snapshot is gone, reported above)")
 
     named = 0
     for repo, env in envs.items():
@@ -435,9 +467,11 @@ def catalog_run(first_run_latest_only: bool = True, recover: bool = False) -> in
                 named += 1
                 print(f"catalog: {name} = {repo} {gk} snapshot {s['id'][:8]} (+{len(added)} / -{len(gone)})")
                 try:
-                    _tag(restic, env, s["id"], name, s["time"])
-                    st["untagged"].remove(item)
-                    _save_state(st)
+                    if tag_or_defer(restic, env, repo, s["id"], name, s["time"]):
+                        st["untagged"].remove(item)
+                        _save_state(st)
+                    else:
+                        deferred += 1
                 except BackupError as e:
                     problems.append(f"{repo}: {e}")
 
@@ -505,7 +539,8 @@ def catalog_run(first_run_latest_only: bool = True, recover: bool = False) -> in
             st["catalog_bytes_backed_up"] = st["catalog_bytes"]
             _save_state(st)
         print(f"catalog: {cname} backed up into {len(envs) - sum(e is None for e in envs.values())}/{len(envs)} repositories")
-    print(f"catalog: {named} backup(s) named, catalog {st['catalog_bytes'] / 1e6:.1f} MB, {len(problems)} problem(s)")
+    print(f"catalog: {named} backup(s) named, catalog {st['catalog_bytes'] / 1e6:.1f} MB, {len(problems)} problem(s)"
+          + (f", {deferred} name tag(s) deferred for a running pullback" if deferred else ""))
     for p in problems:
         print(f"  PROBLEM {p}")
     return config.PROBLEM_EXIT if problems else 0

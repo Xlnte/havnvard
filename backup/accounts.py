@@ -629,6 +629,10 @@ class Accounts:
             con.close()
         return {"token": token, "account_id": acc["id"], "kind": kind, "must_ack": pending, "scope": scope}
 
+    def log_event(self, action: str, target: str = "", **detail) -> None:
+        """A console/job event (actor = none) in the append-only audit log, e.g. a pullback's stale unlock (INFRA-644)."""
+        self._log(None, action, target, **detail)
+
     def _log(self, actor, action, target="", **detail) -> None:
         con = self._tx()
         try:
@@ -1405,8 +1409,10 @@ def revoke_device_keys(restic: str, repo: str, store_key: str, accts: Accounts, 
     replaced by it (the old file is kept as .revoked), so the hub keeps working. Returns what was done."""
     from .util import run
     import tempfile
+    from . import precedence
     if not accts.store_key_matches(store_key):
         raise BackupError("that is not this company's store key; nothing was changed")
+    precedence.refuse_if_pullback(device, "key-remove")     # INFRA-644 3.2: never while a pullback reads this repo
     out: dict = {"removed": [], "kept": [], "hub_key": "no hub copy of this computer's password"}
     with tempfile.TemporaryDirectory(prefix="havnvard-revoke-") as td:
         kf = Path(td) / "store.key"
@@ -1449,12 +1455,15 @@ def revoke_device_keys(restic: str, repo: str, store_key: str, accts: Accounts, 
                                   "and nothing was removed)")
             config.atomic_write_text(hub_pass_file, new_pw)          # INFRA-614: temp + fsync + rename, never empty
             out["hub_key"] = f"new hub key in {hub_pass_file} (the old one, now dead, kept as {side.name})"
-        for k in gone:
-            r = run([restic, "key", "remove", k["id"]], env=env)
-            if r.returncode != 0:
-                raise BackupError(f"restic key remove {k['id'][:8]} failed rc={r.returncode}: {r.stderr.strip()[-300:]}"
-                                  f"; removed so far: {out['removed']}")
-            out["removed"].append(f"{k['id'][:8]} ({k.get('userName')}@{k.get('hostName')})")
+        if gone:   # a pullback may have started meanwhile; the new hub key (if any) is additive and stays
+            precedence.refuse_if_pullback(device, "key-remove", "no key was removed; " + out["hub_key"])
+        with precedence.job_record(device, "key-remove", f"remove {len(gone)} key(s)"):
+            for k in gone:
+                r = run([restic, "key", "remove", k["id"]], env=env)
+                if r.returncode != 0:
+                    raise BackupError(f"restic key remove {k['id'][:8]} failed rc={r.returncode}: "
+                                      f"{r.stderr.strip()[-300:]}; removed so far: {out['removed']}")
+                out["removed"].append(f"{k['id'][:8]} ({k.get('userName')}@{k.get('hostName')})")
     accts._log(None, "device.keys_revoked", device, removed=out["removed"], kept=out["kept"], hub_key=out["hub_key"])
     return out
 
