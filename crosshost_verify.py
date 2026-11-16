@@ -62,6 +62,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from heartbeat import HeartbeatThrottle, write_heartbeat  # noqa: E402
 
 # ---- DSN resolution -- same SoT + fallback order as scan.py/dedup.py ------
+from token_file import read_token_text  # noqa: E402  (INFRA-637: the one credential-file reader)
 from havnvard_site import get_dsn  # noqa: E402,F401  (3.0.0: one shared lookup; see havnvard_site.py)
 
 
@@ -399,13 +400,8 @@ NAS_HOST_TOKEN_FILE = _site.nas("backup_token_file") or "/etc/havnvard/nas_backu
 
 
 def _read_nas_token_text(path: str) -> str:
-    """Token file text. INFRA-540: read it directly when this process may (root, or the file's
-    group); only a PermissionError falls back to `sudo cat`. A missing file is NOT retried via sudo."""
-    try:
-        with open(path, encoding="utf-8") as f:
-            return f.read()
-    except PermissionError:
-        return subprocess.run(["sudo", "cat", path], capture_output=True, text=True, check=True).stdout
+    """Wrapper kept under its old name (tests monkeypatch it); the logic is token_file.read_token_text (INFRA-540, 637)."""
+    return read_token_text(path)
 
 
 def _nas_backup_creds(reader=None) -> tuple[str, str, str]:

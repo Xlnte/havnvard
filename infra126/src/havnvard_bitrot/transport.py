@@ -6,7 +6,7 @@ others (agent-1) are plain key-based ssh. This module keeps that difference in
 one place so remote.py never builds an ssh/scp argv itself.
 
 The sshpass pattern here is a deliberate port of the proven implementation in
-/opt/havnvard/crosshost_verify.py (sudo-cat credential loading and
+/opt/havnvard/crosshost_verify.py (credential loading, now token_file.read_token_text, and
 0600 password-file handling), extended with timeout/check passthrough and an
 explicitly closed stdin on every subprocess call.
 """
@@ -17,8 +17,10 @@ import logging
 import os
 import shlex
 import shutil
+import sys
 import subprocess
 import tempfile
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, config.py must not import this module
@@ -27,6 +29,24 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, config.py must not import t
 logger = logging.getLogger(__name__)
 
 _SSH_OPTS_COMMON = ["-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=10"]
+
+
+def _read_token_text():
+    """The repo's one credential-file reader, token_file.read_token_text (INFRA-637): direct read, else `sudo -n cat`, and a
+    TokenReadError that names the file. token_file.py sits in the HavnVard checkout root (three levels above this file);
+    $HAVNVARD_HOME names it when this package is installed elsewhere. Imported lazily so importing this module needs no checkout."""
+    try:
+        from token_file import read_token_text  # noqa: PLC0415
+        return read_token_text
+    except ImportError:
+        pass
+    for root in (os.environ.get("HAVNVARD_HOME"), str(Path(__file__).resolve().parents[3])):
+        if root and (Path(root) / "token_file.py").is_file():
+            if root not in sys.path:
+                sys.path.insert(0, root)
+            from token_file import read_token_text  # noqa: PLC0415
+            return read_token_text
+    raise RuntimeError("token_file.py not found; set HAVNVARD_HOME to the HavnVard checkout")
 
 
 def _run(argv: list[str], *, timeout: int, check: bool) -> subprocess.CompletedProcess[str]:
@@ -109,15 +129,9 @@ class SshpassSshTransport(SshTransport):
         not shell out to sudo on every probe."""
         if self._password is not None:
             return self._password
-        result = subprocess.run(
-            ["sudo", "cat", self.credentials_file],
-            capture_output=True,
-            text=True,
-            check=True,
-            stdin=subprocess.DEVNULL,
-        )
+        text = _read_token_text()(self.credentials_file)
         user = host = password = None
-        for line in result.stdout.splitlines():
+        for line in text.splitlines():
             if line.startswith("NAS_USER="):
                 user = line.split("=", 1)[1].strip()
             elif line.startswith("NAS_HOST="):

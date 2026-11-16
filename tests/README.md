@@ -16,6 +16,7 @@ transactions, the NAS-dedup tests do not touch production at all).
 | `test_nas_dedup_core.py` | Pure functions of `nas_dedup_core.py` (no DB, no SSH): freshness truth table, scope pattern, batch planner, `verify_batch` completeness, keeper rule, progress note. |
 | `test_hash_stat_batch.py` | The real `hash_stat_batch.sh` run under `sh` on files in `tmp_path` (stat fields, symlink/missing/non-regular rejection, `#DONE` trailer). |
 | `test_generic_names.py` | 3.3.11 (INFRA-565/566): the deprecated `nas_trigkey_dedup.py` shim forwards arguments + exit code and warns; no code names the old spark_* columns or `investigate_spark`; the generic-names migration upgrades an old-shaped schema (rows kept, CHECK moved, default, legacy views) and is idempotent; a suspect linked to a divergence migrates (trigger off, rename only); the rollback file restores the old names. |
+| `test_token_file.py` | 3.3.12 (INFRA-637): `token_file.read_token_text` reads directly, falls back to `sudo -n cat` (stdin closed, timeout) only after PermissionError, raises `TokenReadError` (file + exit code, no content) on failure, never retries a missing file with sudo; guard that no other non-test code runs `sudo cat`. subprocess mocked. |
 | `test_nas_host_dedup.py` | `nas_host_dedup.py` end to end against a fake remote (`_fake_target.py`) and a throwaway schema: groups, hardlinks, freshness, scope, failure/retry/SIGTERM/exit codes, atomic publish, snapshot contract, export, migrations. |
 
 ## The `_test_` / throwaway-schema rules (HV-REQ-31)
