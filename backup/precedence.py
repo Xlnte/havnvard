@@ -141,7 +141,10 @@ def span(seconds: float) -> str:
 
 
 def safe_name(repo: str) -> str:
-    return re.sub(r"[^A-Za-z0-9._-]", "_", str(repo)) or "_"
+    """A file or folder name made from REPO. INFRA-655 (review L12): '.' and '..' would name the state folder itself or
+    its parent (read_intents('..') would glob the state dir); they become '_'."""
+    n = re.sub(r"[^A-Za-z0-9._-]", "_", str(repo)) or "_"
+    return "_" if n in (".", "..") else n
 
 
 def repo_label(env: dict, fallback: str | None = None) -> str:
