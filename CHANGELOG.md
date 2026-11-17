@@ -2,6 +2,22 @@
 
 Older releases are described in `FEATURES.md` and `docs/*_RELEASE_*.md`.
 
+## 3.3.17 (20261117)
+
+The last three findings from the INFRA-644 review, plus three items from the 3.3.16 review.
+
+- **A pullback that waited on a lock reaches the owner (INFRA-649, review L3).** An undismissed `pullback_waiting`
+  notice on the hub page from the last 24 h is a health PROBLEM under its own key, `havnvard-pullback-waiting`. health
+  sends it through the existing alert path, or health-relay does for a hub that cannot alert. It resolves when the
+  notice is dismissed or older than 24 h. It reads `accounts.db` read-only.
+- **The drill marker stops growing (INFRA-654, review L10).** At the end of each drill, the earlier runs'
+  `havnvard-drill-*` tags are removed from the marker. The marker keeps its own tag and this run's two. This touches the
+  marker only, never a data snapshot, and never while a pullback is live or a drill tag step is deferred.
+- **`safe_name` maps `.` and `..` to `_` (INFRA-655, review L12).**
+- **3.3.16 review FILE-1, FILE-2 and FILE-5:**
+  - The drill's pullback check and the "folder not listed" STATUS line show PARTIAL.
+  - A laptop shows the hub's own reason when the hub refuses its registration (for example, expired after 24 h).
+
 ## 3.3.16 (20261117)
 
 Six low findings from the INFRA-644 and 3.3.15 reviews (PAF authorized 3.3.16 and 3.3.17, 20261117).
