@@ -8,6 +8,7 @@ are scaled to seconds through the module's constants; the logic is the same.
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
 import re
@@ -549,7 +550,9 @@ def test_c10_drill_timer_is_rendered_not_installed(tmp_path):
 def test_c11_never_delete_unlock_is_stale_only_and_no_forget_in_new_code():
     src = {p.name: p.read_text() for p in (REPO_DIR / "backup").glob("*.py")}
     assert not any(re.search(r"""["']--remove-all["']""", t) for t in src.values())   # never passed to restic
-    assert '[self.restic, "unlock"]' in src["precedence.py"]
+    # INFRA-648: every `restic unlock` goes through the lock-list guard (safe_unlock / clear_dead_locks), none elsewhere
+    assert src["precedence.py"].count('[restic, "unlock"]') == 2 and "unlock_refusal(recs)" in src["precedence.py"]
+    assert not any('"unlock"]' in t for n, t in src.items() if n != "precedence.py")
     for name in ("precedence.py", "pullback_drill.py"):
         assert not re.search(r'"(forget|prune)"\s*[,\]]', src[name].replace('"prune": "backup delete"', "")
                              .replace('"forget": "backup delete"', "")), name
@@ -935,3 +938,83 @@ def test_n2_hourly_catalog_run_pins_and_records_drill_markers(hub):
     assert catalog.catalog_run() == 0
     assert mid in pullback_drill.marker_ids()
     assert os.stat(hub["repo"] / "snapshots" / mid).st_mtime == 0
+
+
+# ---------- INFRA-648 (review L2/N3): `restic unlock` only when every lock restic would remove is proven dead ----------
+
+def _me() -> dict:
+    import pwd
+    return {"uid": os.getuid(), "username": pwd.getpwuid(os.getuid()).pw_name}
+
+
+def _gone_pid() -> int:
+    p = subprocess.Popen(["true"])
+    p.wait()
+    return p.pid
+
+
+def _fresh() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _ghost(**kw) -> dict:
+    """A lock from ANOTHER computer that shares this hostname: a user this computer does not have."""
+    return {"id": "9" * 64, "exclusive": False, "hostname": precedence.host(), "pid": _gone_pid(), "uid": 4242424,
+            "username": "hv-not-a-local-user", "time": _fresh(), **kw}
+
+
+def test_infra648_unlock_refusal_rules():
+    now = time.time()
+    old = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=45)).isoformat()
+    dead_mine = {"id": "1" * 64, "exclusive": True, "hostname": precedence.host(), "pid": _gone_pid(), "time": _fresh(),
+                 **_me()}
+    assert precedence.proven_dead(dead_mine, now) and precedence.unlock_refusal([dead_mine], now) is None
+    assert "may still be live" in precedence.unlock_refusal([dead_mine, _ghost()], now)          # same-name computer
+    if os.getuid() != 0:                                     # a live process of another user (pid 1 = root): EPERM
+        other = {"id": "2" * 64, "exclusive": False, "hostname": precedence.host(), "pid": 1, "uid": 0,
+                 "username": "root", "time": _fresh()}
+        assert precedence.restic_would_remove(other, now) and not precedence.proven_dead(other, now)
+        assert precedence.unlock_refusal([dead_mine, other], now)
+    live_mine = {"id": "3" * 64, "hostname": precedence.host(), "pid": os.getpid(), "time": _fresh(), **_me()}
+    away_fresh = {"id": "4" * 64, "hostname": "elsewhere", "pid": 1, "time": _fresh(), "username": "x"}
+    away_old = {"id": "5" * 64, "hostname": "elsewhere", "pid": 1, "time": old, "username": "x"}
+    assert not precedence.restic_would_remove(live_mine, now) and not precedence.restic_would_remove(away_fresh, now)
+    assert precedence.restic_would_remove(away_old, now) and precedence.proven_dead(away_old, now)   # restic's 30 min
+    assert precedence.unlock_refusal([dead_mine, live_mine, away_fresh, away_old], now) is None
+    assert precedence.dead_local_exclusive([_ghost(exclusive=True)]) == []    # never "ours" with a foreign user
+    assert precedence.lock_age_s({"time": "2026-11-17T00:30:12.123456789-05:00"}, 0) is not None
+    assert precedence.lock_age_s({"time": "garbage"}) is None
+
+
+@needs_restic
+def test_infra648_pullback_does_not_unlock_when_another_lock_may_be_live(hub, monkeypatch, capsys):
+    """A real dead lock of this computer PLUS a lock restic would also remove (another computer with this hostname): the
+    pullback does not run `restic unlock`, waits as for a foreign lock, gives up, and both locks stay."""
+    accounts.Accounts()
+    holder = hold_exclusive(hub)
+    os.kill(holder.pid, signal.SIGKILL)
+    holder.wait()
+    assert len(_locks(hub["repo"])) == 1
+    real = precedence.lock_records
+    monkeypatch.setattr(precedence, "lock_records", lambda r, e: real(r, e) + [_ghost()])
+    monkeypatch.setattr(precedence, "OTHER_WAIT_S", 1.0)
+    tgt = hub["tmp"] / "back"
+    tgt.mkdir()
+    rc = archive.pullback(paths=[str(hub["data"] / "b")], snapshot=_snap(hub)["id"][:8], target=str(tgt),
+                          hub_notice=lambda *a: "sent")
+    out = capsys.readouterr().out
+    assert rc == config.PROBLEM_EXIT, out
+    assert "may still be live" in out and "not unlocking; waiting instead" in out and "GAVE UP" in out
+    assert len(_locks(hub["repo"])) == 1                     # nothing was unlocked
+    rows = [r for r in accounts.Accounts().audit_rows() if r["action"] == "pullback.unlock_refused"]
+    assert len(rows) == 1 and not [r for r in accounts.Accounts().audit_rows() if r["action"] == "pullback.stale_unlock"]
+    # the hourly catalog clear and prune's old-lock clear refuse too
+    assert precedence.clear_dead_locks("restic", hub["env"], "dev1", "catalog") == 1
+    prune.clear_stale_locks("restic", hub["env"], hub["repo"], "dev1", -1.0)
+    assert len(_locks(hub["repo"])) == 1
+    log = precedence.log_path().read_text()
+    assert '"action": "job.unlock_refused"' in log and '"action": "prune.unlock_refused"' in log
+    # without the other computer's lock, the same dead lock is unlocked
+    monkeypatch.setattr(precedence, "lock_records", real)
+    assert precedence.clear_dead_locks("restic", hub["env"], "dev1", "catalog") == 1
+    assert _locks(hub["repo"]) == []
