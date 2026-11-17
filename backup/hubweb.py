@@ -8,6 +8,8 @@ Device API (Bearer = the computer's check-in token):
   POST /api/v1/devices/NAME/run       {"action":"start"} | {"action":"end","run_id","exit_code","snapshot_id"}
   POST /api/v1/devices/NAME/late      {"started_at","ended_at","exit_code","error"}
   POST /api/v1/devices/NAME/notice    {"kind","text"}  (e.g. a pullback could not place files; stays until dismissed)
+  POST /api/v1/devices/NAME/intent    {"action":"start"|"beat"|"end","repo","id","pid","host","user","what"}
+                                      (INFRA-647: a pullback on that computer; the hub's jobs yield to it)
 Every request re-reads the session (a disable is instant). A user with a pending notice (force-open or any admin-issued
 reset) sees /ack first and nothing else. Only a 'notice' session (the user's OLD password, or a reset code the user
 redeemed) can acknowledge and set the user's own password; a login with the password the administrator was given is a
@@ -27,9 +29,10 @@ import secrets
 import threading
 import uuid
 from http.cookies import SimpleCookie
+from pathlib import Path
 from urllib.parse import parse_qs
 
-from . import mail
+from . import config, mail
 from .accounts import LEGACY_DEVICE_NAME_RE, Accounts
 from .config import BackupError
 from .schedules import MODES, NotFound, Schedules
@@ -527,7 +530,7 @@ class App:
 
     # ---------- device API (INFRA-576) ----------
     def api(self, env, path, method) -> tuple[str, list, str]:
-        m = re.fullmatch(rf"/api/v1/devices/({LEGACY_DEVICE_NAME_RE})/(checkin|run|late|notice)", path)
+        m = re.fullmatch(rf"/api/v1/devices/({LEGACY_DEVICE_NAME_RE})/(checkin|run|late|notice|intent)", path)
         if not m or method != "POST":
             return self._json("404 Not Found", {"error": "not found"})
         name, what = m.groups()
@@ -538,6 +541,11 @@ class App:
             body = self._form(env)
             if what == "checkin":
                 return self._json("200 OK", self.s.checkin(name, body.get("client_version")))
+            if what == "intent":
+                from . import precedence
+                root = (config.load().get("hub_local") or {}).get("repo_root")
+                return self._json("200 OK", precedence.register_remote(
+                    name, body, repo_root=str(Path(root).expanduser()) if root else None))
             if what == "notice":
                 return self._json("200 OK", {"notice_id": self.a.add_notice(name, str(body.get("kind") or "notice"),
                                                                             str(body["text"]))})
