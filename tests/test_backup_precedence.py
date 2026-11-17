@@ -1130,3 +1130,41 @@ def test_infra658_remote_registration_has_a_maximum_lifetime(hub):
     assert precedence.read_intents("dev1", now=t0 + life + 120)[0] == []
     with pytest.raises(BackupError, match="over 24 h"):
         reg("lap", {"action": "start", "repo": "dev1", "id": "p2"}, now=t0 + life + 130)
+
+
+def test_infra649_waiting_notice_is_a_health_problem_relayed_under_its_own_key(hub):
+    """INFRA-649 (review L3, spec 3.3): an undismissed pullback_waiting notice from the last 24 h is a PROBLEM under
+    havnvard-pullback-waiting; the health relay fires that key through the existing alert path and resolves it."""
+    import sqlite3
+    from backup import relay
+    acc = accounts.Accounts()
+    with sqlite3.connect(acc.path) as con:
+        con.execute("INSERT INTO device (company_id, name, created_at) VALUES (1, 'dev1', '2026-11-17')")
+    checks = {n: (o, d) for n, o, d in health.collect()}
+    assert checks[health.WAIT_CHECK][0] is True
+    nid = acc.add_notice("dev1", "pullback_waiting", "parker's pullback is waiting for a backup delete (lock on dev1)")
+    ok, d = {n: (o, dd) for n, o, dd in health.collect()}[health.WAIT_CHECK]
+    assert ok is False and "1 pullback(s) waited" in d and "backup delete" in d
+    doc = {"ok": False, "checks": [{"name": health.WAIT_CHECK, "ok": False, "detail": d}]}
+    assert relay._relay_named("trigkey", json.dumps(doc)) == config.PROBLEM_EXIT
+    assert hub["fired"][-1][0] == "havnvard-pullback-waiting-trigkey" and "waited" in hub["fired"][-1][1]
+    with sqlite3.connect(acc.path) as con:
+        con.execute("UPDATE notice SET dismissed_at = '2026-11-17T00:00:00+00:00' WHERE id = ?", (nid,))
+    ok, _ = {n: (o, dd) for n, o, dd in health.collect()}[health.WAIT_CHECK]
+    assert ok is True
+    doc = {"ok": True, "checks": [{"name": health.WAIT_CHECK, "ok": True, "detail": "none"}]}
+    assert relay._relay_named("trigkey", json.dumps(doc)) == 0 and hub["resolved"][-1] == "havnvard-pullback-waiting-trigkey"
+    # older than 24 h: no longer a problem even if never dismissed
+    acc.add_notice("dev1", "pullback_waiting", "old")
+    later = time.time() + health.WAIT_WINDOW_S + 60
+    assert {n: o for n, o, _ in health.collect(now=later)}[health.WAIT_CHECK] is True
+
+
+def test_infra655_safe_name_never_names_the_folder_itself_or_its_parent(hub):
+    assert precedence.safe_name(".") == precedence.safe_name("..") == "_"
+    assert precedence.safe_name("a/b") == "a_b" and precedence.safe_name("dev1") == "dev1"
+    assert precedence.intent_dir("..").name == "_" and precedence.intent_dir("..").parent == precedence.intent_dir()
+    precedence.config.state_dir().mkdir(parents=True, exist_ok=True)
+    (precedence.config.state_dir() / "catalog-runs.json").write_text("{}")
+    assert precedence.read_intents("..") == ([], 0)
+    assert (precedence.config.state_dir() / "catalog-runs.json").exists()

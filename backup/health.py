@@ -33,7 +33,9 @@ STREAM_TIMEOUT_S = 60                    # per repository; `restic snapshots --n
 # 3.3.13 (INFRA-644): checks with their own alert key (raised here and, on a hub that cannot alert, by health-relay)
 YIELD_CHECK, YIELD_KEY = "yield-overdue", "havnvard-yield-overdue"        # a deferred exclusive step not caught up
 DRILL_CHECK, DRILL_KEY = "pullback-drill", "havnvard-pullback-drill"      # the last pullback drill's verdict
-NAMED_KEYS = {YIELD_CHECK: YIELD_KEY, DRILL_CHECK: DRILL_KEY}
+WAIT_CHECK, WAIT_KEY = "pullback-waiting", "havnvard-pullback-waiting"  # 3.3.17 (INFRA-649): a pullback waited on a lock
+WAIT_WINDOW_S = 24 * 3600
+NAMED_KEYS = {YIELD_CHECK: YIELD_KEY, DRILL_CHECK: DRILL_KEY, WAIT_CHECK: WAIT_KEY}
 
 
 def _newest_snapshot_age_h(repo: Path, now: float, skip: frozenset = frozenset()) -> float | None:
@@ -100,6 +102,9 @@ def collect(now: float | None = None) -> list[tuple[str, bool, str]]:
             lim = float(h.get("hub_min_free_gb", 125))
             res.append(("hub free space", free >= lim, f"{free:.0f} GB free (limit {lim:g} GB)"))
         res.append(_yield_check(now))
+        waiting = _waiting_check(now)
+        if waiting:
+            res.append(waiting)
     drill = _drill_check(now, h)
     if drill:
         res.append(drill)
@@ -175,6 +180,33 @@ def _drill_check(now: float, h: dict) -> tuple[str, bool, str] | None:
         return DRILL_CHECK, bool(d["ok"]), f"{d.get('at', '?')}: {d['summary']}"
     except (OSError, ValueError, KeyError, TypeError) as e:
         return DRILL_CHECK, False, f"last drill result {p} unreadable: {type(e).__name__}: {e}"
+
+
+def _waiting_check(now: float) -> tuple[str, bool, str] | None:
+    """INFRA-649 (review L3, spec 3.3): a pullback that waited on a lock leaves a `pullback_waiting` notice on the hub page;
+    an undismissed one from the last 24 h is a PROBLEM under its own key, so the existing alert path (health, or
+    health-relay for a hub that cannot alert) sends it to the owner. Read-only; no check on a hub without a hub page."""
+    import sqlite3
+    from .accounts import default_path
+    db = default_path()
+    if not db.is_file():
+        return None
+    cutoff = dt.datetime.fromtimestamp(now - WAIT_WINDOW_S, dt.timezone.utc).isoformat(timespec="seconds")
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+        try:
+            rows = con.execute("SELECT n.created_at, d.name, n.text FROM notice n JOIN device d ON d.id = n.device_id "
+                               "WHERE n.kind = 'pullback_waiting' AND n.dismissed_at IS NULL AND n.created_at >= ? "
+                               "ORDER BY n.created_at DESC", (cutoff,)).fetchall()
+        finally:
+            con.close()
+    except sqlite3.Error as e:
+        return WAIT_CHECK, False, f"hub page notices unreadable ({db}): {type(e).__name__}: {e}"
+    if not rows:
+        return WAIT_CHECK, True, "no pullback waited on a lock in the last 24 h (or every such notice was dismissed)"
+    at, dev, text = rows[0]
+    return WAIT_CHECK, False, (f"{len(rows)} pullback(s) waited on a lock in the last 24 h; newest {at} on {dev}: "
+                               f"{' '.join(str(text).split())[:240]}. Dismiss the notice on the hub page once seen")
 
 
 def _hub_web_check(base: str) -> tuple[str, bool, str]:
