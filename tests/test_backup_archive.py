@@ -327,6 +327,9 @@ def test_cut_stream_reports_partial_and_fifo_never_hangs(dev, capsys, monkeypatc
     assert archive.pullback(paths=[big], target=str(cut)) == config.PROBLEM_EXIT
     out = capsys.readouterr().out
     assert "FAILED" in out and "PARTIAL" in out and "Traceback" not in out
+    # INFRA-652 (review L8): the cut copy is PARTIAL, counted apart from FAILED, and never accounted for
+    assert "pullback: 0 restored, 1 PARTIAL (copy cut short; kept, listed below)" in out, out
+    assert "0/1 files accounted for" in out and "STATUS: NOT DONE 0/1, 0 FAILED, 1 PARTIAL" in out, out
     assert (cut / big.lstrip("/")).stat().st_size < 300_000              # kept, reported, not removed
     cut2 = tmp / "cut2"
     cut2.mkdir()
