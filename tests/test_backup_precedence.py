@@ -858,6 +858,7 @@ def test_r1_live_other_user_and_other_host_locks_are_never_unlocked(hub, monkeyp
     finally:
         release(holder)
     calls = []
+    monkeypatch.setattr(precedence, "lock_ids", lambda r, e: {"a" * 64, "b" * 64, "c" * 64})
     monkeypatch.setattr(precedence, "lock_records", lambda r, e: [
         {"id": "a" * 64, "exclusive": True, "hostname": "elsewhere", "pid": 2 ** 22 + 7, "username": "x"},
         {"id": "b" * 64, "exclusive": True, "hostname": precedence.host(), "pid": 1, "username": "root"},  # alive, EPERM
@@ -997,7 +998,10 @@ def test_infra648_pullback_does_not_unlock_when_another_lock_may_be_live(hub, mo
     holder.wait()
     assert len(_locks(hub["repo"])) == 1
     real = precedence.lock_records
-    monkeypatch.setattr(precedence, "lock_records", lambda r, e: real(r, e) + [_ghost()])
+    real_ids = precedence.lock_ids
+    ghost = _ghost()
+    monkeypatch.setattr(precedence, "lock_records", lambda r, e: real(r, e) + [ghost])
+    monkeypatch.setattr(precedence, "lock_ids", lambda r, e: {x["id"] for x in real(r, e)} | {ghost["id"]})
     monkeypatch.setattr(precedence, "OTHER_WAIT_S", 1.0)
     tgt = hub["tmp"] / "back"
     tgt.mkdir()
@@ -1017,6 +1021,7 @@ def test_infra648_pullback_does_not_unlock_when_another_lock_may_be_live(hub, mo
     assert '"action": "job.unlock_refused"' in log and '"action": "prune.unlock_refused"' in log
     # without the other computer's lock, the same dead lock is unlocked
     monkeypatch.setattr(precedence, "lock_records", real)
+    monkeypatch.setattr(precedence, "lock_ids", real_ids)
     assert precedence.clear_dead_locks("restic", hub["env"], "dev1", "catalog") == 1
     assert _locks(hub["repo"]) == []
 
@@ -1055,3 +1060,73 @@ def test_infra650_intent_write_failure_warns_and_the_block_still_runs(hub, monke
     err = capsys.readouterr().err
     assert "could not write its intent file" in err and "No space left on device" in err
     assert '"action": "intent.write_failed"' in precedence.log_path().read_text()
+
+
+class _R:
+    def __init__(self, rc=0, out="", err=""):
+        self.returncode, self.stdout, self.stderr = rc, out, err
+
+
+def _fake_restic(monkeypatch, lists: list[str], cats: dict):
+    """backup.util.run stand-in: each `list locks` pops the next answer; `cat lock ID` answers from cats."""
+    import backup.util as util
+    calls = []
+    def run(cmd, env=None, timeout=None, input_text=None):
+        calls.append(cmd[1:3])
+        if cmd[1:3] == ["list", "locks"]:
+            return _R(0, lists.pop(0) if len(lists) > 1 else lists[0])
+        if cmd[1:3] == ["cat", "lock"]:
+            return cats.get(cmd[3], _R(1, "", "Fatal: no such file"))
+        if cmd[1] == "unlock":
+            return _R(0)
+        raise AssertionError(cmd)
+    monkeypatch.setattr(util, "run", run)
+    return calls
+
+
+def test_infra658_unreadable_lock_is_reported_and_blocks_unlock(monkeypatch):
+    mine = json.dumps({"exclusive": True, "hostname": precedence.host(), "pid": _gone_pid(), "time": _fresh(), **_me()})
+    a, b = "a" * 64, "b" * 64
+    calls = _fake_restic(monkeypatch, [f"{a}\n{b}\n"], {a: _R(0, mine), b: _R(1, "", "Fatal: permission denied")})
+    recs = precedence.lock_records("restic", {})
+    assert [r["id"] for r in recs] == [a, b] and "permission denied" in recs[1]["unreadable"]
+    ran, text = precedence.safe_unlock("restic", {})
+    assert not ran and "could not be read" in text and ["unlock"] not in [c[:1] for c in calls]
+    # a lock that is gone by the second listing simply finished: dropped, and the dead lock is unlocked
+    calls = _fake_restic(monkeypatch, [f"{a}\n{b}\n", f"{a}\n", f"{a}\n"], {a: _R(0, mine)})
+    assert [r["id"] for r in precedence.lock_records("restic", {})] == [a]
+
+
+def test_infra658_lock_list_must_be_stable_before_unlock(monkeypatch):
+    a, b = "a" * 64, "b" * 64
+    rec = _R(0, json.dumps({"hostname": "elsewhere", "pid": 1, "time": _fresh(), "username": "x"}))
+    _fake_restic(monkeypatch, [f"{a}\n", f"{a}\n{b}\n", f"{a}\n{b}\n", f"{a}\n{b}\n"], {a: rec, b: rec})
+    assert [r["id"] for r in precedence.stable_lock_records("restic", {})] == [a, b]     # read again after a change
+    _fake_restic(monkeypatch, [f"{a}\n", f"{b}\n"] * 5, {a: rec, b: rec})
+    with pytest.raises(BackupError, match="kept changing"):
+        precedence.stable_lock_records("restic", {})
+
+
+def test_infra658_remote_registration_has_a_maximum_lifetime(hub):
+    reg, t0 = precedence.register_remote, time.time()
+    assert reg("lap", {"action": "start", "repo": "dev1", "id": "p1"}, now=t0)["registered"]
+    life = precedence.REMOTE_MAX_LIFETIME_S
+    assert reg("lap", {"action": "beat", "repo": "dev1", "id": "p1"}, now=t0 + life - 60)["ok"]
+    live, _ = precedence.read_intents("dev1", now=t0 + life - 30)
+    assert [i["id"] for i in live] == ["p1"]
+    with pytest.raises(BackupError, match="over 24 h"):
+        reg("lap", {"action": "beat", "repo": "dev1", "id": "p1"}, now=t0 + life + 60)
+    assert precedence.read_intents("dev1", now=t0 + life + 61)[0] == []
+    with pytest.raises(BackupError, match="over 24 h"):                    # cannot simply start it again
+        reg("lap", {"action": "start", "repo": "dev1", "id": "p1"}, now=t0 + life + 120)
+    assert reg("lap", {"action": "end", "repo": "dev1", "id": "p1"}, now=t0 + life + 180)["ok"]
+    log = precedence.log_path().read_text()
+    assert '"action": "intent.remote_expired"' in log
+    # beats that keep coming from a stuck laptop do not keep it alive: read_intents drops it by age as well
+    assert reg("lap", {"action": "start", "repo": "dev1", "id": "p2"}, now=t0)["registered"]
+    p = precedence.remote_intent_path("dev1", "lap", "p2")
+    r = json.loads(p.read_text())
+    p.write_text(json.dumps({**r, "heartbeat_at": t0 + life + 100}))
+    assert precedence.read_intents("dev1", now=t0 + life + 120)[0] == []
+    with pytest.raises(BackupError, match="over 24 h"):
+        reg("lap", {"action": "start", "repo": "dev1", "id": "p2"}, now=t0 + life + 130)

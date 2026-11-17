@@ -381,6 +381,41 @@ class RemoteIntent:
 
 REMOTE_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,200}$")
 REMOTE_MAX_PER_DEVICE = 8
+REMOTE_MAX_LIFETIME_S = 24 * 3600   # INFRA-658 (review FILE-3): a remote registration holds hub jobs off at most this long
+REMOTE_EXPIRED_KEEP_S = 3 * 86400
+
+
+def _expired_path() -> Path:
+    return config.state_dir() / "intent-remote-expired.json"
+
+
+def _remote_key(device: str, intent_id: str) -> str:
+    return f"{device}\0{intent_id}"
+
+
+def _expired() -> dict:
+    with contextlib.suppress(OSError, ValueError):
+        d = json.loads(_expired_path().read_text())
+        if isinstance(d, dict):
+            return d
+    return {}
+
+
+def _mark_expired(rec: dict, now: float) -> None:
+    """Remember a remote registration that ran out of time, so the same pullback cannot simply start it again.
+    A failure to remember is printed and logged (the pullback could then register once more), never hidden."""
+    p = _expired_path()
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with config.file_lock(p):
+            d = {k: v for k, v in _expired().items() if isinstance(v, (int, float)) and now - v < REMOTE_EXPIRED_KEEP_S}
+            d[_remote_key(str(rec.get("remote_device")), str(rec.get("id")))] = now
+            config.atomic_write_text(p, json.dumps(d, sort_keys=True))
+    except OSError as e:
+        print(f"havnvard: WARNING could not record the expired remote pullback {rec.get('id')} in {p}: {e}",
+              file=sys.stderr)
+        log("intent.remote_expiry_not_recorded", str(rec.get("repo")), device=rec.get("remote_device"),
+            id=rec.get("id"), error=f"{type(e).__name__}: {e}")
 
 
 def remote_intent_path(repo: str, device: str, intent_id: str) -> Path:
@@ -425,6 +460,17 @@ def register_remote(device: str, body: dict, now: float | None = None, repo_root
         old = None
     if old is not None and (old.get("remote_device") != device or old.get("id") != iid):
         raise BackupError("that pullback registration belongs to another computer")   # never overwritten or removed
+    expired = _remote_key(device, iid) in _expired()
+    if action != "end" and not expired and old is not None and \
+            now - float(old.get("started_at") or now) > REMOTE_MAX_LIFETIME_S:
+        _mark_expired(old, now)
+        _remove_own(path)
+        log("intent.remote_expired", repo, hub_audit=True, device=device, id=iid,
+            hours=round((now - float(old["started_at"])) / 3600, 1))
+        expired = True
+    if action != "end" and expired:
+        raise BackupError(f"this pullback has been registered for over {REMOTE_MAX_LIFETIME_S // 3600} h; the hub's "
+                          "jobs no longer wait for it")
     if action == "end":
         removed = _remove_own(path) if old is not None else False
         note_pullback_end(iid, now)
@@ -465,6 +511,14 @@ def stale_reason(rec: dict, now: float | None = None) -> str | None:
         return "unparsable"
     if now - hb > STALE_S:
         return f"heartbeat {now - hb:.0f} s old (limit {STALE_S} s)"
+    if rec.get("remote_device"):
+        try:
+            age = now - float(rec.get("started_at") or now)
+        except (TypeError, ValueError):
+            return "unparsable"
+        if age > REMOTE_MAX_LIFETIME_S:
+            return f"registered from computer {rec['remote_device']} for {age / 3600:.0f} h (limit " \
+                   f"{REMOTE_MAX_LIFETIME_S // 3600} h)"
     if rec.get("host") == host():
         b = boot_id()
         if rec.get("boot_id") and b and rec["boot_id"] != b:
@@ -506,6 +560,8 @@ def read_intents(repo: str, now: float | None = None, remove_stale: bool = True,
         if why is None:
             live.append({**rec, "path": str(p)})
         elif remove_stale and _remove_own(p):
+            if rec.get("remote_device") and "registered from computer" in why:
+                _mark_expired(rec, now)
             note_pullback_end(rec.get("id", ""), float(rec.get("heartbeat_at") or mtime))
             log("intent.stale_removed", repo, hub_audit=True, file=str(p), why=why, user=rec.get("user"),
                 pid=rec.get("pid"), seen_by=seen_by)
@@ -978,18 +1034,44 @@ def lock_records(restic: str, env: dict) -> list[dict]:
     r = run([restic, "list", "locks", "--no-lock"], env=env, timeout=120)
     if r.returncode != 0:
         raise BackupError(f"restic list locks failed rc={r.returncode}: {plain(r.stderr).strip()[-300:]}")
-    out = []
+    out, failed = [], {}
     for lid in r.stdout.split():
         c = run([restic, "cat", "lock", lid, "--no-lock"], env=env, timeout=120)
-        if c.returncode != 0:
-            continue                                  # removed between list and cat: its holder finished
-        try:
-            rec = json.loads(c.stdout)
-        except ValueError:
-            continue
+        rec = None
+        if c.returncode == 0:
+            with contextlib.suppress(ValueError):
+                rec = json.loads(c.stdout)
         if isinstance(rec, dict):
             out.append({**rec, "id": lid})
+        else:
+            failed[lid] = (f"restic cat lock rc={c.returncode}: {plain(c.stderr).strip()[-160:]}" if c.returncode
+                           else "lock file is not a JSON object")
+    if failed:
+        # INFRA-658 (review FILE-4): a lock gone between list and cat simply finished; one still listed but not
+        # readable is kept as 'unreadable' so nothing is unlocked on a guess.
+        again = run([restic, "list", "locks", "--no-lock"], env=env, timeout=120)
+        still = set(again.stdout.split()) if again.returncode == 0 else set(failed)
+        out += [{"id": lid, "unreadable": why} for lid, why in failed.items() if lid in still]
     return out
+
+
+def lock_ids(restic: str, env: dict) -> set[str]:
+    from .util import run
+    r = run([restic, "list", "locks", "--no-lock"], env=env, timeout=120)
+    if r.returncode != 0:
+        raise BackupError(f"restic list locks failed rc={r.returncode}: {plain(r.stderr).strip()[-300:]}")
+    return set(r.stdout.split())
+
+
+def stable_lock_records(restic: str, env: dict, tries: int = 3) -> list[dict]:
+    """INFRA-658 (review FILE-5): the lock records, confirmed by a second listing right after that names exactly the
+    same locks; a lock created or removed in between makes it read again. `restic unlock` runs straight after this, so
+    the window left is one restic start. Raises BackupError when the locks keep changing."""
+    for _ in range(tries):
+        recs = lock_records(restic, env)
+        if {lk["id"] for lk in recs} == lock_ids(restic, env):
+            return recs
+    raise BackupError(f"the repository's locks kept changing over {tries} readings")
 
 
 def lock_age_s(lk: dict, now: float | None = None) -> float | None:
@@ -1031,6 +1113,8 @@ def _pid(lk: dict) -> int:
 def restic_would_remove(lk: dict, now: float | None = None) -> bool:
     """restic's own stale rule, which `restic unlock` applies to EVERY lock: not refreshed for 30 min, or from a host with
     our name whose pid fails kill(pid, 0) (gone, or alive under another user)."""
+    if lk.get("unreadable"):
+        return True                                   # unknown: restic may well remove it
     age = lock_age_s(lk, now)
     if age is not None and age > RESTIC_STALE_S:
         return True
@@ -1041,6 +1125,8 @@ def restic_would_remove(lk: dict, now: float | None = None) -> bool:
 def proven_dead(lk: dict, now: float | None = None) -> bool:
     """What HavnVard can prove: not refreshed for 30 min (restic refreshes every 5 min, so its holder is gone), or from
     THIS computer (our hostname AND a local account with that uid and name) and its pid no longer exists for any user."""
+    if lk.get("unreadable"):
+        return False                                  # nothing can be proven about a lock that cannot be read
     age = lock_age_s(lk, now)
     if age is not None and age > RESTIC_STALE_S:
         return True
@@ -1049,6 +1135,8 @@ def proven_dead(lk: dict, now: float | None = None) -> bool:
 
 
 def _lock_desc(lk: dict) -> str:
+    if lk.get("unreadable"):
+        return f"{str(lk.get('id', '?'))[:8]} (could not be read: {lk['unreadable']})"
     return (f"{str(lk.get('id', '?'))[:8]} (pid {lk.get('pid')} of {lk.get('username')} on {lk.get('hostname')}, "
             f"{str(lk.get('time', '?'))[:19]})")
 
@@ -1071,7 +1159,7 @@ def safe_unlock(restic: str, env: dict) -> tuple[bool, str]:
     read is a refusal too: nothing is unlocked on a guess."""
     from .util import run
     try:
-        recs = lock_records(restic, env)
+        recs = stable_lock_records(restic, env)
     except BackupError as e:
         return False, f"could not list the locks ({e}); not unlocking"
     why = unlock_refusal(recs)
@@ -1097,7 +1185,7 @@ def clear_dead_locks(restic: str, env: dict, repo: str, job: str) -> int:
     catalog run: when such a lock is found, run `restic unlock` only if no other lock restic would remove might be live
     (INFRA-648), and write an audit row either way. Returns how many dead locks were found."""
     from .util import run
-    recs = lock_records(restic, env)
+    recs = stable_lock_records(restic, env)
     dead = dead_local_exclusive(recs)
     if not dead:
         return 0
