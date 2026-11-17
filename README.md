@@ -215,10 +215,7 @@ the catalog's tag, 10 min for a delete or an unknown holder, one hub notice afte
 stale lock, and never removes a live one. Its first and last line is a STATUS line (`STATUS: DONE 1641/1641` or
 `STATUS: NOT DONE 1640/1641, 1 FAILED ...`). `python -m backup pullback-drill --from DEVICE --set NAME [--hashes FILE]`
 proves it on the hub (see RUNBOOK); `--render-units DIR` writes a weekly timer that is enabled only on the owner's yes.
-**Limit:** precedence (the catalog yields, deletes and key removal refuse) covers pullbacks run **on the hub, as the hub
-user**. A pullback from another computer (or as another user on the hub) still gets the lock handling (wait, stale
-unlock, FAILED with the holder named), but the hub's jobs cannot see it: against a long delete it waits 10 min and then
-those files are FAILED. Run a pullback that must not wait on the hub with `--from DEVICE`.
+**Laptops too (3.3.15, INFRA-647).** A computer enrolled for check-in (`[checkin]` + `[device]` in backup.toml) also registers its pullback on the hub (`POST /api/v1/devices/NAME/intent`: start, a beat every 30 s, end), so the hub's jobs yield to it as to a hub pullback; the hub drops it 5 min after its last beat. If the hub cannot be reached, the pullback says so once and goes on. **Limit:** a computer that is not enrolled, or a pullback run as another user on the hub, still gets the lock handling (wait, stale unlock, FAILED with the holder named) but the hub's jobs cannot see it. **Unlock (3.3.15, INFRA-648):** `restic unlock` removes every lock restic thinks stale, so HavnVard first lists every lock and runs it only when each lock restic would remove is proven dead (a gone pid of a local account, or not refreshed for 30 min); otherwise it waits. **Hash check (3.3.15, INFRA-651):** a pulled-back file whose SHA-256 differs from the offload manifest is kept but counted FAILED (not restored), listed as MISMATCH, and reported on the hub.
 
 ### Accounts, registration and schedules (3.3.0)
 The hub can serve pages (`python -m backup hub web --listen <tailnet-ip> --port 8001`). The **company or household owns
