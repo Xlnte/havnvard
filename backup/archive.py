@@ -831,8 +831,9 @@ def pullback(date: str | None = None, paths: list[str] | None = None, version: s
         print(f"STATUS: NOT DONE {x}/{y} listed files, {n_failed} FAILED, {st['unlisted']} folder(s) not listed "
               "(listed above): run the same pullback again; files already back are left alone", flush=True)
     else:
-        print(f"STATUS: NOT DONE {x}/{y}, {n_failed} FAILED (listed above): run the same pullback again; files "
-              "already back are left alone", flush=True)
+        n_part = st.get("partial", 0)
+        print(f"STATUS: NOT DONE {x}/{y}, {n_failed} FAILED" + (f", {n_part} PARTIAL" if n_part else "")
+              + " (listed above): run the same pullback again; files already back are left alone", flush=True)
     return rc
 
 
@@ -938,19 +939,24 @@ def _pullback_write(restic, env, jobs, target, now, notifier, hub_notice, st: di
             failed.append(("folder modes", str(e)))
     blocked_src = w.unplaced
     missing = sorted(set(expected) - set(w.hashes) - blocked_src - w.partial_src)
-    not_back = len(missing) + len(w.partial_src & set(expected)) + len(blocked_src & set(expected))
+    # INFRA-652 (review L8): a copy cut short is PARTIAL (kept for the owner to check), counted apart from FAILED.
+    # Neither is restored or accounted for.
+    n_partial = len(w.partial_src & set(expected))
+    not_back = len(missing) + len(blocked_src & set(expected))
     # INFRA-651 (review L7): a file whose SHA-256 differs from the offload manifest is written and kept for the owner to
     # check, but it is FAILED: never counted as restored or accounted for (spec 3.4).
     bad = sorted(set(bad))                       # review FILE-7: a file listed by two jobs is one failure
     bad_set = set(bad)
     restored = sum(1 for src in w.new_src if src not in bad_set)
     n_failed = not_back + len(bad)
-    accounted = len(expected) - n_failed
-    st.update(expected=len(expected), accounted=accounted, restored=restored, failed=n_failed, mismatch=len(bad),
-              identical=w.same, kept_different=len(w.side), failed_items=len(failed), unlisted=len(unlisted))
+    accounted = len(expected) - n_failed - n_partial
+    st.update(expected=len(expected), accounted=accounted, restored=restored, failed=n_failed, partial=n_partial,
+              mismatch=len(bad), identical=w.same, kept_different=len(w.side), failed_items=len(failed),
+              unlisted=len(unlisted))
     print(f"pullback: {restored} restored, "
           + (f"{n_failed} FAILED (listed below"
              + (f"; {len(bad)} SHA-256 MISMATCH" if bad else "") + "), " if n_failed or unlisted else "")
+          + (f"{n_partial} PARTIAL (copy cut short; kept, listed below), " if n_partial else "")
           + (f"{len(unlisted)} folder(s) could not be listed (file count unknown, listed below), " if unlisted else "")
           + f"{w.same} already there and identical (left alone), "
           f"{len(w.side)} already there but different (kept; backed-up copy written next to it)"
@@ -982,10 +988,10 @@ def _pullback_write(restic, env, jobs, target, now, notifier, hub_notice, st: di
         _report_mismatch(sorted(bad), str(tgt), hub_notice)
     rc = 0 if not (bad or missing or w.partial or w.partial_src or failed or unlisted or w.blocked or w.unplaced) \
         else config.PROBLEM_EXIT
-    if rc and not st["failed"] and not unlisted:
+    if rc and not st["failed"] and not st["partial"] and not unlisted:
         st["failed"] = len(failed) or 1           # e.g. folder modes: never "0 FAILED" on a NOT DONE line
-    precedence.log("pullback.end", "pullback", restored=restored, failed=st["failed"], mismatch=len(bad),
-                   expected=len(expected))
+    precedence.log("pullback.end", "pullback", restored=restored, failed=st["failed"], partial=n_partial,
+                   mismatch=len(bad), expected=len(expected))
     return rc
 
 
