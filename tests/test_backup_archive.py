@@ -454,3 +454,28 @@ def test_pullback_hash_mismatch_is_a_failure_not_restored_infra651(dev, capsys):
     assert stats["restored"] == 2 and stats["accounted"] == 2 and stats["failed"] == 1 and stats["mismatch"] == 1
     assert [k for k, _ in notices] == ["pullback_mismatch"] and p0 in notices[0][1]
     assert (tgt / p0.lstrip("/")).exists()                    # kept for the owner to check, never removed
+
+
+@needs_restic
+def test_pullback_on_hub_mismatch_notice_reaches_hub_page_infra651_review(dev, capsys):
+    """Review 3.3.15 FIX-NOW 2: run on the hub with no notice function given, the mismatch notice goes onto the hub
+    page (accounts.db), not into a check-in queue a hub never sends."""
+    from backup import accounts
+    tmp, repo, pw, owner, photos = dev
+    import sqlite3
+    acc = accounts.Accounts()
+    with sqlite3.connect(acc.path) as con:          # a computer 'dev1' on this hub page (test hub only)
+        con.execute("INSERT INTO device (company_id, name, created_at) VALUES (1, 'dev1', '2026-11-17')")
+    assert archive.offload(str(photos), no_db=True) == 0
+    p0 = str(photos / "notes.txt")
+    man = next((tmp / "state" / "offload").glob("*.tsv"))
+    man.write_text("\n".join(("\t".join(ln.split("\t")[:2] + ["f" * 64] + ln.split("\t")[3:])
+                              if ln.startswith(p0 + "\t") else ln) for ln in man.read_text().splitlines()) + "\n")
+    tgt = tmp / "hubside"
+    tgt.mkdir()
+    assert archive.pullback(paths=[p0], target=str(tgt)) == config.PROBLEM_EXIT
+    out = capsys.readouterr().out
+    assert "hub notice for 1 SHA-256 mismatch(es): left on the hub page" in out
+    with sqlite3.connect(acc.path) as con:
+        rows = con.execute("SELECT kind, text FROM notice").fetchall()
+    assert [k for k, _ in rows] == ["pullback_mismatch"] and p0 in rows[0][1]

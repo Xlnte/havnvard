@@ -322,7 +322,7 @@ def test_infra647_intent_api_rejects_bad_input_and_caps_per_device(app, tmp_path
     assert go({"action": "beat", "repo": "air2017", "id": "p-0"}) == "200 OK"          # an existing one still beats
     assert go({"action": "end", "repo": "air2017", "id": "p-0"}) == "200 OK"
     assert sorted(p.name for p in (tmp_path / "state" / "intent").iterdir()) == ["air2017"]   # nothing outside
-    assert len(list((tmp_path / "state" / "intent" / "air2017").glob("remote-air2017-*.json"))) == \
+    assert len(list((tmp_path / "state" / "intent" / "air2017").glob("remote-*.json"))) == \
         precedence.REMOTE_MAX_PER_DEVICE - 1
 
 
@@ -344,3 +344,34 @@ def test_infra647_hub_unreachable_is_said_once_and_the_pullback_goes_on(tmp_path
     monkeypatch.setenv("HAVNVARD_STATE_DIR", str(tmp_path / "state2"))
     assert precedence.RemoteIntent.for_this_device() is None
     assert "not enrolled with a hub" in capsys.readouterr().err
+
+
+def test_infra647_review_names_with_dashes_never_collide_and_late_beat_does_not_recreate(app, tmp_path):
+    """Review 3.3.15 FIX-NOW 1: computer 'a' with id 'b-c' and computer 'a-b' with id 'c' are two registrations; one can
+    never overwrite or remove the other, and the limit counts per computer. A beat after 'end' re-creates nothing."""
+    from backup import precedence
+    reg = precedence.register_remote
+    assert reg("a", {"action": "start", "repo": "r", "id": "b-c", "pid": 1, "host": "h"})["registered"] is True
+    assert reg("a-b", {"action": "start", "repo": "r", "id": "c", "pid": 2, "host": "h"})["registered"] is True
+    assert reg("a-b", {"action": "end", "repo": "r", "id": "c"})["removed"] is True
+    live, _ = precedence.read_intents("r")
+    assert [(i["remote_device"], i["id"]) for i in live] == [("a", "b-c")]           # a's registration untouched
+    for i in range(precedence.REMOTE_MAX_PER_DEVICE):
+        reg("lap-2", {"action": "start", "repo": "r", "id": f"x{i}"})
+    assert reg("lap", {"action": "start", "repo": "r", "id": "y"})["registered"] is True   # not counted as lap-2's
+    # the same file name forged for another computer is refused (simulate by planting a record)
+    p = precedence.remote_intent_path("r", "lap", "y")
+    rec = json.loads(p.read_text())
+    p.write_text(json.dumps({**rec, "remote_device": "other"}))
+    with pytest.raises(precedence.BackupError, match="another computer"):
+        reg("lap", {"action": "end", "repo": "r", "id": "y"})
+    assert p.exists()
+    # stale ones do not count toward the limit
+    later = time.time() + precedence.STALE_S + 5
+    assert reg("lap-2", {"action": "start", "repo": "r", "id": "fresh"}, now=later)["registered"] is True
+    # late beat after end
+    reg("a", {"action": "end", "repo": "r", "id": "b-c"})
+    assert reg("a", {"action": "beat", "repo": "r", "id": "b-c"}) == {"ok": True, "registered": False}
+    assert not precedence.remote_intent_path("r", "a", "b-c").exists()
+    ri = precedence.RemoteIntent("http://hub", "a", "t", post=lambda url, tok, body: reg("a", body))
+    assert ri.send("beat", {"id": "b-c", "repo": "r"}) == "gone"
