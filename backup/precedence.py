@@ -104,6 +104,16 @@ def pid_alive(pid: int) -> bool:
     return True
 
 
+def signal0_fails(pid: int) -> bool:
+    """What restic's own same-host check sees: restic calls a lock's process gone when kill(pid, 0) fails for ANY reason,
+    so a live process of another user (EPERM) counts as gone to restic (INFRA-648)."""
+    try:
+        os.kill(int(pid), 0)
+    except (OSError, ValueError, OverflowError):
+        return True
+    return False
+
+
 def _stat_fields(pid: int) -> list[str]:
     try:
         raw = Path(f"/proc/{int(pid)}/stat").read_text()
@@ -679,15 +689,20 @@ class LockGate:
         since = f" since {lk['created']}" if lk.get("created") else ""
         return "foreign", f"a restic lock held by process {lk['pid']} of user {lk['user']} on {lk['host']}{since}"
 
-    def _unlock(self, desc: str, lk: dict | None) -> None:
-        from .util import run
-        r = run([self.restic, "unlock"], env=self.env, timeout=300)     # stale locks only; never --remove-all
+    def _unlock(self, desc: str, lk: dict | None) -> bool:
+        """INFRA-648: unlock only when every lock restic would remove is proven dead (safe_unlock). Returns whether
+        `restic unlock` ran; when it did not, the caller waits as for a foreign lock."""
+        ran, text = safe_unlock(self.restic, self.env)
+        if not ran:
+            self.out(f"pullback: STALE LOCK on {self.repo}: {desc}; {text}; waiting instead")
+            log("pullback.unlock_refused", self.repo, hub_audit=True, holder=desc, why=text,
+                lock_pid=(lk or {}).get("pid"), lock_host=(lk or {}).get("host"))
+            return False
         self.unlocks += 1
-        ok = r.returncode == 0
-        self.out(f"pullback: STALE LOCK on {self.repo}: {desc}; ran `restic unlock` (removes stale locks only, never "
-                 f"data){'' if ok else f' -- it failed rc={r.returncode}: {r.stderr.strip()[-200:]}'}")
-        log("pullback.stale_unlock", self.repo, hub_audit=True, holder=desc, rc=r.returncode,
+        self.out(f"pullback: STALE LOCK on {self.repo}: {desc}; {text}")
+        log("pullback.stale_unlock", self.repo, hub_audit=True, holder=desc, result=text,
             lock_pid=(lk or {}).get("pid"), lock_host=(lk or {}).get("host"))
+        return True
 
     def _can_do(self, kind: str) -> str:
         if kind == "job":
@@ -703,6 +718,7 @@ class LockGate:
         noticed = False
         desc = ""
         stale_tries = 0
+        unlock_refused = False
         while True:
             try:
                 res = fn()
@@ -712,10 +728,11 @@ class LockGate:
                 if self.gave_up and (lk is None or lk.get("sid") == self.gave_up.get("sid")):
                     raise BackupError(f"not tried: still locked by {desc} (gave up on it earlier in this pullback); "
                                       "no lock was removed") from e
-                if kind == "stale" and stale_tries < 3:
+                if kind == "stale" and stale_tries < 3 and not unlock_refused:
                     stale_tries += 1
-                    self._unlock(desc, lk)
-                    continue
+                    if self._unlock(desc, lk):
+                        continue
+                    unlock_refused = True               # INFRA-648: asked once per pullback; then it is waited out
                 if kind == "stale":
                     kind = "foreign"                     # restic kept it: it is not stale to restic, so wait
                 now = _now()
@@ -817,33 +834,122 @@ def lock_records(restic: str, env: dict) -> list[dict]:
     return out
 
 
+def lock_age_s(lk: dict, now: float | None = None) -> float | None:
+    """Seconds since the lock record's own time (restic rewrites it on every refresh); None if it cannot be read."""
+    t = lk.get("time")
+    if not isinstance(t, str) or not t:
+        return None
+    m = re.match(r"^(.*?T\d\d:\d\d:\d\d)(\.\d+)?(Z|[+-]\d\d:\d\d)?$", t.strip())
+    if not m:
+        return None
+    frac = (m[2] or "")[:7]
+    try:
+        when = dt.datetime.fromisoformat(m[1] + frac + ("+00:00" if m[3] in (None, "Z") else m[3]))
+    except ValueError:
+        return None
+    return (now if now is not None else time.time()) - when.timestamp()
+
+
+def _local_account(lk: dict) -> bool:
+    """The lock's user exists on THIS computer under the same uid and name. A lock that carries our hostname but a user
+    this computer does not have comes from another computer with the same name (review L2), never from us."""
+    import pwd
+    name = lk.get("username")
+    try:
+        if lk.get("uid") is not None:
+            return pwd.getpwuid(int(lk["uid"])).pw_name == name
+        return bool(name) and pwd.getpwnam(name) is not None
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+
+
+def _pid(lk: dict) -> int:
+    try:
+        return int(lk.get("pid", 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def restic_would_remove(lk: dict, now: float | None = None) -> bool:
+    """restic's own stale rule, which `restic unlock` applies to EVERY lock: not refreshed for 30 min, or from a host with
+    our name whose pid fails kill(pid, 0) (gone, or alive under another user)."""
+    age = lock_age_s(lk, now)
+    if age is not None and age > RESTIC_STALE_S:
+        return True
+    pid = _pid(lk)
+    return lk.get("hostname") == host() and pid > 0 and signal0_fails(pid)
+
+
+def proven_dead(lk: dict, now: float | None = None) -> bool:
+    """What HavnVard can prove: not refreshed for 30 min (restic refreshes every 5 min, so its holder is gone), or from
+    THIS computer (our hostname AND a local account with that uid and name) and its pid no longer exists for any user."""
+    age = lock_age_s(lk, now)
+    if age is not None and age > RESTIC_STALE_S:
+        return True
+    pid = _pid(lk)
+    return lk.get("hostname") == host() and pid > 0 and not pid_alive(pid) and _local_account(lk)
+
+
+def _lock_desc(lk: dict) -> str:
+    return (f"{str(lk.get('id', '?'))[:8]} (pid {lk.get('pid')} of {lk.get('username')} on {lk.get('hostname')}, "
+            f"{str(lk.get('time', '?'))[:19]})")
+
+
+def unlock_refusal(recs: list[dict], now: float | None = None) -> str | None:
+    """INFRA-648 (review L2/N3): `restic unlock` removes every lock restic thinks stale, not only the one HavnVard
+    checked. Returns why it must NOT run (a lock restic would remove that HavnVard cannot prove dead: a live process of
+    another user on this host, or a computer that shares this hostname), or None when every lock it would remove is
+    proven dead."""
+    risky = [lk for lk in recs if restic_would_remove(lk, now) and not proven_dead(lk, now)]
+    if not risky:
+        return None
+    return ("`restic unlock` would also remove lock(s) that may still be live: " + ", ".join(_lock_desc(lk) for lk in risky)
+            + "; not unlocking")
+
+
+def safe_unlock(restic: str, env: dict) -> tuple[bool, str]:
+    """(ran, text). Lists every lock first (`restic list locks --no-lock` + `cat lock`); runs `restic unlock` (stale
+    locks only, never --remove-all) ONLY when every lock restic would remove is proven dead. A lock list that cannot be
+    read is a refusal too: nothing is unlocked on a guess."""
+    from .util import run
+    try:
+        recs = lock_records(restic, env)
+    except BackupError as e:
+        return False, f"could not list the locks ({e}); not unlocking"
+    why = unlock_refusal(recs)
+    if why:
+        return False, why
+    r = run([restic, "unlock"], env=env, timeout=300)     # stale locks only; never --remove-all
+    if r.returncode != 0:
+        return True, f"`restic unlock` FAILED rc={r.returncode}: {plain(r.stderr).strip()[-200:]}"
+    return True, "ran `restic unlock` (removes stale locks only, never data)"
+
+
 def dead_local_exclusive(recs: list[dict]) -> list[dict]:
-    """Exclusive locks from THIS host whose process is gone: what restic itself treats as stale (same host, pid gone)
-    AND what HavnVard can prove dead. A pid that exists for any user (pid_alive: EPERM = alive) and a lock from another
-    host are never touched (INFRA-648)."""
-    out = []
-    for lk in recs:
-        try:
-            pid = int(lk.get("pid", 0))
-        except (TypeError, ValueError):
-            continue
-        if lk.get("exclusive") and lk.get("hostname") == host() and pid > 0 and not pid_alive(pid):
-            out.append(lk)
-    return out
+    """Exclusive locks from THIS computer whose process is gone for every user (pid_alive: EPERM = alive) and whose user
+    is a local account. A lock from another host, or from another computer that shares this hostname, is never
+    counted (INFRA-648)."""
+    return [lk for lk in recs if lk.get("exclusive") and lk.get("hostname") == host() and _pid(lk) > 0
+            and not pid_alive(_pid(lk)) and _local_account(lk)]
 
 
 def clear_dead_locks(restic: str, env: dict, repo: str, job: str) -> int:
     """Re-review R1: a killed job (e.g. the drill's paused tag after kill -9) leaves a dead exclusive lock that makes
     every new restic job on the repository fail (rc 11) until someone unlocks it. Before the drill and before each
-    catalog run: when such a lock is found, run `restic unlock` (stale locks only; never --remove-all) and write an audit
-    row. Returns how many dead locks were found."""
+    catalog run: when such a lock is found, run `restic unlock` only if no other lock restic would remove might be live
+    (INFRA-648), and write an audit row either way. Returns how many dead locks were found."""
     from .util import run
-    dead = dead_local_exclusive(lock_records(restic, env))
+    recs = lock_records(restic, env)
+    dead = dead_local_exclusive(recs)
     if not dead:
         return 0
-    r = run([restic, "unlock"], env=env, timeout=300)
-    desc = ", ".join(f"{lk['id'][:8]} (pid {lk.get('pid')} of {lk.get('username')}, {lk.get('time', '?')[:19]})"
-                     for lk in dead)
+    desc = ", ".join(_lock_desc(lk) for lk in dead)
+    why = unlock_refusal(recs)
+    if why:
+        print(f"{job}: dead exclusive lock(s) on {repo} from this host: {desc}; NOT unlocked: {why}", file=sys.stderr)
+        log("job.unlock_refused", repo, hub_audit=True, job=job, locks=[lk["id"][:8] for lk in dead], why=why)
+        return len(dead)
+    r = run([restic, "unlock"], env=env, timeout=300)     # stale locks only; never --remove-all
     print(f"{job}: dead exclusive lock(s) on {repo} from this host: {desc}; ran `restic unlock` (stale locks only)"
           + ("" if r.returncode == 0 else f" -- it FAILED rc={r.returncode}: {plain(r.stderr).strip()[-200:]}"))
     log("job.stale_unlock", repo, hub_audit=True, job=job, locks=[lk["id"][:8] for lk in dead],

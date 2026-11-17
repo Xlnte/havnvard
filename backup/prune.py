@@ -96,8 +96,9 @@ def oldest_lock_age_h(repo: Path, now: float) -> float | None:
 def clear_stale_locks(restic: str, env: dict, repo: Path, device: str, hours: float) -> None:
     age = oldest_lock_age_h(repo, time.time())
     if age is not None and age > hours:
-        run([restic, "unlock"], env=env, timeout=300)   # removes stale locks only, never a live one
-        print(f"{device}: oldest lock {age:.1f} h old, ran restic unlock (stale locks only)")
+        ran, text = precedence.safe_unlock(restic, env)   # INFRA-648: only if every lock restic would remove is dead
+        print(f"{device}: oldest lock {age:.1f} h old; {text}")
+        precedence.log("prune.stale_unlock" if ran else "prune.unlock_refused", device, hub_audit=True, result=text)
 
 
 def delete_snapshots(restic: str, env: dict, device: str, snaps: list[dict], what: str,
