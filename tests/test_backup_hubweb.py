@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sys
+import time
 from urllib.parse import urlencode
 
 import pytest
@@ -248,3 +249,98 @@ def test_device_checkin_client_runs_when_due_and_reports_late_after_an_outage(ap
     assert w.s._rows("SELECT COUNT(*) AS n FROM checkin WHERE reason LIKE 'missed:%'")[0]["n"] == 1
     assert checkin.checkin(run=True, opener=opener, runner=lambda: ran.append(1) or 0) == 0
     assert ran == [1]                                                        # not due again within the hour
+
+
+def _device(app):
+    w, code = app
+    adm = Client(w)
+    adm.req("POST", "/register", {"email": "boss@example.com", "password": PW, "password2": PW, "setup_code": code,
+                                  "company": "Acme"})
+    _, _, page = adm.post("/admin/computers", {"action": "add", "name": "air2017"})
+    return Client(w), {"HTTP_AUTHORIZATION": "Bearer " + re.search(r"\(shown once\): <code>([\w-]+)</code>", page).group(1)}
+
+
+def test_infra647_device_pullback_intent_is_seen_by_hub_jobs(app, tmp_path, monkeypatch):
+    """INFRA-647 (review L1/F7): a pullback on an enrolled laptop registers its intent on the hub. The hub writes it into
+    its OWN intent folder, so prune / forget / key removal refuse and the catalog yields; end removes it."""
+    from backup import precedence
+    dev, auth = _device(app)
+    hub_state, laptop_state = tmp_path / "state", tmp_path / "laptop-state"
+
+    def post(url, token, body):                       # the laptop's HTTP call, answered by the hub app in-process
+        assert url.endswith("/api/v1/devices/air2017/intent")
+        old = os.environ["HAVNVARD_STATE_DIR"]
+        os.environ["HAVNVARD_STATE_DIR"] = str(hub_state)
+        try:
+            st, _, out = dev.req("POST", "/api/v1/devices/air2017/intent", body,
+                                 {"HTTP_AUTHORIZATION": f"Bearer {token}"}, as_json=True)
+        finally:
+            os.environ["HAVNVARD_STATE_DIR"] = old
+        if st != "200 OK":
+            raise OSError(f"{st}: {out}")
+        return json.loads(out)
+
+    monkeypatch.setenv("HAVNVARD_STATE_DIR", str(laptop_state))
+    monkeypatch.setattr(precedence.RemoteIntent, "for_this_device",
+                        classmethod(lambda cls: cls("http://hub:8001", "air2017", auth["HTTP_AUTHORIZATION"][7:],
+                                                    post=post)))
+    with precedence.announce("air2017", "pullback into / (laptop)") as it:
+        monkeypatch.setenv("HAVNVARD_STATE_DIR", str(hub_state))          # now look from the hub's side
+        live, _ = precedence.read_intents("air2017", seen_by="test")
+        assert len(live) == 1 and live[0]["id"] == it.id and "(computer air2017)" in live[0]["host"]
+        assert live[0]["remote_device"] == "air2017" and live[0]["what"] == "pullback into / (laptop)"
+        with pytest.raises(precedence.PullbackLive, match="computer air2017"):
+            precedence.refuse_if_pullback("air2017", "prune")
+        t0 = json.loads(next((hub_state / "intent" / "air2017").glob("remote-*.json")).read_text())["heartbeat_at"]
+        monkeypatch.setenv("HAVNVARD_STATE_DIR", str(laptop_state))
+        assert it.remote.send("beat", it.rec)
+        hub_rec = json.loads(next((hub_state / "intent" / "air2017").glob("remote-*.json")).read_text())
+        assert hub_rec["heartbeat_at"] >= t0 and hub_rec["started_at"] <= t0
+    monkeypatch.setenv("HAVNVARD_STATE_DIR", str(hub_state))
+    assert precedence.read_intents("air2017")[0] == [] and not list((hub_state / "intent" / "air2017").glob("*.json"))
+    precedence.refuse_if_pullback("air2017", "prune")                     # ended: nothing refuses any more
+    assert '"action": "intent.remote_start"' in precedence.log_path().read_text()
+    # a remote intent whose beats stop is dropped after 5 min, like any other
+    precedence.register_remote("air2017", {"action": "start", "repo": "air2017", "id": "x-1-2.5", "pid": 1, "host": "h"})
+    assert precedence.read_intents("air2017", now=time.time() + precedence.STALE_S + 5)[0] == []
+
+
+def test_infra647_intent_api_rejects_bad_input_and_caps_per_device(app, tmp_path):
+    from backup import precedence
+    dev, auth = _device(app)
+    def go(body, headers=auth):
+        return dev.req("POST", "/api/v1/devices/air2017/intent", body, headers, as_json=True)[0]
+    assert go({"action": "start", "repo": "air2017", "id": "a"}, {"HTTP_AUTHORIZATION": "Bearer wrong"}) == \
+        "401 Unauthorized"
+    for bad in ({"action": "nuke", "repo": "air2017", "id": "a"}, {"action": "start", "repo": "..", "id": "a"},
+                {"action": "start", "repo": "a/b", "id": "a"}, {"action": "start", "repo": "air2017", "id": "../x"},
+                {"action": "start", "repo": "air2017", "id": ""}):
+        assert go(bad) == "400 Bad Request", bad
+    for i in range(precedence.REMOTE_MAX_PER_DEVICE):
+        assert go({"action": "start", "repo": "air2017", "id": f"p-{i}"}) == "200 OK"
+    assert go({"action": "start", "repo": "air2017", "id": "p-one-too-many"}) == "400 Bad Request"
+    assert go({"action": "beat", "repo": "air2017", "id": "p-0"}) == "200 OK"          # an existing one still beats
+    assert go({"action": "end", "repo": "air2017", "id": "p-0"}) == "200 OK"
+    assert sorted(p.name for p in (tmp_path / "state" / "intent").iterdir()) == ["air2017"]   # nothing outside
+    assert len(list((tmp_path / "state" / "intent" / "air2017").glob("remote-air2017-*.json"))) == \
+        precedence.REMOTE_MAX_PER_DEVICE - 1
+
+
+def test_infra647_hub_unreachable_is_said_once_and_the_pullback_goes_on(tmp_path, monkeypatch, capsys):
+    from backup import precedence
+    monkeypatch.setenv("HAVNVARD_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("HAVNVARD_STATE_DIR", str(tmp_path / "state"))
+    def down(*a):
+        raise OSError("connection refused")
+    ri = precedence.RemoteIntent("http://hub:8001", "air2017", "t", post=down)
+    monkeypatch.setattr(precedence.RemoteIntent, "for_this_device", classmethod(lambda cls: ri))
+    with precedence.announce("air2017", "pullback") as it:
+        assert not ri.send("beat", it.rec)
+    err = capsys.readouterr().err
+    assert err.count("was not told about this pullback") == 1 and ri.ok is False
+    # a computer with no check-in set up says so and still runs
+    monkeypatch.undo()
+    monkeypatch.setenv("HAVNVARD_CONFIG_DIR", str(tmp_path / "cfg2"))
+    monkeypatch.setenv("HAVNVARD_STATE_DIR", str(tmp_path / "state2"))
+    assert precedence.RemoteIntent.for_this_device() is None
+    assert "not enrolled with a hub" in capsys.readouterr().err

@@ -233,6 +233,7 @@ class Intent:
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
         self.closed = False
+        self.remote: RemoteIntent | None = None     # INFRA-647: also registered on the hub (enrolled device only)
 
     @property
     def id(self) -> str:
@@ -251,6 +252,8 @@ class Intent:
                 self._write()
             except OSError as e:     # loud: a pullback whose heartbeat stops looks stale to others after 5 min
                 print(f"havnvard pullback: WARNING heartbeat not written to {self.path}: {e}", file=sys.stderr)
+            if self.remote is not None and not self._stop.is_set():
+                self.remote.send("beat", self.rec)
 
     def start(self) -> "Intent":
         d = self.path.parent
@@ -260,6 +263,9 @@ class Intent:
         self._write()
         _trace("write", self.rec, self.path)
         log("intent.start", self.repo, user=self.rec["user"], what=self.rec["what"], file=str(self.path))
+        self.remote = RemoteIntent.for_this_device()
+        if self.remote is not None:
+            self.remote.send("start", self.rec)
         self._thread = threading.Thread(target=self._beat, name="havnvard-intent-heartbeat", daemon=True)
         self._thread.start()
         return self
@@ -274,6 +280,8 @@ class Intent:
             self.closed = True
             removed = _remove_own(self.path)
         _trace("remove", self.rec, self.path)
+        if self.remote is not None:
+            self.remote.send("end", self.rec)
         end = _now()
         note_pullback_end(self.id, end)
         log("intent.end", self.repo, user=self.rec["user"], removed=removed, seconds=round(end - self.rec["started_at"]))
@@ -299,6 +307,116 @@ def announce(repo: str, what: str, on_start=None):
         finally:
             if old is not None:
                 signal.signal(signal.SIGTERM, old)
+
+
+class RemoteIntent:
+    """INFRA-647 (review L1/F7): intent files are per computer and per user, so the hub's jobs cannot see a pullback run
+    on a laptop. An enrolled device ([checkin] url + token_file and [device] name) therefore also registers its intent
+    on the hub (POST /api/v1/devices/NAME/intent: start, a beat every 30 s, end); the hub writes it into its own intent
+    folder, where the catalog, prune, forget and key removal already look. Never stops the pullback: a hub that cannot
+    be reached is said once, in plain words, and the beats keep trying (the hub drops a remote intent 5 min after its
+    last beat, like any other)."""
+
+    def __init__(self, base: str, name: str, token: str, post=None, out=None):
+        self.base, self.name, self.token = base, name, token
+        self._post = post
+        self.out = out or (lambda s: print(s, file=sys.stderr, flush=True))
+        self.ok: bool | None = None
+
+    @classmethod
+    def for_this_device(cls) -> "RemoteIntent | None":
+        """None on the hub itself (its intents are local) and on a computer without check-in (said once)."""
+        cfg = config.load()
+        if cfg.get("hub_local"):
+            return None
+        from .checkin import _settings
+        try:
+            base, name, token = _settings()
+        except (BackupError, OSError) as e:
+            print(f"havnvard pullback: this computer is not enrolled with a hub ({e}); the hub's jobs cannot see this "
+                  "pullback, so a hub prune may hold it up (it still waits for locks and names the holder)",
+                  file=sys.stderr, flush=True)
+            return None
+        return cls(base, name, token)
+
+    def send(self, action: str, rec: dict) -> bool:
+        body = {"action": action, **{k: rec.get(k) for k in ("id", "repo", "pid", "host", "user", "what")}}
+        try:
+            if self._post is None:
+                from .checkin import _post
+                _post(f"{self.base}/api/v1/devices/{self.name}/intent", self.token, body)
+            else:
+                self._post(f"{self.base}/api/v1/devices/{self.name}/intent", self.token, body)
+        except Exception as e:  # noqa: BLE001 - said once on stderr and logged; the pullback itself goes on
+            if self.ok is not False:
+                self.out(f"havnvard pullback: WARNING the hub ({self.base}) was not told about this pullback "
+                         f"({action}: {type(e).__name__}: {e}); its jobs may not yield to it until it is")
+                log("intent.remote_failed", str(rec.get("repo")), step=action, error=f"{type(e).__name__}: {e}")
+            self.ok = False
+            return False
+        if self.ok is False:
+            self.out(f"havnvard pullback: the hub ({self.base}) knows about this pullback again")
+        if self.ok is not True:
+            log("intent.remote_ok", str(rec.get("repo")), step=action, hub=self.base)
+        self.ok = True
+        return True
+
+
+REMOTE_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,200}$")
+REMOTE_MAX_PER_DEVICE = 8
+
+
+def remote_intent_path(repo: str, device: str, intent_id: str) -> Path:
+    return intent_dir(repo) / f"remote-{safe_name(device)}-{safe_name(intent_id)}.json"
+
+
+def register_remote(device: str, body: dict, now: float | None = None, repo_root: str | None = None) -> dict:
+    """The hub's side of RemoteIntent (called by the hub web API with the authenticated device name). Writes, refreshes
+    or removes one intent file in the hub's own intent folder. The hub's clock sets the heartbeat (no trust in the
+    device's clock), and the host is shown as "HOST (computer NAME)" so the hub never checks a pid of another computer
+    against its own processes. Raises BackupError (HTTP 400) on anything malformed."""
+    now = _now() if now is None else now
+    action, repo, iid = body.get("action"), body.get("repo"), body.get("id")
+    if action not in ("start", "beat", "end"):
+        raise BackupError("action must be start, beat or end")
+    if not isinstance(repo, str) or not repo or safe_name(repo) != repo or repo in (".", ".."):
+        raise BackupError("repo must be a repository name")
+    if not isinstance(iid, str) or not REMOTE_ID_RE.match(iid) or iid in (".", ".."):
+        raise BackupError("id must be 1-200 characters of A-Z a-z 0-9 . _ -")
+    if repo_root is not None and not (Path(repo_root) / repo).is_dir():
+        raise BackupError(f"no repository {repo} on this hub")
+    path = remote_intent_path(repo, device, iid)
+    if action == "end":
+        removed = _remove_own(path)
+        note_pullback_end(iid, now)
+        log("intent.remote_end", repo, device=device, id=iid, removed=removed)
+        return {"ok": True, "removed": removed}
+    old = None
+    with contextlib.suppress(OSError, ValueError):
+        old = json.loads(path.read_text())
+    if not isinstance(old, dict):
+        old = None
+        mine = list(intent_dir().glob(f"*/remote-{safe_name(device)}-*.json")) if intent_dir().is_dir() else []
+        if len(mine) >= REMOTE_MAX_PER_DEVICE:
+            raise BackupError(f"computer {device} already has {len(mine)} pullbacks registered (limit "
+                              f"{REMOTE_MAX_PER_DEVICE})")
+    try:
+        pid = int(body.get("pid") or 0)
+    except (TypeError, ValueError):
+        pid = 0
+    rec = {"id": iid, "pid": pid, "host": f"{str(body.get('host') or '?')[:100]} (computer {device})",
+           "user": str(body.get("user") or "?")[:100], "what": str(body.get("what") or "pullback")[:300],
+           "started_at": float(old["started_at"]) if old else now, "heartbeat_at": now, "repo": repo,
+           "remote_device": device}
+    d = path.parent
+    d.mkdir(parents=True, exist_ok=True)
+    with contextlib.suppress(OSError):
+        os.chmod(d, 0o700)
+    config.atomic_write_text(path, json.dumps(rec, sort_keys=True))
+    if old is None:
+        log("intent.remote_start", repo, hub_audit=True, device=device, id=iid, user=rec["user"], what=rec["what"],
+            renewed=action == "beat")
+    return {"ok": True}
 
 
 def stale_reason(rec: dict, now: float | None = None) -> str | None:
