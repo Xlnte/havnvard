@@ -845,6 +845,8 @@ def _pullback(date, paths, version, folder, gone_mode, target, from_device, key_
         env, dev = device_env()
         repo = dev.get("name") or precedence.repo_label(env)
     what = f"pullback into {Path(target).expanduser()}" + (f" from {from_device}" if from_device else "")
+    # Review 3.3.15 FIX-NOW 2: on the hub a notice goes straight onto the hub page (a hub never checks in)
+    hub_notice = hub_notice or precedence.leave_notice_for(repo)
     gate = precedence.LockGate(restic, env, repo, notice=hub_notice)
     with precedence.announce(repo, what, on_start):
         tok = _GATE.set(gate)
@@ -939,6 +941,7 @@ def _pullback_write(restic, env, jobs, target, now, notifier, hub_notice, st: di
     not_back = len(missing) + len(w.partial_src & set(expected)) + len(blocked_src & set(expected))
     # INFRA-651 (review L7): a file whose SHA-256 differs from the offload manifest is written and kept for the owner to
     # check, but it is FAILED: never counted as restored or accounted for (spec 3.4).
+    bad = sorted(set(bad))                       # review FILE-7: a file listed by two jobs is one failure
     bad_set = set(bad)
     restored = sum(1 for src in w.new_src if src not in bad_set)
     n_failed = not_back + len(bad)

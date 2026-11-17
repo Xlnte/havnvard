@@ -253,7 +253,8 @@ class Intent:
             except OSError as e:     # loud: a pullback whose heartbeat stops looks stale to others after 5 min
                 print(f"havnvard pullback: WARNING heartbeat not written to {self.path}: {e}", file=sys.stderr)
             if self.remote is not None and not self._stop.is_set():
-                self.remote.send("beat", self.rec)
+                if self.remote.send("beat", self.rec) == "gone" and not self._stop.is_set():
+                    self.remote.send("start", self.rec)     # the hub dropped it (e.g. unreachable > 5 min)
 
     def start(self) -> "Intent":
         d = self.path.parent
@@ -339,14 +340,15 @@ class RemoteIntent:
             return None
         return cls(base, name, token)
 
-    def send(self, action: str, rec: dict) -> bool:
+    def send(self, action: str, rec: dict) -> bool | str:
+        """True when the hub took it, False when it could not be told, "gone" when a beat found no registration."""
         body = {"action": action, **{k: rec.get(k) for k in ("id", "repo", "pid", "host", "user", "what")}}
         try:
             if self._post is None:
-                from .checkin import _post
-                _post(f"{self.base}/api/v1/devices/{self.name}/intent", self.token, body)
+                from .checkin import _post as post
             else:
-                self._post(f"{self.base}/api/v1/devices/{self.name}/intent", self.token, body)
+                post = self._post
+            ans = post(f"{self.base}/api/v1/devices/{self.name}/intent", self.token, body)
         except Exception as e:  # noqa: BLE001 - said once on stderr and logged; the pullback itself goes on
             if self.ok is not False:
                 self.out(f"havnvard pullback: WARNING the hub ({self.base}) was not told about this pullback "
@@ -359,6 +361,8 @@ class RemoteIntent:
         if self.ok is not True:
             log("intent.remote_ok", str(rec.get("repo")), step=action, hub=self.base)
         self.ok = True
+        if action == "beat" and isinstance(ans, dict) and ans.get("registered") is False:
+            return "gone"
         return True
 
 
@@ -367,7 +371,22 @@ REMOTE_MAX_PER_DEVICE = 8
 
 
 def remote_intent_path(repo: str, device: str, intent_id: str) -> Path:
-    return intent_dir(repo) / f"remote-{safe_name(device)}-{safe_name(intent_id)}.json"
+    """Review 3.3.15 FIX-NOW 1: one unambiguous file per (computer, id). Names and ids may both hold '-', so the pair is
+    hashed; a plain 'remote-DEVICE-ID' let computer 'a-b' overwrite or remove computer 'a''s registration."""
+    import hashlib
+    h = hashlib.sha256(f"{device}\0{intent_id}".encode()).hexdigest()[:40]
+    return intent_dir(repo) / f"remote-{h}.json"
+
+
+def _remote_live_for(device: str, now: float) -> int:
+    """Live (not stale) remote registrations of this computer, by the file's own remote_device field."""
+    n = 0
+    for f in intent_dir().glob("*/remote-*.json") if intent_dir().is_dir() else []:
+        with contextlib.suppress(OSError, ValueError, TypeError):
+            rec = json.loads(f.read_text())
+            if isinstance(rec, dict) and rec.get("remote_device") == device and stale_reason(rec, now) is None:
+                n += 1
+    return n
 
 
 def register_remote(device: str, body: dict, now: float | None = None, repo_root: str | None = None) -> dict:
@@ -386,19 +405,26 @@ def register_remote(device: str, body: dict, now: float | None = None, repo_root
     if repo_root is not None and not (Path(repo_root) / repo).is_dir():
         raise BackupError(f"no repository {repo} on this hub")
     path = remote_intent_path(repo, device, iid)
-    if action == "end":
-        removed = _remove_own(path)
-        note_pullback_end(iid, now)
-        log("intent.remote_end", repo, device=device, id=iid, removed=removed)
-        return {"ok": True, "removed": removed}
     old = None
     with contextlib.suppress(OSError, ValueError):
         old = json.loads(path.read_text())
     if not isinstance(old, dict):
         old = None
-        mine = list(intent_dir().glob(f"*/remote-{safe_name(device)}-*.json")) if intent_dir().is_dir() else []
-        if len(mine) >= REMOTE_MAX_PER_DEVICE:
-            raise BackupError(f"computer {device} already has {len(mine)} pullbacks registered (limit "
+    if old is not None and (old.get("remote_device") != device or old.get("id") != iid):
+        raise BackupError("that pullback registration belongs to another computer")   # never overwritten or removed
+    if action == "end":
+        removed = _remove_own(path) if old is not None else False
+        note_pullback_end(iid, now)
+        log("intent.remote_end", repo, device=device, id=iid, removed=removed)
+        return {"ok": True, "removed": removed}
+    if old is None and action == "beat":
+        # Review FILE: a beat that arrives after its 'end' (or after the hub dropped a stale one) never re-creates the
+        # registration; the device sends 'start' again while its pullback is still running.
+        return {"ok": True, "registered": False}
+    if old is None:
+        live = _remote_live_for(device, now)
+        if live >= REMOTE_MAX_PER_DEVICE:
+            raise BackupError(f"computer {device} already has {live} pullbacks registered (limit "
                               f"{REMOTE_MAX_PER_DEVICE})")
     try:
         pid = int(body.get("pid") or 0)
@@ -414,9 +440,8 @@ def register_remote(device: str, body: dict, now: float | None = None, repo_root
         os.chmod(d, 0o700)
     config.atomic_write_text(path, json.dumps(rec, sort_keys=True))
     if old is None:
-        log("intent.remote_start", repo, hub_audit=True, device=device, id=iid, user=rec["user"], what=rec["what"],
-            renewed=action == "beat")
-    return {"ok": True}
+        log("intent.remote_start", repo, hub_audit=True, device=device, id=iid, user=rec["user"], what=rec["what"])
+    return {"ok": True, "registered": True}
 
 
 def stale_reason(rec: dict, now: float | None = None) -> str | None:
