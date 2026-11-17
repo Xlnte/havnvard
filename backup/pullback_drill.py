@@ -179,6 +179,37 @@ def tag_marker(restic: str, env: dict, repo: str, tag: str) -> bool:
     return done
 
 
+DRILL_TAG_PREFIX = "havnvard-drill-"
+
+
+def prune_marker_tags(restic: str, env: dict, repo: str, stamp: str) -> list[str]:
+    """INFRA-654 (review L10): every drill adds two tags to the marker (havnvard-drill-STAMP and
+    havnvard-drill-lock-STAMP) and every tag rewrites the marker's snapshot file. At the end of a drill the earlier
+    runs' tags are removed, so the marker keeps its own tag plus this run's two. The marker only (never a data
+    snapshot), and never while a pullback is live or a drill tag step is still deferred: then it waits for next week.
+    Returns the tags removed."""
+    m = _marker(restic, env)
+    if not m:
+        return []
+    old = sorted(t for t in (m.get("tags") or []) if t.startswith(DRILL_TAG_PREFIX) and t != catalog.DRILL_TAG
+                 and not t.endswith(f"-{stamp}"))
+    if not old:
+        return []
+    live, _ = precedence.read_intents(repo, seen_by="pullback-drill")
+    if live or precedence.open_deferrals(job="pullback-drill", repo=repo):
+        print(f"pullback-drill: {len(old)} old marker tag(s) on {repo} kept until next week (a pullback is live or a "
+              "drill tag step is still deferred)")
+        return []
+    r = run([restic, "tag", "--retry-lock", "2m", *[a for t in old for a in ("--remove", t)], m["id"]], env=env,
+            timeout=600)
+    if r.returncode != 0:
+        raise BackupError(f"could not remove the old drill tags from the marker rc={r.returncode}: "
+                          f"{r.stderr.strip()[-300:]}")
+    _pin(restic, env)                                   # new marker id: remembered and its file time pinned to 0
+    precedence.log("pullback_drill.marker_tags_pruned", repo, removed=len(old))
+    return old
+
+
 def catch_up(restic: str, env: dict, repo: str) -> list[dict]:
     """Apply every open deferral of the drill's own tag step on REPO (the same gate as the catalog) and mark it done."""
     done = []
@@ -476,6 +507,12 @@ def _drill(device: str, set_name: str, hashes: str | None, scratch: str | None, 
     rep["deferred"] = sum(1 for o in precedence._read_deferred()
                           if o.get("job") == "pullback-drill" and o.get("repo") == device and o.get("tag") == tag)
     rep["caught_up"] = len(mine) if m and tag in (m.get("tags") or []) else 0
+    try:                                                # INFRA-654: after the verdict's facts are read
+        rep["marker_tags_removed"] = len(prune_marker_tags(restic, env, device, stamp))
+    except BackupError as e:                            # housekeeping, not a drill check: loud, never silent
+        rep["marker_tags_error"] = str(e)
+        print(f"pullback-drill: WARNING old marker tags not removed: {e}", file=sys.stderr)
+        precedence.log("pullback_drill.marker_tags_error", device, error=str(e))
     after_snaps = catalog.snapshots(restic, env)
     rep["snapshots"] = (before, len(after_snaps))
     # INFRA-653 (review L9): compare snapshot identities, not counts (a device backup during the drill would mask a
