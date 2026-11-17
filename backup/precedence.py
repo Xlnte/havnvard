@@ -234,6 +234,7 @@ class Intent:
         self._lock = threading.Lock()
         self.closed = False
         self.remote: RemoteIntent | None = None     # INFRA-647: also registered on the hub (enrolled device only)
+        self.local_ok = True                        # INFRA-650: False when the intent file could not be written
 
     @property
     def id(self) -> str:
@@ -249,7 +250,8 @@ class Intent:
     def _beat(self) -> None:
         while not self._stop.wait(HEARTBEAT_S):
             try:
-                self._write()
+                if self.local_ok:
+                    self._write()
             except OSError as e:     # loud: a pullback whose heartbeat stops looks stale to others after 5 min
                 print(f"havnvard pullback: WARNING heartbeat not written to {self.path}: {e}", file=sys.stderr)
             if self.remote is not None and not self._stop.is_set():
@@ -258,12 +260,23 @@ class Intent:
 
     def start(self) -> "Intent":
         d = self.path.parent
-        d.mkdir(parents=True, exist_ok=True)
-        with contextlib.suppress(OSError):
-            os.chmod(d, 0o700)
-        self._write()
-        _trace("write", self.rec, self.path)
-        log("intent.start", self.repo, user=self.rec["user"], what=self.rec["what"], file=str(self.path))
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            with contextlib.suppress(OSError):
+                os.chmod(d, 0o700)
+            self._write()
+        except OSError as e:
+            # INFRA-650 (review L6): a full or read-only home must not stop the pullback itself. It goes on without
+            # its local intent, says so on screen and in the log; hub jobs on this computer may then not yield to it.
+            self.local_ok = False
+            print(f"havnvard pullback: WARNING could not write its intent file {self.path} ({type(e).__name__}: {e}); "
+                  "the pullback goes on, but backup jobs on this computer may not wait for it", file=sys.stderr,
+                  flush=True)
+            log("intent.write_failed", self.repo, hub_audit=True, user=self.rec["user"], file=str(self.path),
+                error=f"{type(e).__name__}: {e}")
+        else:
+            _trace("write", self.rec, self.path)
+            log("intent.start", self.repo, user=self.rec["user"], what=self.rec["what"], file=str(self.path))
         self.remote = RemoteIntent.for_this_device()
         if self.remote is not None:
             self.remote.send("start", self.rec)

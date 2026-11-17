@@ -1040,3 +1040,18 @@ def test_infra656_refusal_and_catch_up_write_hub_audit_rows(hub):
     precedence.mark_done(lambda o: o.get("repo") == "dev1", "test catch-up")
     acts = [r["action"] for r in accounts.Accounts().audit_rows()]
     assert "yield.refused" in acts and "yield.caught_up" in acts
+
+
+def test_infra650_intent_write_failure_warns_and_the_block_still_runs(hub, monkeypatch, capsys):
+    """INFRA-650 (review L6): a failed intent write (full or read-only home) is a loud warning, not an abort."""
+    def boom(*a, **k):
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(precedence.config, "atomic_write_text", boom)
+    ran = []
+    with precedence.announce("dev1", "pullback test") as it:
+        ran.append(True)
+        assert it.local_ok is False
+    assert ran == [True]
+    err = capsys.readouterr().err
+    assert "could not write its intent file" in err and "No space left on device" in err
+    assert '"action": "intent.write_failed"' in precedence.log_path().read_text()
