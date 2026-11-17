@@ -828,7 +828,8 @@ def pullback(date: str | None = None, paths: list[str] | None = None, version: s
     if rc == 0:
         print(f"STATUS: DONE {x}/{y}", flush=True)
     elif st.get("unlisted"):                     # review F6: never "n/n" while a folder was not even listed
-        print(f"STATUS: NOT DONE {x}/{y} listed files, {n_failed} FAILED, {st['unlisted']} folder(s) not listed "
+        part = f", {st['partial']} PARTIAL" if st.get("partial") else ""   # 3.3.16 review FILE-5
+        print(f"STATUS: NOT DONE {x}/{y} listed files, {n_failed} FAILED{part}, {st['unlisted']} folder(s) not listed "
               "(listed above): run the same pullback again; files already back are left alone", flush=True)
     else:
         n_part = st.get("partial", 0)

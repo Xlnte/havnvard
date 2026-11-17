@@ -263,6 +263,7 @@ def _main_case(device: str, folder: str, tset: list[tuple[str, str]], out: Path,
     rep["restored"] = (ok_hash, len(tset))
     rep["folders"] = (got_dirs, len(want_dirs))
     rep["pullback_rc"], rep["pullback_failed"] = rc, stats.get("failed", 0)
+    rep["pullback_partial"] = stats.get("partial", 0)          # 3.3.16 review FILE-1: say why exit 1
     rep["bad"] = bad[:20]
     rep["contention"] = ("error: " + res["error"]) if "error" in res else \
         ("yielded" if res.get("tagged") is False else "NOT exercised (the tag step did not see the pullback)")
@@ -541,8 +542,9 @@ def _verdict(rep: dict) -> list[tuple[str, bool, str]]:
     return [
         ("SHA-256", x == n, f"{x}/{n} files match the stored SHA-256 list"),
         ("folders", fx == fn, f"{fx}/{fn} folders present"),
-        ("pullback", rep["pullback_rc"] == 0 and rep["pullback_failed"] == 0,
-         f"exit {rep['pullback_rc']}, {rep['pullback_failed']} FAILED"),
+        ("pullback", rep["pullback_rc"] == 0 and rep["pullback_failed"] == 0 and not rep.get("pullback_partial"),
+         f"exit {rep['pullback_rc']}, {rep['pullback_failed']} FAILED"
+         + (f", {rep['pullback_partial']} PARTIAL" if rep.get("pullback_partial") else "")),
         ("contention", rep["contention"] == "yielded", f"the exclusive tag step {rep['contention']}"),
         ("catch-up", rep["deferred"] >= 1 and rep["caught_up"] == rep["deferred"] and not rep.get("catchup_error"),
          f"deferred {rep['deferred']}, caught up {rep['caught_up']}/{rep['deferred']}"
