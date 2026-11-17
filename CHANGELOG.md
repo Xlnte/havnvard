@@ -2,6 +2,24 @@
 
 Older releases are described in `FEATURES.md` and `docs/*_RELEASE_*.md`.
 
+## 3.3.15 (20261117)
+
+Three medium findings from the INFRA-644 review (PAF: "Yes, start 3.3.15").
+
+- **A hash mismatch is a failure (INFRA-651, review L7).** A pulled-back file whose SHA-256 differs from the offload
+  manifest is no longer counted as restored or accounted for. It is FAILED in the summary and the STATUS line, listed as
+  `MISMATCH`, and one hub notice (`pullback_mismatch`) names the files. The file itself is kept for the owner to check.
+- **`restic unlock` only when it removes nothing live (INFRA-648, review L2/N3).** restic removes every lock it thinks
+  stale, including a live lock of another user on this host (its kill 0 check fails with EPERM) and a lock from another
+  computer with the same hostname. Before any unlock (pullback lock gate, hourly catalog dead-lock clear, prune's old-lock
+  clear), HavnVard lists every lock and refuses when a lock restic would remove is not proven dead (a gone pid of a local
+  account with that uid and name, or no refresh for 30 min). A refusal waits as for a foreign lock and gets an audit row
+  (`pullback.unlock_refused`, `job.unlock_refused`, `prune.unlock_refused`).
+- **Laptop pullbacks are seen by the hub (INFRA-647, review L1/F7).** An enrolled computer's pullback also registers its
+  intent on the hub (`POST /api/v1/devices/NAME/intent`, start / beat every 30 s / end). The hub writes it into its own
+  intent folder with the hub's clock, so the catalog yields and prune, `forget-*` and key removal refuse. At most 8 per
+  computer; dropped 5 min after the last beat. A hub that cannot be reached is said once; the pullback goes on.
+
 ## 3.3.14 (20261116)
 
 INFRA-644 re-review items R1-R4 (must land before the pullback drill runs, even by hand).
