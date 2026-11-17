@@ -2,6 +2,25 @@
 
 Older releases are described in `FEATURES.md` and `docs/*_RELEASE_*.md`.
 
+## 3.3.16 (20261117)
+
+Six low findings from the INFRA-644 and 3.3.15 reviews (PAF authorized 3.3.16 and 3.3.17, 20261117).
+
+- **Laptop pullback registrations expire (INFRA-658).** A registration holds the hub's jobs off at most 24 h from its
+  start. Past that, the hub refuses its beats, removes it (audit row `intent.remote_expired`), and remembers it for
+  3 days so the same pullback cannot simply register again.
+- **A lock that cannot be read blocks `restic unlock` (INFRA-658).** A lock still listed but unreadable is reported by
+  id and reason, never dropped. The lock records must match a second listing right before an unlock.
+- **PARTIAL is counted apart from FAILED (INFRA-652).** A copy cut short is shown as `N PARTIAL` in the summary and the
+  STATUS line. It is kept, and it counts as neither restored nor accounted for.
+- **A failed intent write no longer stops the pullback (INFRA-650).** On a full or read-only home the pullback warns,
+  logs `intent.write_failed` (and a hub audit row on the hub), and goes on.
+- **Refusals and catch-ups write a hub audit row (INFRA-656).** These are `yield.refused` and `yield.caught_up`.
+- **The drill's never-delete check compares snapshot identities (INFRA-653).** Before, it compared counts; now it uses
+  the original id after a tag rewrite, so a deleted snapshot is caught even if a backup ran during the drill.
+- **Test database:** the scratch DB got the 3.3.11 generic-names migration (INFRA-646), so the full suite is clean
+  again.
+
 ## 3.3.15 (20261117)
 
 Three medium findings from the INFRA-644 review (PAF: "Yes, start 3.3.15").
