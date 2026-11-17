@@ -375,3 +375,18 @@ def test_infra647_review_names_with_dashes_never_collide_and_late_beat_does_not_
     assert not precedence.remote_intent_path("r", "a", "b-c").exists()
     ri = precedence.RemoteIntent("http://hub", "a", "t", post=lambda url, tok, body: reg("a", body))
     assert ri.send("beat", {"id": "b-c", "repo": "r"}) == "gone"
+
+
+def test_3316_review_file2_laptop_says_the_hub_refused_and_why(tmp_path, monkeypatch):
+    """3.3.16 review FILE-2: a hub 400 (e.g. registration expired) is shown with the hub's reason, not 'not told'."""
+    import urllib.error
+    from backup import precedence
+    monkeypatch.setenv("HAVNVARD_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("HAVNVARD_STATE_DIR", str(tmp_path / "state"))
+    said = []
+    def refuse(*a):
+        raise urllib.error.HTTPError("http://hub/x", 400, "Bad Request", {},
+                                     io.BytesIO(b'{"error": "this pullback has been registered for over 24 h"}'))
+    ri = precedence.RemoteIntent("http://hub", "lap", "t", post=refuse, out=said.append)
+    assert ri.send("beat", {"id": "p", "repo": "r"}) is False and ri.send("beat", {"id": "p", "repo": "r"}) is False
+    assert len(said) == 1 and "refused" in said[0] and "over 24 h" in said[0] and "HTTP 400" in said[0]

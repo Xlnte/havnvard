@@ -339,6 +339,7 @@ class RemoteIntent:
         self._post = post
         self.out = out or (lambda s: print(s, file=sys.stderr, flush=True))
         self.ok: bool | None = None
+        self._refused = ""
 
     @classmethod
     def for_this_device(cls) -> "RemoteIntent | None":
@@ -366,6 +367,14 @@ class RemoteIntent:
                 post = self._post
             ans = post(f"{self.base}/api/v1/devices/{self.name}/intent", self.token, body)
         except Exception as e:  # noqa: BLE001 - said once on stderr and logged; the pullback itself goes on
+            why = _hub_refusal(e)                       # 3.3.16 review FILE-2: the hub's own reason (e.g. expired)
+            if why:
+                if self.ok is not False or self._refused != why:
+                    self.out(f"havnvard pullback: WARNING the hub ({self.base}) refused this pullback's registration "
+                             f"({action}): {why}")
+                    log("intent.remote_refused", str(rec.get("repo")), step=action, error=why)
+                self._refused, self.ok = why, False
+                return False
             if self.ok is not False:
                 self.out(f"havnvard pullback: WARNING the hub ({self.base}) was not told about this pullback "
                          f"({action}: {type(e).__name__}: {e}); its jobs may not yield to it until it is")
@@ -380,6 +389,18 @@ class RemoteIntent:
         if action == "beat" and isinstance(ans, dict) and ans.get("registered") is False:
             return "gone"
         return True
+
+
+def _hub_refusal(e: BaseException) -> str:
+    """The error text of a hub answer 4xx (urllib HTTPError with a JSON body {"error": ...}); "" for anything else."""
+    code = getattr(e, "code", None)
+    if not isinstance(code, int) or not 400 <= code < 500 or not hasattr(e, "read"):
+        return ""
+    try:
+        body = json.loads(e.read().decode(errors="replace") or "{}")
+    except (OSError, ValueError):
+        return f"HTTP {code}"
+    return f"HTTP {code}: {body.get('error')}" if isinstance(body, dict) and body.get("error") else f"HTTP {code}"
 
 
 REMOTE_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,200}$")
