@@ -442,7 +442,8 @@ def _drill(device: str, set_name: str, hashes: str | None, scratch: str | None, 
     env, restic = _env_for(device), restic_bin()
     precedence.clear_dead_locks(restic, env, device, "pullback-drill")   # re-review R1: a killed earlier drill
     pinned = pin_all_markers(restic, env, device)                        # re-review R3
-    before = len(catalog.snapshots(restic, env))
+    before_snaps = catalog.snapshots(restic, env)
+    before = len(before_snaps)
     had_marker = _marker(restic, env) is not None
     ensure_marker(restic, env)
     folder = _folder_of([p for _, p in tset])
@@ -477,8 +478,22 @@ def _drill(device: str, set_name: str, hashes: str | None, scratch: str | None, 
     rep["caught_up"] = len(mine) if m and tag in (m.get("tags") or []) else 0
     after_snaps = catalog.snapshots(restic, env)
     rep["snapshots"] = (before, len(after_snaps))
+    # INFRA-653 (review L9): compare snapshot identities, not counts (a device backup during the drill would mask a
+    # deleted one). A tag rewrite gives a snapshot a new id but keeps the first one in "original".
+    rep["snapshots_missing"] = missing_snapshots(before_snaps, after_snaps)
     rep["marker_created"] = not had_marker
     return rep
+
+
+def snap_identity(s: dict) -> str:
+    """A snapshot's lasting identity: its first id ("original" once restic tag or rewrite has given it a new one)."""
+    return str(s.get("original") or s.get("id") or "")
+
+
+def missing_snapshots(before: list[dict], after: list[dict]) -> list[str]:
+    """Short identities of snapshots present before the drill and gone after it (INFRA-653)."""
+    after_keys = {snap_identity(x) for x in after}
+    return sorted(k[:8] for k in {snap_identity(x) for x in before} - after_keys)
 
 
 def _verdict(rep: dict) -> list[tuple[str, bool, str]]:
@@ -508,7 +523,10 @@ def _verdict(rep: dict) -> list[tuple[str, bool, str]]:
         ("intent folder", not c.get("leftover"), "empty at the end" if not c.get("leftover")
          else f"left: {', '.join(c['leftover'][:5])}"),
         ("scratch", rep.get("scratch_removed", False), "scratch folder removed"),
-        ("never delete", b1 >= b0, f"snapshots before {b0}, after {b1} (nothing deleted)"),
+        ("never delete", not rep.get("snapshots_missing"),
+         f"snapshots before {b0}, after {b1}; " + ("every snapshot from before is still there (nothing deleted)"
+                                                   if not rep.get("snapshots_missing") else
+                                                   "MISSING: " + ", ".join(rep["snapshots_missing"][:10]))),
     ]
 
 
