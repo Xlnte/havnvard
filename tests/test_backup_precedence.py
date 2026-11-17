@@ -727,7 +727,8 @@ def test_f6_a_folder_that_could_not_be_listed_is_never_accounted_for(hub, capsys
 def test_f7_readme_and_runbook_state_the_precedence_limit():
     for f in ("README.md", "RUNBOOK.md"):
         t = " ".join((REPO_DIR / f).read_text().replace("**", "").split())
-        assert "on the hub" in t and ("as the hub user" in t) and "another computer" in t, f
+        # 3.3.15 (INFRA-647): enrolled computers are covered; the limit left is "not enrolled" or "another user on the hub"
+        assert "not enrolled" in t and "another user on the hub" in t and "INFRA-647" in t, f
 
 
 def test_l4_an_old_drill_result_is_a_problem(hub):
