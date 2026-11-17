@@ -1008,7 +1008,7 @@ def _report_mismatch(files: list[str], target: str, hub_notice) -> str:
     except Exception as e:  # noqa: BLE001 - reported on stderr and returned; the summary above already lists them
         sent = f"not sent: {type(e).__name__}: {e}"
     print(f"  hub notice for {len(files)} SHA-256 mismatch(es): {sent}")
-    if not sent.startswith("sent"):
+    if not sent.startswith(("sent", "left on the hub page")):   # review FILE-R1
         print(f"havnvard pullback: hub notice for SHA-256 mismatches not sent: {sent}", file=sys.stderr)
     return sent
 
@@ -1051,7 +1051,7 @@ def _report_blocked(w: _Writer, target: str, notifier, hub_notice) -> list[str]:
         try:
             sent = hub_notice("pullback_blocked", text)
             print(f"  hub notice for {folder}: {sent}")
-            if not str(sent).startswith("sent"):
+            if not str(sent).startswith(("sent", "left on the hub page")):   # review FILE-R1
                 print(f"havnvard pullback: hub notice for {folder} not sent: {sent}", file=sys.stderr)
         except Exception as e:  # noqa: BLE001 - FN-4: reported on stderr and returned; the next folder still runs
             errors.append(f"hub notice for {folder} not sent: {type(e).__name__}: {e}")
