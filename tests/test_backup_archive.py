@@ -422,3 +422,35 @@ def test_vanished_finds_files_created_and_deleted_the_same_day(dev):
     tgt.mkdir()
     assert archive.pullback(date="2026-11-11", gone_mode=True, target=str(tgt)) == 0
     assert (tgt / str(day / "a.txt").lstrip("/")).read_text() == "made and lost the same day\n"
+
+
+@needs_restic
+def test_pullback_hash_mismatch_is_a_failure_not_restored_infra651(dev, capsys):
+    """INFRA-651 (review L7): a file whose SHA-256 differs from the offload manifest is FAILED. It is not counted in
+    'restored' or 'accounted for', the STATUS line says NOT DONE, and a notice is left on the hub."""
+    tmp, repo, pw, owner, photos = dev
+    assert archive.offload(str(photos), no_db=True) == 0
+    p0 = str(photos / "2019" / "p0.jpg")
+    man = next((tmp / "state" / "offload").glob("*.tsv"))
+    lines = man.read_text().splitlines()
+    for i, ln in enumerate(lines):
+        if ln.startswith(p0 + "\t"):
+            cols = ln.split("\t")
+            hdr = lines[1].split("\t")
+            cols[hdr.index("sha256")] = "0" * 64              # the manifest says other bytes than the backup holds
+            lines[i] = "\t".join(cols)
+    man.write_text("\n".join(lines) + "\n")
+    notices, stats = [], {}
+    tgt = tmp / "mm"
+    tgt.mkdir()
+    rc = archive.pullback(paths=[p0, str(photos / "2019" / "p1.jpg"), str(photos / "notes.txt")], target=str(tgt),
+                          hub_notice=lambda kind, text: notices.append((kind, text)) or "sent", stats=stats)
+    out = capsys.readouterr().out
+    assert rc == config.PROBLEM_EXIT, out
+    assert "pullback: 2 restored, 1 FAILED" in out and "1 SHA-256 MISMATCH" in out
+    assert "2/3 files accounted for; 2/3 SHA-256 match the offload manifest" in out
+    assert f"  MISMATCH {p0}" in out
+    assert "STATUS: NOT DONE 2/3, 1 FAILED" in out
+    assert stats["restored"] == 2 and stats["accounted"] == 2 and stats["failed"] == 1 and stats["mismatch"] == 1
+    assert [k for k, _ in notices] == ["pullback_mismatch"] and p0 in notices[0][1]
+    assert (tgt / p0.lstrip("/")).exists()                    # kept for the owner to check, never removed

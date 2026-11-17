@@ -521,6 +521,7 @@ class _Writer:
         self.redirect: dict[Path, Path] = {}     # a path blocked by a non-folder -> the NAME_PULLBACK-STAMP folder used
         self.new_dirs: dict[Path, tuple[int, float] | None] = {}
         self.new, self.same, self.side, self.partial, self.links, self.special = [], 0, [], [], 0, 0
+        self.new_src: list[str] = []              # INFRA-651: source path of each entry in self.new (same order)
         self.partial_src: set[str] = set()   # INFRA-645: a source whose copy was cut short is never 'restored'
         self.earlier: list[tuple[str, str]] = []  # (existing different file, earlier PULLBACK copy that already matches)
         self.hashes: dict[str, str] = {}         # source path -> SHA-256 of what was written / found identical
@@ -664,6 +665,7 @@ class _Writer:
                 self._cut_short(src)
             else:
                 self.new.append(str(d))
+                self.new_src.append(src)
             return
         if d.is_file() and not d.is_symlink():
             spool = self.scratch / "spool"
@@ -935,11 +937,17 @@ def _pullback_write(restic, env, jobs, target, now, notifier, hub_notice, st: di
     blocked_src = w.unplaced
     missing = sorted(set(expected) - set(w.hashes) - blocked_src - w.partial_src)
     not_back = len(missing) + len(w.partial_src & set(expected)) + len(blocked_src & set(expected))
-    st.update(expected=len(expected), accounted=len(expected) - not_back, restored=len(w.new),
-              failed=not_back + len(bad), identical=w.same, kept_different=len(w.side), failed_items=len(failed),
-              unlisted=len(unlisted))
-    print(f"pullback: {len(w.new)} restored, "
-          + (f"{not_back} FAILED (listed below), " if not_back or unlisted else "")
+    # INFRA-651 (review L7): a file whose SHA-256 differs from the offload manifest is written and kept for the owner to
+    # check, but it is FAILED: never counted as restored or accounted for (spec 3.4).
+    bad_set = set(bad)
+    restored = sum(1 for src in w.new_src if src not in bad_set)
+    n_failed = not_back + len(bad)
+    accounted = len(expected) - n_failed
+    st.update(expected=len(expected), accounted=accounted, restored=restored, failed=n_failed, mismatch=len(bad),
+              identical=w.same, kept_different=len(w.side), failed_items=len(failed), unlisted=len(unlisted))
+    print(f"pullback: {restored} restored, "
+          + (f"{n_failed} FAILED (listed below"
+             + (f"; {len(bad)} SHA-256 MISMATCH" if bad else "") + "), " if n_failed or unlisted else "")
           + (f"{len(unlisted)} folder(s) could not be listed (file count unknown, listed below), " if unlisted else "")
           + f"{w.same} already there and identical (left alone), "
           f"{len(w.side)} already there but different (kept; backed-up copy written next to it)"
@@ -949,7 +957,7 @@ def _pullback_write(restic, env, jobs, target, now, notifier, hub_notice, st: di
         print(f"  KEPT {orig}  ->  backed-up copy: {alt}")
     for orig, prev in w.earlier:
         print(f"  KEPT {orig}  (backed-up copy already pulled back earlier: {prev})")
-    print(f"pullback: {len(expected) - not_back}/{len(expected)} "
+    print(f"pullback: {accounted}/{len(expected)} "
           + ("listed files accounted for, " + f"{len(unlisted)} folder(s) NOT listed; " if unlisted
              else "files accounted for; ")
           +
@@ -967,12 +975,39 @@ def _pullback_write(restic, env, jobs, target, now, notifier, hub_notice, st: di
         print(f"  NOT LISTED {inc}: {why}")
     if w.blocked:
         _report_blocked(w, str(tgt), notifier, hub_notice)
+    if bad:
+        _report_mismatch(sorted(bad), str(tgt), hub_notice)
     rc = 0 if not (bad or missing or w.partial or w.partial_src or failed or unlisted or w.blocked or w.unplaced) \
         else config.PROBLEM_EXIT
     if rc and not st["failed"] and not unlisted:
         st["failed"] = len(failed) or 1           # e.g. folder modes: never "0 FAILED" on a NOT DONE line
-    precedence.log("pullback.end", "pullback", restored=len(w.new), failed=st["failed"], expected=len(expected))
+    precedence.log("pullback.end", "pullback", restored=restored, failed=st["failed"], mismatch=len(bad),
+                   expected=len(expected))
     return rc
+
+
+def mismatch_text(files: list[str], target: str) -> str:
+    """The hub notice text for pulled-back files whose SHA-256 differs from the offload manifest (INFRA-651)."""
+    shown = "\n".join(f"  {p}" for p in files[:10]) + (f"\n  ... and {len(files) - 10} more" if len(files) > 10 else "")
+    return (f"HavnVard pulled back {len(files)} file(s) whose contents do NOT match the fingerprint (SHA-256) recorded "
+            f"when they were offloaded:\n\n{shown}\n\nThey were written under {target} and kept for you to check; "
+            "nothing was deleted. They are counted as FAILED, not restored.\n"
+            "What to do: compare them with any other copy you have, and tell your administrator; the backup may hold "
+            "different bytes than the ones offloaded.")
+
+
+def _report_mismatch(files: list[str], target: str, hub_notice) -> str:
+    """One hub notice for every SHA-256 mismatch of this run. Never raises, never silent (stderr on failure)."""
+    import sys
+    hub_notice = hub_notice or checkin.report_notice
+    try:
+        sent = str(hub_notice("pullback_mismatch", mismatch_text(files, target)))
+    except Exception as e:  # noqa: BLE001 - reported on stderr and returned; the summary above already lists them
+        sent = f"not sent: {type(e).__name__}: {e}"
+    print(f"  hub notice for {len(files)} SHA-256 mismatch(es): {sent}")
+    if not sent.startswith("sent"):
+        print(f"havnvard pullback: hub notice for SHA-256 mismatches not sent: {sent}", file=sys.stderr)
+    return sent
 
 
 def _report_blocked(w: _Writer, target: str, notifier, hub_notice) -> list[str]:
