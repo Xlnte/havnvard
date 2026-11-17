@@ -1168,3 +1168,29 @@ def test_infra655_safe_name_never_names_the_folder_itself_or_its_parent(hub):
     (precedence.config.state_dir() / "catalog-runs.json").write_text("{}")
     assert precedence.read_intents("..") == ([], 0)
     assert (precedence.config.state_dir() / "catalog-runs.json").exists()
+
+
+@needs_restic
+def test_infra654_old_marker_tags_are_removed_and_the_marker_stays_pinned(hub):
+    """INFRA-654 (review L10): the marker keeps its own tag plus this run's two; older drill tags are removed. Not while
+    a pullback is live. Data snapshots are never touched."""
+    env = hub["env"]
+    m = pullback_drill.ensure_marker("restic", env)
+    for t in ("havnvard-drill-20261101000000", "havnvard-drill-lock-20261101000000", "havnvard-drill-20261108000000",
+              "havnvard-drill-20261117000000", "havnvard-drill-lock-20261117000000"):
+        restic(hub["repo"], hub["pw"], "tag", "--add", t, pullback_drill._marker("restic", env)["id"])
+    data_before = [s["id"] for s in catalog.data_snapshots(json.loads(restic(hub["repo"], hub["pw"], "snapshots",
+                                                                             "--json", "--no-lock")))]
+    with precedence.announce("dev1", "pullback test"):
+        assert pullback_drill.prune_marker_tags("restic", env, "dev1", "20261117000000") == []
+    removed = pullback_drill.prune_marker_tags("restic", env, "dev1", "20261117000000")
+    assert removed == ["havnvard-drill-20261101000000", "havnvard-drill-20261108000000",
+                       "havnvard-drill-lock-20261101000000"]
+    m2 = pullback_drill._marker("restic", env)
+    assert sorted(m2["tags"]) == sorted([catalog.DRILL_TAG, "havnvard-drill-20261117000000",
+                                         "havnvard-drill-lock-20261117000000"])
+    assert m2["id"] in pullback_drill.marker_ids() and m["id"] in pullback_drill.marker_ids()
+    data_after = [s["id"] for s in catalog.data_snapshots(json.loads(restic(hub["repo"], hub["pw"], "snapshots",
+                                                                            "--json", "--no-lock")))]
+    assert data_after == data_before
+    assert pullback_drill.prune_marker_tags("restic", env, "dev1", "20261117000000") == []   # nothing left to remove
