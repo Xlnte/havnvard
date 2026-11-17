@@ -515,7 +515,8 @@ def refuse_if_pullback(repo: str, job: str, changed: str = "") -> None:
     live, _ = read_intents(repo, seen_by=job)
     if live:
         i = live[0]
-        log("yield.refused", repo, job=job, pullback=i.get("id", i.get("path")), user=i.get("user"))
+        log("yield.refused", repo, hub_audit=True, job=job,   # INFRA-656 (review L13)
+            pullback=i.get("id", i.get("path")), user=i.get("user"))
         raise PullbackLive(f"{describe_intent(i)} on {repo}; {changed or 'nothing was changed'}; run the "
                            f"{JOB_WORDS.get(job, job)} again when it ends")
 
@@ -633,7 +634,8 @@ def mark_done(pred, note: str, now: float | None = None) -> list[dict]:
         _write_deferred(_trim(lines, now))
     for o in done:
         print(f"{o['job']}: caught up {o['tag']} on {o['repo']} (deferred at {hhmm(o['deferred_at'])}, done now)")
-        log("yield.caught_up", o["repo"], job=o["job"], tag=o["tag"], deferred_at=iso(o["deferred_at"]), note=note)
+        log("yield.caught_up", o["repo"], hub_audit=True, job=o["job"],   # INFRA-656
+             tag=o["tag"], deferred_at=iso(o["deferred_at"]), note=note)
     return done
 
 

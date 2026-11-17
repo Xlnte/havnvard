@@ -1019,3 +1019,24 @@ def test_infra648_pullback_does_not_unlock_when_another_lock_may_be_live(hub, mo
     monkeypatch.setattr(precedence, "lock_records", real)
     assert precedence.clear_dead_locks("restic", hub["env"], "dev1", "catalog") == 1
     assert _locks(hub["repo"]) == []
+
+
+def test_infra653_never_delete_compares_snapshot_identities_not_counts():
+    """INFRA-653 (review L9): one snapshot deleted and one new backup during the drill keeps the count; the id check
+    still sees it. A tag rewrite (new id, same original) is not a deletion."""
+    a, b, c = {"id": "a" * 64}, {"id": "b" * 64}, {"id": "c" * 64}
+    b_retagged = {"id": "d" * 64, "original": "b" * 64}
+    assert pullback_drill.missing_snapshots([a, b], [b_retagged, c]) == ["aaaaaaaa"]
+    assert pullback_drill.missing_snapshots([a, b], [a, b_retagged]) == []
+
+
+def test_infra656_refusal_and_catch_up_write_hub_audit_rows(hub):
+    """INFRA-656 (review L13, spec 3.5): a refused delete and a catch-up each leave a hub audit row."""
+    accounts.Accounts()
+    with precedence.announce("dev1", "pullback test"):
+        with pytest.raises(precedence.PullbackLive):
+            precedence.refuse_if_pullback("dev1", "prune")
+        precedence.defer("catalog", "dev1", "f" * 64, "renamed", {"id": "x", "user": "u", "started_at": time.time()})
+    precedence.mark_done(lambda o: o.get("repo") == "dev1", "test catch-up")
+    acts = [r["action"] for r in accounts.Accounts().audit_rows()]
+    assert "yield.refused" in acts and "yield.caught_up" in acts
