@@ -12,4 +12,6 @@ ExecStart=/opt/havnvard/.venv/bin/python /opt/havnvard/weekly_prescab_review.py
 StandardOutput=journal
 StandardError=journal
 Nice=10
-TimeoutStartSec=5min
+# 3.3.18: the coverage query alone ran 3-10+ min (v_backup_coverage) and the PRESCAB
+# dispatch may take up to 300 s, so 5 min failed on 20261101, 1115 and 1122.
+TimeoutStartSec=45min

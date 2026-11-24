@@ -2,6 +2,19 @@
 
 Older releases are described in `FEATURES.md` and `docs/*_RELEASE_*.md`.
 
+## 3.3.18 (20261124)
+
+Health sweep fixes (PAF: "make sure that HavnVard is working").
+
+- **Remote bit-rot batches can finish again (INFRA-687).** `infra126/bin/remote_hash_batch.sh` slept 15 s before its
+  first re-check of each `sha256sum`, so every file cost at least 15 s and a 500-file batch (7,500 s) always overran the
+  1200 s batch timeout. The NAS and trigkey Tier A runs failed on 20261118 (trigkey had retried one batch 23 times
+  since July). The helper now polls every second and still writes the heartbeat every 15 s. Regression test:
+  `tests/test_remote.py::test_helper_does_not_spend_15_seconds_per_file`.
+- **Weekly PRESCAB review gets time to finish (INFRA-688).** `systemd/diskaudit-prescab-review.service`
+  `TimeoutStartSec` 5min -> 45min: the `v_backup_coverage` query alone takes minutes and the PRESCAB dispatch may take
+  300 s. It timed out on 20261101, 20261115 and 20261122.
+
 ## 3.3.17 (20261117)
 
 The last three findings from the INFRA-644 review, plus three items from the 3.3.16 review.

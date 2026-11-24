@@ -208,3 +208,35 @@ def test_recovery_command_uses_sshpass_prefix_for_sshpass_hosts(tmp_path):
     assert command.startswith("sshpass -f")
     assert "kill 123" in command
     assert "tok-1" in command
+
+
+def test_helper_does_not_spend_15_seconds_per_file(tmp_path):
+    """Regression (INFRA-126, 3.3.18): the helper slept 15 s per file, so a
+    500-file batch always overran the 1200 s batch timeout. Six small files
+    must now hash in well under one old per-file sleep."""
+    import base64
+    import hashlib
+    import time
+
+    helper=Path(__file__).resolve().parents[1]/"bin"/"remote_hash_batch.sh"
+    lines=[]
+    expected={}
+    for index in range(6):
+        data_file=tmp_path/f"f{index}.bin"
+        data_file.write_bytes(bytes([index])*1024)
+        expected[index]=hashlib.sha256(data_file.read_bytes()).hexdigest()
+        lines.append(f"{index}\t{base64.b64encode(str(data_file).encode()).decode()}")
+    manifest=tmp_path/"manifest.tsv"
+    manifest.write_text("\n".join(lines)+"\n",encoding="utf-8")
+    token=tmp_path/"token"
+    token.write_text("t",encoding="utf-8")
+    results=tmp_path/"results.jsonl"
+    started=time.monotonic()
+    subprocess.run(["sh",str(helper),str(manifest),str(results),str(tmp_path/"heartbeat"),str(token)],check=True,timeout=60)
+    elapsed=time.monotonic()-started
+    import json
+    rows=[json.loads(line) for line in results.read_text().splitlines()]
+    assert [row["status"] for row in rows]==["hashed"]*6
+    assert {row["item_id"]:row["sha256"] for row in rows}==expected
+    assert elapsed<12,f"helper took {elapsed:.1f}s for 6 tiny files"
+    assert (tmp_path/"done").exists()

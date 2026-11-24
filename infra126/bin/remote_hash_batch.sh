@@ -38,9 +38,17 @@ while IFS="	" read -r ITEM_ID PATH_B64; do
   : > "$HASH_OUT"
   sha256sum "$PATH_VALUE" > "$HASH_OUT" 2>/dev/null &
   HASH_PID=$!
+  # INFRA-126 (3.3.18): poll every second and write the heartbeat every 15 s.
+  # The old loop slept 15 s before its first re-check, so every file cost at
+  # least 15 s and a 500-file batch could never finish inside the 1200 s batch
+  # timeout (trigkey: 23 failed attempts on one batch, Jul-Nov 2026).
+  WAITED=0
   while kill -0 "$HASH_PID" 2>/dev/null; do
-    date +%s > "$HEARTBEAT"
-    sleep 15
+    if [ $((WAITED % 15)) -eq 0 ]; then
+      date +%s > "$HEARTBEAT"
+    fi
+    sleep 1
+    WAITED=$((WAITED + 1))
   done
   wait "$HASH_PID"
   RC=$?
