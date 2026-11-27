@@ -15,3 +15,9 @@ def test_empty_scheduled_run_is_blocked_before_completed():
 
 def test_reason_is_returned_for_the_alert():
     assert '"error": error' in FIN and "INFRA-692" in FIN
+
+
+def test_monitor_only_flags_unfinished_blocked_runs():
+    mon = (Path(__file__).resolve().parents[1] / "src" / "havnvard_bitrot" / "monitor.py").read_text()
+    q = mon.split("WHERE status='blocked'", 1)[1].split('"""', 1)[0]
+    assert "finished_at IS NULL" in q

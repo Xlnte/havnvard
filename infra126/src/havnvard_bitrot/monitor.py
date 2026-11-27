@@ -43,10 +43,14 @@ def monitor_once(
             """
             SELECT run_id::text,host,tier,status,last_heartbeat_at,recovery_command,last_error
             FROM diskaudit.hash_verification_runs
-            WHERE status='blocked' AND last_heartbeat_at < now()-make_interval(mins=>%s)
+            WHERE status='blocked' AND finished_at IS NULL
+              AND last_heartbeat_at < now()-make_interval(mins=>%s)
             """,
             (blocked_minutes,),
         )
+        # INFRA-692 review: an empty scheduled A/E run now FINISHES as 'blocked' (finished_at set). That is a
+        # terminal verdict reported through the SLA/verification_run_incomplete path, not a run stuck in the
+        # waiting room, so only unfinished blocked runs count here (else one permanent urgent alert per run).
         findings["blocked_runs"] = [dict(zip(columns,row)) for row in cur.fetchall()]
         cur.execute(
             """
