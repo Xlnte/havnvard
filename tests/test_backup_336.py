@@ -453,3 +453,20 @@ def test_review_legacy_device_name_still_checks_in(app, monkeypatch):  # noqa: F
     st, _, body = Client(w).req("POST", "/api/v1/devices/-old-pc/checkin", {"client_version": "3.3.4"},
                                 {"HTTP_AUTHORIZATION": f"Bearer {tok}"}, as_json=True)
     assert st == "200 OK", body
+
+
+# ---- INFRA-628: a refused notice is audited once per device+kind per hour, but every refusal is counted ----
+def test_628_refused_notice_audit_is_rate_limited(app):  # noqa: F811
+    w, code = app
+    _, aid = _admin(w, code)
+    assert w.a.add_device(aid, "pc1")
+    for i in range(accounts.NOTICE_CAP_PER_DEVICE):
+        w.a.add_notice("pc1", "k", f"n{i}")
+    for _ in range(5):
+        with pytest.raises(BackupError, match="open notices"):
+            w.a.add_notice("pc1", "k", "again")
+    with pytest.raises(BackupError, match="open notices"):
+        w.a.add_notice("pc1", "other-kind", "x")
+    refused = [r for r in w.a.audit_rows() if r["action"] == "notice.refused"]
+    assert w.a.notices_refused == 6
+    assert len(refused) == 2                       # one per kind within the hour

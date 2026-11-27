@@ -1277,9 +1277,16 @@ class Accounts:
             open_n = con.execute("SELECT COUNT(*) FROM notice WHERE device_id=? AND dismissed_at IS NULL",
                                  (d["id"],)).fetchone()[0]
             if open_n >= NOTICE_CAP_PER_DEVICE:                       # INFRA-610: refused loudly, never dropped quietly
-                self.notices_refused += 1
-                self._audit(con, None, "notice.refused", device, kind=kind[:40], open_notices=open_n,
-                            cap=NOTICE_CAP_PER_DEVICE)
+                self.notices_refused += 1                              # every refusal counted (hub status)
+                # INFRA-628: one audit row per device+kind per hour, not one per check-in (the computer re-sends
+                # its notice on every check-in while at the cap, which grew the append-only audit table).
+                since = _iso(_now() - dt.timedelta(hours=1))
+                seen = con.execute("SELECT 1 FROM audit WHERE action='notice.refused' AND target=? AND at>=? "
+                                   "AND json_extract(detail, '$.kind')=? LIMIT 1",
+                                   (device, since, kind[:40])).fetchone()
+                if not seen:
+                    self._audit(con, None, "notice.refused", device, kind=kind[:40], open_notices=open_n,
+                                cap=NOTICE_CAP_PER_DEVICE)
                 con.execute("COMMIT")
                 refused = open_n
             else:
