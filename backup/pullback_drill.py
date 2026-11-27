@@ -579,8 +579,10 @@ def pullback_drill(device: str, set_name: str, hashes: str | None = None, scratc
         def _term(signum, frame):
             raise SystemExit(128 + signum)
         old = signal.signal(signal.SIGTERM, _term)
+    marker_err = None                                   # INFRA-660: housekeeping error carried to health
     try:
         rep = _drill(device, set_name, hashes, scratch, parallel, checks)
+        marker_err = rep.get("marker_tags_error")
         verdict = _verdict(rep)
         failed_steps = [v for v in verdict if not v[1]]
         for name, ok, d in verdict:
@@ -607,7 +609,8 @@ def pullback_drill(device: str, set_name: str, hashes: str | None = None, scratc
     line = f"pullback-drill {device}/{set_name}: {'PASSED' if ok else 'FAILED'}: {summary}"
     print(line)
     rec = {"ok": ok, "at": precedence.iso(time.time()), "device": device, "set": set_name, "summary": summary,
-           "seconds": round(time.time() - started), "checks": [{"name": n, "ok": o, "detail": d} for n, o, d in verdict]}
+           "seconds": round(time.time() - started), "checks": [{"name": n, "ok": o, "detail": d} for n, o, d in verdict],
+           "marker_tags_error": marker_err}
     try:
         result_path().parent.mkdir(parents=True, exist_ok=True)
         config.atomic_write_text(result_path(), json.dumps(rec, sort_keys=True))

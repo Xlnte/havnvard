@@ -108,6 +108,9 @@ def collect(now: float | None = None) -> list[tuple[str, bool, str]]:
     drill = _drill_check(now, h)
     if drill:
         res.append(drill)
+    tags = _drill_marker_tags_check()
+    if tags:
+        res.append(tags)
     if cfg.get("hub_web"):
         res.append(_hub_web_check(str(cfg["hub_web"])))
     nas = cfg.get("nas")
@@ -180,6 +183,28 @@ def _drill_check(now: float, h: dict) -> tuple[str, bool, str] | None:
         return DRILL_CHECK, bool(d["ok"]), f"{d.get('at', '?')}: {d['summary']}"
     except (OSError, ValueError, KeyError, TypeError) as e:
         return DRILL_CHECK, False, f"last drill result {p} unreadable: {type(e).__name__}: {e}"
+
+
+DRILL_TAGS_CHECK = "pullback-drill-marker-tags"
+
+
+def _drill_marker_tags_check() -> tuple[str, bool, str] | None:
+    """INFRA-660: the drill's housekeeping (removing old drill tags from the marker) is not a drill check, so a
+    failure there left the drill PASSED while tags piled up. It is reported here under its own key. No check until
+    a drill result carrying the field exists."""
+    p = config.state_dir() / "pullback-drill.json"
+    if not p.exists():
+        return None
+    try:
+        d = json.loads(p.read_text())
+    except (OSError, ValueError) as e:
+        return DRILL_TAGS_CHECK, False, f"last drill result {p} unreadable: {type(e).__name__}: {e}"
+    if "marker_tags_error" not in d:
+        return None                                       # result written before INFRA-660
+    err = d.get("marker_tags_error")
+    if err:
+        return DRILL_TAGS_CHECK, False, f"old drill tags were NOT removed from the marker at {d.get('at', '?')}: {err}"
+    return DRILL_TAGS_CHECK, True, "old drill marker tags pruned (or nothing to prune)"
 
 
 def _waiting_check(now: float) -> tuple[str, bool, str] | None:
