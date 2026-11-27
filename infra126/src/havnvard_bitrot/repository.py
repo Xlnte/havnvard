@@ -734,6 +734,13 @@ class Repository:
             completed,matched,divergences,errors,pending = [int(value or 0) for value in cur.fetchone()]
             if failed:
                 status = "failed"
+            elif completed == 0 and not pending and not remaining_due and tier in (Tier.A, Tier.E):
+                # INFRA-692: a scheduled A/E run that verified NOTHING is not "completed". Every A/E run on all
+                # three hosts did this for 30 days (infra126_critical_paths empty) while the SLA showed success.
+                # 'blocked' keeps last_successful_at from advancing, so the SLA staleness alert fires.
+                status = "blocked"
+                error = error or (f"verified 0 files: nothing was selected for tier {tier.value} on {host} "
+                                  "(check diskaudit.infra126_critical_paths and baselines) - INFRA-692")
             elif errors or pending or remaining_due:
                 status = "completed_with_errors"
             else:
@@ -765,6 +772,7 @@ class Repository:
             conn.commit()
         return {
             "status": status,
+            "error": error,          # INFRA-692: the reason travels in the verification_run_incomplete alert
             "completed": completed,
             "matched": matched,
             "divergences": divergences,
