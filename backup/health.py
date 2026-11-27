@@ -122,7 +122,9 @@ def collect(now: float | None = None) -> list[tuple[str, bool, str]]:
             free = shutil.disk_usage(mp).free / GB
             lim = float(h.get("nas_min_free_gb", 500))
             res.append(("NAS free space", free >= lim, f"{free:.0f} GB free (limit {lim:g} GB)"))
-    if cfg.get("device"):
+    # INFRA-625: a [device] section added only for hub check-in has no backup paths and runs no backup job, so
+    # it must not demand backup-last.json (false "no backup has completed yet" PROBLEM on the hub/check-in-only PCs).
+    if cfg.get("device") and (cfg["device"] or {}).get("paths"):
         p = config.state_dir() / "backup-last.json"
         try:
             last = json.loads(p.read_text())
