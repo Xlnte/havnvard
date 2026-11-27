@@ -271,3 +271,21 @@ def test_helper_reports_permission_denied_as_unreadable_not_missing(tmp_path):
     rows={r["item_id"]:r for r in map(json.loads,results.read_text().splitlines())}
     assert rows[1]["status"]=="unreadable" and rows[1]["error"]=="permission denied"
     assert rows[2]["status"]=="missing"
+
+
+def test_helper_reports_other_stat_errors_as_unreadable(tmp_path):
+    """Review 20261127: only ENOENT is 'missing'. A symlink loop (ELOOP) stands in for EIO here."""
+    import base64
+    import json
+
+    helper=Path(__file__).resolve().parents[1]/"bin"/"remote_hash_batch.sh"
+    loop=tmp_path/"loop"
+    loop.symlink_to(loop)
+    manifest=tmp_path/"manifest.tsv"
+    manifest.write_text(f"7\t{base64.b64encode(str(loop).encode()).decode()}\n",encoding="utf-8")
+    token=tmp_path/"token"
+    token.write_text("t",encoding="utf-8")
+    results=tmp_path/"results.jsonl"
+    subprocess.run(["sh",str(helper),str(manifest),str(results),str(tmp_path/"heartbeat"),str(token)],check=True,timeout=60)
+    row=json.loads(results.read_text().splitlines()[0])
+    assert row["status"]=="unreadable" and row["error"].startswith("stat failed")

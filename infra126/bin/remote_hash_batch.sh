@@ -27,12 +27,17 @@ while IFS="	" read -r ITEM_ID PATH_B64; do
   if [ ! -e "$PATH_VALUE" ]; then
     # INFRA-679: -e is also false when a parent directory denies search permission; that is an
     # unreadable file, not a vanished one. stat's error text tells the two apart.
-    STAT_ERR=$(stat -c '%i' "$PATH_VALUE" 2>&1 >/dev/null || true)
+    # Review 20261127: ONLY ENOENT means missing. Anything else (EACCES, EIO, ELOOP, ...) is unreadable
+    # with the real reason: an I/O error reported as "missing" is the worst miss for a bit-rot scanner.
+    STAT_ERR=$(LC_ALL=C stat -c '%i' "$PATH_VALUE" 2>&1 >/dev/null || true)
     case "$STAT_ERR" in
+      *"No such file or directory"*)
+        printf '{"item_id":%s,"path":"","status":"missing","duration_ms":0,"error":"file disappeared"}\n' "$ITEM_ID" >> "$RESULTS" ;;
       *"Permission denied"*)
         printf '{"item_id":%s,"path":"","status":"unreadable","duration_ms":0,"error":"permission denied"}\n' "$ITEM_ID" >> "$RESULTS" ;;
       *)
-        printf '{"item_id":%s,"path":"","status":"missing","duration_ms":0,"error":"file disappeared"}\n' "$ITEM_ID" >> "$RESULTS" ;;
+        REASON=$(printf '%s' "${STAT_ERR##*: }" | tr -d '"\\' | tr '\n' ' ' | cut -c1-80)
+        printf '{"item_id":%s,"path":"","status":"unreadable","duration_ms":0,"error":"stat failed: %s"}\n' "$ITEM_ID" "${REASON:-unknown}" >> "$RESULTS" ;;
     esac
     date +%s > "$HEARTBEAT"
     continue
