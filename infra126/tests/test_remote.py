@@ -240,3 +240,34 @@ def test_helper_does_not_spend_15_seconds_per_file(tmp_path):
     assert {row["item_id"]:row["sha256"] for row in rows}==expected
     assert elapsed<12,f"helper took {elapsed:.1f}s for 6 tiny files"
     assert (tmp_path/"done").exists()
+
+
+def test_helper_reports_permission_denied_as_unreadable_not_missing(tmp_path):
+    """INFRA-679: a file under a directory without search permission is unreadable, not 'disappeared';
+    a file that really is gone stays 'missing'."""
+    import base64
+    import json
+    import os
+
+    if os.geteuid() == 0:
+        import pytest
+        pytest.skip("root ignores directory permissions")
+    helper=Path(__file__).resolve().parents[1]/"bin"/"remote_hash_batch.sh"
+    locked=tmp_path/"locked"
+    locked.mkdir()
+    hidden=locked/"f.bin"
+    hidden.write_bytes(b"x")
+    gone=tmp_path/"gone.bin"
+    manifest=tmp_path/"manifest.tsv"
+    manifest.write_text("".join(f"{i}\t{base64.b64encode(str(p).encode()).decode()}\n" for i,p in ((1,hidden),(2,gone))),encoding="utf-8")
+    token=tmp_path/"token"
+    token.write_text("t",encoding="utf-8")
+    results=tmp_path/"results.jsonl"
+    locked.chmod(0)
+    try:
+        subprocess.run(["sh",str(helper),str(manifest),str(results),str(tmp_path/"heartbeat"),str(token)],check=True,timeout=60)
+    finally:
+        locked.chmod(0o700)
+    rows={r["item_id"]:r for r in map(json.loads,results.read_text().splitlines())}
+    assert rows[1]["status"]=="unreadable" and rows[1]["error"]=="permission denied"
+    assert rows[2]["status"]=="missing"

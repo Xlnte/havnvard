@@ -25,7 +25,15 @@ while IFS="	" read -r ITEM_ID PATH_B64; do
     continue
   fi
   if [ ! -e "$PATH_VALUE" ]; then
-    printf '{"item_id":%s,"path":"","status":"missing","duration_ms":0,"error":"file disappeared"}\n' "$ITEM_ID" >> "$RESULTS"
+    # INFRA-679: -e is also false when a parent directory denies search permission; that is an
+    # unreadable file, not a vanished one. stat's error text tells the two apart.
+    STAT_ERR=$(stat -c '%i' "$PATH_VALUE" 2>&1 >/dev/null || true)
+    case "$STAT_ERR" in
+      *"Permission denied"*)
+        printf '{"item_id":%s,"path":"","status":"unreadable","duration_ms":0,"error":"permission denied"}\n' "$ITEM_ID" >> "$RESULTS" ;;
+      *)
+        printf '{"item_id":%s,"path":"","status":"missing","duration_ms":0,"error":"file disappeared"}\n' "$ITEM_ID" >> "$RESULTS" ;;
+    esac
     date +%s > "$HEARTBEAT"
     continue
   fi
