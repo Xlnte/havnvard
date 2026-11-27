@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import base64
 import datetime as dt
+import logging
 import hashlib
 import hmac
 import json
@@ -143,6 +144,9 @@ _COLUMNS = (("account", "old_pw_hash", "TEXT"), ("account", "must_set_password",
 #   force_open.ack_proof/ack_ip/ack_ua  HOW the notice was acknowledged (old_password / reset_code), from where: shown on
 #                         the user's page for ever (R3a).  force_open.code_delivery: who got the code or generated
 #                         password: "emailed to the user only" / "given to the admin (no mail configured)" / failed.
+
+
+log = logging.getLogger("havnvard.accounts")   # INFRA-627
 
 
 def _now() -> dt.datetime:
@@ -852,11 +856,11 @@ class Accounts:
                 "your own.\n\nGenerated password (it only shows the notice): " + new_pw + "\n\n"
                 "Nothing was deleted. This message was sent by HavnVard.")
         status = self._mail(mailer, t["email"],
-                            "HavnVard: your administrator reset your password and accessed your files", body)
+                            "HavnVard: your administrator reset your password and accessed your files", body, fid=fid)
         shown, delivery = _delivery(status)
         con = self._tx()
         try:
-            con.execute("UPDATE force_open SET email_status=?, code_delivery=? WHERE id=?", (status, delivery, fid))
+            con.execute("UPDATE force_open SET email_status=CASE WHEN ?='queued' AND email_status IS NOT NULL AND email_status<>'queued' THEN email_status ELSE ? END, code_delivery=? WHERE id=?", (status, status, delivery, fid))   # INFRA-627: never undo a finished outcome
             self._audit(con, actor, "force_open.email", t["email"], force_open_id=fid, email_status=status,
                         code_delivery=delivery)
             con.execute("COMMIT")
@@ -868,7 +872,7 @@ class Accounts:
         return {"new_password": new_pw if shown else None, "email_status": status, "user_email": t["email"],
                 "code_delivery": delivery}
 
-    def _mail(self, mailer, to: str, subject: str, body: str) -> str:
+    def _mail(self, mailer, to: str, subject: str, body: str, fid: int | None = None) -> str:
         """The email outcome string. An injected `mailer` (tests, tools) is called here and now. The real mailer is NEVER
         called inside the web request (INFRA-606): "not configured" is answered at once; otherwise the message goes to
         the bounded background outbox and this returns "queued" (or "failed: ..." when the queue is full). The outbox's
@@ -878,7 +882,33 @@ class Accounts:
         from . import mail
         if mail.settings_or_none() is None:
             return "not configured"
-        return mail.OUTBOX.submit(to, subject, body, on_done=lambda st: self._log(None, "mail.result", to, status=st))
+        def _done(st):
+            self._log(None, "mail.result", to, status=st)
+            if fid is not None:
+                # INFRA-627: the force_open row used to stay "queued" forever, even after the mail was sent.
+                # Only a NULL/queued row is upgraded, so a late caller write can never undo this outcome.
+                con = self._con()
+                try:
+                    con.execute("UPDATE force_open SET email_status=? WHERE id=? "
+                                "AND (email_status IS NULL OR email_status='queued')", (st, fid))
+                    con.commit()
+                finally:
+                    con.close()
+        return mail.OUTBOX.submit(to, subject, body, on_done=_done)
+
+    def mark_queued_mail_lost(self) -> int:
+        """INFRA-627: the outbox is in memory, so at hub-web start nothing can still be in flight; a force_open row
+        still "queued" lost its mail in a restart. Say so (shown to the admin) instead of "queued" forever."""
+        con = self._con()
+        try:
+            n = con.execute("UPDATE force_open SET email_status='failed: lost (the hub restarted before the queued "
+                            "mail was sent)' WHERE email_status='queued'").rowcount
+            con.commit()
+        finally:
+            con.close()
+        if n:
+            log.warning("hub start: %d queued force-open mail(s) were lost in a restart; marked failed", n)
+        return n
 
     def key_path(self) -> Path:
         return self.path.with_name(self.path.name + ".key")
@@ -926,13 +956,13 @@ class Accounts:
                 "Your reset code (works for 24 hours, only once): " + code + "\n\nRedeem it yourself on the hub's "
                 "/reset page. You will then read this notice and choose your own password.\n\n"
                 "This message was sent by HavnVard.")
-        status = self._mail(mailer, t["email"], "HavnVard: your administrator reset your password", body)
+        status = self._mail(mailer, t["email"], "HavnVard: your administrator reset your password", body, fid=fid)
         shown, delivery = _delivery(status)
         self._log(actor, "password.reset_code_delivery", t["email"], force_open_id=fid, email_status=status,
                   code_delivery=delivery)
         con = self._tx()
         try:
-            con.execute("UPDATE force_open SET email_status=?, code_delivery=? WHERE id=?", (status, delivery, fid))
+            con.execute("UPDATE force_open SET email_status=CASE WHEN ?='queued' AND email_status IS NOT NULL AND email_status<>'queued' THEN email_status ELSE ? END, code_delivery=? WHERE id=?", (status, status, delivery, fid))   # INFRA-627: never undo a finished outcome
             con.execute("COMMIT")
         except BaseException:
             con.execute("ROLLBACK")

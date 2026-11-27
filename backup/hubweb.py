@@ -575,6 +575,8 @@ class App:
 
 def serve(listen: str, port: int) -> None:  # pragma: no cover - thin wrapper around wsgiref
     from wsgiref.simple_server import make_server
-    with make_server(listen, port, App()) as srv:
+    app = App()
+    app.a.mark_queued_mail_lost()   # INFRA-627: in-memory outbox; nothing survives a restart
+    with make_server(listen, port, app) as srv:
         print(f"HavnVard hub pages on http://{listen}:{port}/")
         srv.serve_forever()

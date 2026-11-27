@@ -334,3 +334,19 @@ def test_adopt_repo_adds_the_store_key_and_changes_nothing_else(db, tmp_path):
     kf = tmp_path / "store.key"
     kf.write_text(key + "\n")
     assert restic(repo, kf, "snapshots", "--json") == before                 # the store key opens it; nothing changed
+
+
+# ---- INFRA-627: a queued force-open mail lost in a hub restart is said, not left "queued" forever ----
+def test_627_queued_force_open_mail_marked_lost_at_start(db):
+    a, code = db
+    adm = _admin(a, code)
+    u = _user(a, adm)
+    a.add_device(adm["account_id"], "al-laptop", primary_user=u)
+    mail = Mail()
+    mail.status = "queued"                      # what the real background outbox answers
+    r = a.force_open(adm["account_id"], u, reason="investigation", typed_email="al@example.com", mailer=mail)
+    assert r["email_status"] == "queued"
+    assert a.mark_queued_mail_lost() == 1
+    row = a._one("SELECT email_status FROM force_open ORDER BY id DESC LIMIT 1")
+    assert row["email_status"].startswith("failed: lost")
+    assert a.mark_queued_mail_lost() == 0        # idempotent
