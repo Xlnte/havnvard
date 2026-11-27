@@ -422,6 +422,36 @@ INSERT INTO diskaudit.scan_errors (scan_id, path, error) VALUES (%(scan_id)s, %(
 """
 
 
+MERGE_HELD_COARSENED = """
+INSERT INTO diskaudit.scan_errors (scan_id, path, error) VALUES (%(scan_id)s, %(root)s,
+    'HELD_COARSENED: ' || %(n_held)s || ' unreadable paths widened to ' || %(n_coarse)s
+    || ' ancestor paths to fit the merge budget; rows under those ancestors kept as last seen: '
+    || %(coarse)s);
+"""
+
+
+def _coarsen_held(held: list[str], root: str, n_unseen: int, budget: int = None) -> list[str] | None:
+    """INFRA-701: fit the held-path merge into the budget by widening the DEEPEST held paths to their parents
+    (holding back more rows is the safe direction) instead of deferring the whole root. Deferral used to be
+    permanent when the same unreadable paths failed every scan: on nas-ts453a bkup_spark 2,275,025 deleted rows
+    stayed still_exists for 16 days (23 permission-denied paths x 2.27 M rows > 50 M). Returns None only when even
+    the root's direct children do not fit."""
+    budget = HELD_PAIR_BUDGET if budget is None else budget
+    base = root.rstrip("/")
+    cur = _prune_nested(held)
+
+    def depth(p: str) -> int:
+        rel = p[len(base):].strip("/") if p.startswith(base + "/") else p.strip("/")
+        return len([c for c in rel.split("/") if c])
+
+    while cur and n_unseen * len(cur) > budget:
+        deepest = max(depth(p) for p in cur)
+        if deepest <= 1:
+            return None
+        cur = _prune_nested([p.rstrip("/").rsplit("/", 1)[0] if depth(p) == deepest else p for p in cur])
+    return cur
+
+
 def _prune_nested(paths) -> list[str]:
     """Drop empty entries and any path nested under another held path (the shorter prefix already covers it)."""
     uniq = sorted({p for p in paths if p})
@@ -455,14 +485,22 @@ def merge(conn, scan_id: int, host: str, root: str, held_paths=()):
         if held_all:
             cur.execute(MERGE_COUNT_UNSEEN, {"host": host, "root_prefix": root_prefix, "scan_id": scan_id})
             n_unseen = cur.fetchone()[0]
-        if held_all and n_unseen * len(held_all) > HELD_PAIR_BUDGET:
+        coarse = _coarsen_held(held_all, root, n_unseen) if held_all else None
+        if held_all and coarse is None:
             cur.execute(MERGE_HELD_DEFERRED, {"scan_id": scan_id, "root": root.rstrip("/") or "/",
                                               "n_unseen": n_unseen, "n_held": len(held_all)})
             n_dup += 1  # counted in errors_count like the duplicate rows
             print(f"[diskaudit] HELD_BACK_DEFERRED: {n_unseen} not re-seen x {len(held_all)} held paths over budget; "
                   "disappearance skipped this run", file=sys.stderr)
         elif held_all:
-            held = _prune_nested(held_all)
+            held = coarse
+            if held != _prune_nested(held_all):
+                cur.execute(MERGE_HELD_COARSENED, {"scan_id": scan_id, "root": root.rstrip("/") or "/",
+                                                   "n_held": len(held_all), "n_coarse": len(held),
+                                                   "coarse": ", ".join(held)[:1500]})
+                n_dup += 1
+                print(f"[diskaudit] HELD_COARSENED: {len(held_all)} held paths widened to {len(held)} to fit the budget",
+                      file=sys.stderr)
             cur.execute(MERGE_DISAPPEARED_HELD, {
                 "host": host, "root_prefix": root_prefix, "scan_id": scan_id, "held": held,
                 "held_pre": [p.rstrip("/") + "/" for p in held]})
