@@ -815,6 +815,10 @@ def pullback(date: str | None = None, paths: list[str] | None = None, version: s
     INFRA-644: the first and the last line are a STATUS line; the pullback announces itself (precedence.Intent) before
     its first restic call, so exclusive-lock jobs yield to it, and gets past a lock already held (precedence.LockGate).
     `on_start(intent)` runs right after the intent is written (the drill uses it); `stats` is filled with the counts."""
+    # INFRA-657: backed-up paths are absolute, so a relative --folder (e.g. proj_10) matched nothing.
+    # Resolve it against the current directory, the way the person typing it means it.
+    if folder:
+        folder = _abs(folder)
     print("STATUS: RUNNING", flush=True)
     st = stats if stats is not None else {}
     try:

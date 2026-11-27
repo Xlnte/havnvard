@@ -482,3 +482,21 @@ def test_pullback_on_hub_mismatch_notice_reaches_hub_page_infra651_review(dev, c
     with sqlite3.connect(acc.path) as con:
         rows = con.execute("SELECT kind, text FROM notice").fetchall()
     assert [k for k, _ in rows] == ["pullback_mismatch"] and p0 in rows[0][1]
+
+
+def test_pullback_relative_folder_is_made_absolute(dev, monkeypatch, tmp_path):
+    """INFRA-657: a relative --folder matched no absolute backed-up path. It now resolves against the cwd."""
+    seen = {}
+
+    class _Stop(Exception):
+        pass
+
+    def fake_plan(restic, env, date, paths, version, folder, gone_mode, snapshot):
+        seen["folder"] = folder
+        raise _Stop
+
+    monkeypatch.setattr(archive, "_pullback_plan", fake_plan)
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(_Stop):
+        archive.pullback(date="2026-11-01", folder="proj_10")
+    assert seen["folder"] == str(tmp_path / "proj_10")
